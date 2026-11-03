@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.txtura.data.BackupRestorePayload
 import com.txtura.data.ChatMessage
 import com.txtura.data.ConversationFilter
 import com.txtura.data.ConversationThread
@@ -86,6 +87,8 @@ import com.txtura.data.DeletedConversationEntry
 import com.txtura.data.DeletedGroupingMode
 import com.txtura.data.MainListLayoutMode
 import com.txtura.data.SwipeAction
+import com.txtura.data.UiColorMode
+import com.txtura.data.LauncherIconShape
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
 import com.txtura.security.SecurityRiskLevel
@@ -143,8 +146,7 @@ fun ConversationsListScreen(
                 ConversationFilter.ALL -> true
                 ConversationFilter.PINNED -> thread.isPinned || thread.pinnedMessages.isNotEmpty()
                 ConversationFilter.UNREAD -> thread.unreadCount > 0
-                ConversationFilter.SECURITY -> thread.highestRiskLevel != SecurityRiskLevel.SAFE ||
-                    thread.messages.any { it.securityAnalysis.extractedOtpCode != null }
+                ConversationFilter.SERVICES -> isServiceThread(thread)
             }
             matchesSearch && matchesFilter
         }
@@ -357,12 +359,41 @@ fun ConversationsListScreen(
     }
 }
 
+private fun isServiceThread(thread: ConversationThread): Boolean {
+    val address = thread.address.trim()
+    val cleanDigits = address.filter { it.isDigit() }
+
+    // 1. Alphanumeric sender ID (e.g. "BANK", "INFO", "YETTEL", "GOOGLE", "MTS", "A1")
+    if (address.any { it.isLetter() }) return true
+
+    // 2. Shortcode (typically 3 to 6 digits, e.g. 1999, 9800, 2222)
+    if (cleanDigits.length in 3..6 && !address.startsWith("+") && cleanDigits.length == address.length) {
+        return true
+    }
+
+    // 3. Extracted OTP / 2FA verification codes
+    if (thread.messages.any { it.securityAnalysis.extractedOtpCode != null }) {
+        return true
+    }
+
+    // 4. Banking / payment / delivery / service notifications keywords
+    val serviceKeywords = listOf(
+        "otp", "kod", "verifikac", "transakc", "racun", "račun", "uplata", "isplata",
+        "saldo", "stanje", "bank", "kartic", "pin", "kod za", "kod je",
+        "code", "verify", "verification", "transaction", "balance", "alert",
+        "security code", "passcode", "auth", "confirm", "narudzb", "dostav",
+        "posiljka", "pošiljka", "paket", "servis", "obavestenje", "obaveštenje"
+    )
+    val latestBody = thread.lastMessage?.body?.lowercase() ?: ""
+    return serviceKeywords.any { latestBody.contains(it) }
+}
+
 private fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
     return when (filter) {
         ConversationFilter.ALL -> strings.filterAll
         ConversationFilter.PINNED -> strings.filterPinned
         ConversationFilter.UNREAD -> strings.filterUnread
-        ConversationFilter.SECURITY -> strings.filterSecurity
+        ConversationFilter.SERVICES -> strings.filterServices
     }
 }
 
@@ -382,11 +413,16 @@ fun SettingsScreen(
     showContactPhotos: Boolean,
     listLayoutMode: MainListLayoutMode = MainListLayoutMode.DEFAULT,
     mainWallpaper: WallpaperConfig = WallpaperConfig(),
+    uiColorMode: UiColorMode = UiColorMode.COLORFUL,
+    launcherIconShape: LauncherIconShape = LauncherIconShape.ROUNDED_SQUARE,
     swipeRightAction: SwipeAction,
     swipeLeftAction: SwipeAction,
     autoDeleteDays: Int,
     deletedGroupingMode: DeletedGroupingMode,
     deletedMessagesCount: Int,
+    lastBackupTimestamp: Long = 0L,
+    connectedGoogleAccount: String? = null,
+    isGoogleDriveInstalled: Boolean = false,
     hasSmsPermission: Boolean,
     isDefaultSmsApp: Boolean,
     rationaleMessage: String?,
@@ -394,6 +430,8 @@ fun SettingsScreen(
     onSelectTheme: (TxturaThemeMode) -> Unit,
     onToggleShowContactPhotos: (Boolean) -> Unit,
     onSelectListLayoutMode: (MainListLayoutMode) -> Unit = {},
+    onSelectUiColorMode: (UiColorMode) -> Unit = {},
+    onSelectLauncherIconShape: (LauncherIconShape) -> Unit = {},
     onSelectMainWallpaperPreset: (WallpaperPreset) -> Unit = {},
     onPickMainWallpaperFromGallery: () -> Unit = {},
     onSelectSwipeRightAction: (SwipeAction) -> Unit,
@@ -401,6 +439,12 @@ fun SettingsScreen(
     onSelectAutoDeleteDays: (Int) -> Unit,
     onSelectDeletedGroupingMode: (DeletedGroupingMode) -> Unit,
     onOpenDeletedMessages: () -> Unit,
+    onCreateLocalBackup: () -> Unit = {},
+    onRestoreLocalBackup: () -> Unit = {},
+    onShareBackupFile: () -> Unit = {},
+    onSaveToGoogleDrive: () -> Unit = {},
+    onRestoreFromGoogleDrive: () -> Unit = {},
+    onOpenSystemBackupSettings: () -> Unit = {},
     onRequestSmsPermissions: () -> Unit,
     onRequestDefaultSmsRole: () -> Unit,
     onOpenSystemAppSettings: () -> Unit
@@ -413,6 +457,7 @@ fun SettingsScreen(
     var expandedWallpaper by remember { mutableStateOf(false) }
     var expandedSwipe by remember { mutableStateOf(false) }
     var expandedTrash by remember { mutableStateOf(false) }
+    var expandedBackup by remember { mutableStateOf(false) }
     var expandedPermissions by remember { mutableStateOf(false) }
     var showSecurityMeasuresDialog by remember { mutableStateOf(false) }
 
@@ -528,6 +573,138 @@ fun SettingsScreen(
                             selected = themeMode == TxturaThemeMode.SYSTEM,
                             onClick = { onSelectTheme(TxturaThemeMode.SYSTEM) }
                         )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // UI Palette Mode (Višebojni UI vs Jednobojni UI)
+                    Text(
+                        text = strings.uiColorModeSectionTitle,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = strings.uiColorModeSectionDesc,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        UiColorMode.entries.forEach { mode ->
+                            val selected = mode == uiColorMode
+                            val label = when (mode) {
+                                UiColorMode.COLORFUL -> strings.uiColorModeColorfulTitle
+                                UiColorMode.MONOCHROME -> strings.uiColorModeMonochromeTitle
+                            }
+                            GlassCard(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp),
+                                elevated = selected,
+                                accentHighlight = if (selected) palette.accentPrimary else null,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                                onClick = { onSelectUiColorMode(mode) }
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (selected) palette.accentPrimary else palette.textSecondary,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    modifier = Modifier.align(Alignment.Center)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Launcher Icon Style Selector
+                    Text(
+                        text = strings.launcherIconShapeSectionTitle,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = strings.launcherIconShapeSectionDesc,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        LauncherIconShape.entries.forEach { shape ->
+                            val selected = shape == launcherIconShape
+                            val shapeObj = when (shape) {
+                                LauncherIconShape.CIRCLE -> CircleShape
+                                LauncherIconShape.SQUIRCLE -> RoundedCornerShape(percent = 38)
+                                LauncherIconShape.ROUNDED_SQUARE -> RoundedCornerShape(percent = 22)
+                                LauncherIconShape.TEARDROP -> RoundedCornerShape(topStartPercent = 50, topEndPercent = 50, bottomEndPercent = 50, bottomStartPercent = 10)
+                                LauncherIconShape.PEBBLE -> RoundedCornerShape(topStartPercent = 45, topEndPercent = 18, bottomEndPercent = 45, bottomStartPercent = 18)
+                            }
+                            val shapeLabel = when (shape) {
+                                LauncherIconShape.CIRCLE -> strings.launcherIconShapeCircle
+                                LauncherIconShape.SQUIRCLE -> strings.launcherIconShapeSquircle
+                                LauncherIconShape.ROUNDED_SQUARE -> strings.launcherIconShapeRoundedSquare
+                                LauncherIconShape.TEARDROP -> strings.launcherIconShapeTeardrop
+                                LauncherIconShape.PEBBLE -> strings.launcherIconShapePebble
+                            }
+                            GlassCard(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp),
+                                elevated = selected,
+                                accentHighlight = if (selected) palette.accentPrimary else null,
+                                contentPadding = PaddingValues(vertical = 8.dp, horizontal = 4.dp),
+                                onClick = { onSelectLauncherIconShape(shape) }
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(shapeObj)
+                                            .background(
+                                                Brush.linearGradient(
+                                                    listOf(
+                                                        Color(0xFF0F172A),
+                                                        if (selected) palette.accentPrimary else Color(0xFF334155)
+                                                    )
+                                                )
+                                            )
+                                            .border(
+                                                1.dp,
+                                                if (selected) palette.accentPrimary else Color.White.copy(alpha = 0.25f),
+                                                shapeObj
+                                            )
+                                    ) {
+                                        Text(
+                                            text = "T",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (selected) palette.accentPrimary else Color.White
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = shapeLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        color = if (selected) palette.accentPrimary else palette.textSecondary,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
@@ -928,6 +1105,268 @@ fun SettingsScreen(
                                     modifier = Modifier.align(Alignment.Center)
                                 )
                             }
+                        }
+                    }
+                }
+
+                // SECTION: Backup & Restore (Google Account & Local Backup)
+                ExpandableSettingsSection(
+                    icon = TxturaIcons.FolderBackup,
+                    iconTint = palette.accentPrimary,
+                    title = strings.backupSectionTitle,
+                    subtitle = strings.backupSectionDesc,
+                    accentHighlight = if (expandedBackup) palette.accentPrimary else null,
+                    expanded = expandedBackup,
+                    onToggleExpand = { expandedBackup = !expandedBackup }
+                ) {
+                    // Last Backup Status & Google Account info card
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        elevated = true,
+                        contentPadding = PaddingValues(14.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = TxturaIcons.CloudSync,
+                                    contentDescription = null,
+                                    tint = palette.accentPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (lastBackupTimestamp > 0L) {
+                                        strings.lastBackupLabel(formatTimestamp(lastBackupTimestamp))
+                                    } else {
+                                        strings.noPreviousBackup
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = TxturaIcons.ContactPerson,
+                                    contentDescription = null,
+                                    tint = palette.safeColor,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (!connectedGoogleAccount.isNullOrBlank()) {
+                                        strings.googleAccountConnected(connectedGoogleAccount)
+                                    } else {
+                                        strings.googleAccountDefaultLabel
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textSecondary
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Subsection: Google Account & Google Drive
+                    Text(
+                        text = strings.googleAccountBackupTitle,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = strings.googleAccountBackupSub,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Save to Google Drive
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            elevated = true,
+                            accentHighlight = palette.accentPrimary,
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                            onClick = onSaveToGoogleDrive
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = TxturaIcons.CloudUpload,
+                                        contentDescription = null,
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = strings.saveToGoogleDriveButton,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = palette.accentPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                if (isGoogleDriveInstalled) {
+                                    Text(
+                                        text = "Drive ✓",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.safeColor,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        // Restore from Google Drive
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                            onClick = onRestoreFromGoogleDrive
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = TxturaIcons.CloudDownload,
+                                    contentDescription = null,
+                                    tint = palette.accentSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = strings.restoreFromGoogleDriveButton,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        // Open Google Account / System Backup Settings
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                            onClick = onOpenSystemBackupSettings
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = TxturaIcons.SettingsGear,
+                                    contentDescription = null,
+                                    tint = palette.textSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = strings.googleSystemBackupSettingsButton,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textSecondary
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Subsection: Local Device Backup
+                    Text(
+                        text = strings.localBackupTitle,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = strings.localBackupSub,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        // Create Local Backup
+                        GlassCard(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp),
+                            elevated = true,
+                            accentHighlight = palette.accentPrimary,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                            onClick = onCreateLocalBackup
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = TxturaIcons.FolderBackup,
+                                    contentDescription = null,
+                                    tint = palette.accentPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = strings.createLocalBackupButton,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.accentPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // Restore Local Backup
+                        GlassCard(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp),
+                            elevated = true,
+                            accentHighlight = palette.accentSecondary,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                            onClick = onRestoreLocalBackup
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = TxturaIcons.Restore,
+                                    contentDescription = null,
+                                    tint = palette.accentSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = strings.restoreLocalBackupButton,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Share / Export Backup File Button
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        onClick = onShareBackupFile
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = TxturaIcons.Send,
+                                contentDescription = null,
+                                tint = palette.textSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = strings.shareBackupButton,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textSecondary
+                            )
                         }
                     }
                 }
@@ -2711,6 +3150,84 @@ fun ConfirmMoveToTrashDialog(
 }
 
 /**
+ * Confirmation dialog shown before restoring data from a backup file (Local or Google Drive).
+ */
+@Composable
+fun ConfirmRestoreDialog(
+    payload: BackupRestorePayload,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalGlassPalette.current
+    val strings = TxturaStrings.current()
+    val dateStr = formatTimestamp(payload.createdAtMillis)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
+        titleContentColor = palette.textPrimary,
+        textContentColor = palette.textSecondary,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = TxturaIcons.CloudDownload,
+                    contentDescription = null,
+                    tint = palette.accentPrimary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = strings.confirmRestoreTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = palette.textPrimary
+                )
+            }
+        },
+        text = {
+            GlassCard(
+                shape = RoundedCornerShape(16.dp),
+                accentHighlight = palette.accentPrimary,
+                contentPadding = PaddingValues(14.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = strings.confirmRestoreMessage(
+                            dateStr,
+                            payload.threads.size,
+                            payload.totalMessagesCount
+                        ),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary
+                    )
+                    Text(
+                        text = "• ${payload.deviceModel} • v${payload.version}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    text = strings.confirmRestoreButton,
+                    color = palette.accentPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = strings.cancel,
+                    color = palette.textSecondary
+                )
+            }
+        }
+    )
+}
+
+/**
  * Dedicated screen for Deleted Messages (Trash / Obrisane poruke) with:
  * - Interactive switching between grouping/sorting By Deletion Date vs By Contact
  * - Restoring messages back to the inbox within the retention window (default 30 days)
@@ -3156,8 +3673,62 @@ fun WallpaperPresetSelectorGrid(
     onSelectPreset: (WallpaperPreset) -> Unit
 ) {
     val palette = LocalGlassPalette.current
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        WallpaperPreset.entries.forEach { preset ->
+    var selectedCategory by remember(currentConfig.preset) {
+        mutableStateOf(
+            if (currentConfig.preset.isMonochrome) UiColorMode.MONOCHROME else UiColorMode.COLORFUL
+        )
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Segmented tabs for Colorful (10) vs Monochrome (10)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            val colorfulActive = selectedCategory == UiColorMode.COLORFUL
+            GlassCard(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp),
+                elevated = colorfulActive,
+                accentHighlight = if (colorfulActive) palette.accentPrimary else null,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 9.dp),
+                onClick = { selectedCategory = UiColorMode.COLORFUL }
+            ) {
+                Text(
+                    text = strings.wallpaperTabColorful,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (colorfulActive) palette.accentPrimary else palette.textSecondary,
+                    fontWeight = if (colorfulActive) FontWeight.Bold else FontWeight.Medium,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+
+            val monoActive = selectedCategory == UiColorMode.MONOCHROME
+            GlassCard(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp),
+                elevated = monoActive,
+                accentHighlight = if (monoActive) palette.accentPrimary else null,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 9.dp),
+                onClick = { selectedCategory = UiColorMode.MONOCHROME }
+            ) {
+                Text(
+                    text = strings.wallpaperTabMonochrome,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (monoActive) palette.accentPrimary else palette.textSecondary,
+                    fontWeight = if (monoActive) FontWeight.Bold else FontWeight.Medium,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+        }
+
+        val presets = if (selectedCategory == UiColorMode.COLORFUL) {
+            WallpaperPreset.colorfulPresets
+        } else {
+            WallpaperPreset.monochromePresets
+        }
+
+        presets.forEach { preset ->
             val selected = !currentConfig.isCustomGalleryImage && currentConfig.preset == preset
             val label = wallpaperPresetTitle(preset, strings)
             val compAccent = WallpaperHarmonyEngine.presetComplementaryAccent(preset, palette.isDark)
@@ -3372,7 +3943,7 @@ private fun wallpaperPresetTitle(preset: WallpaperPreset, strings: AppStrings): 
     return when (preset) {
         WallpaperPreset.DEFAULT -> strings.wpDefault
         WallpaperPreset.AURORA_BOREALIS -> strings.wpAurora
-        WallpaperPreset.CYBER_NEBULA -> strings.wpCyberNebula
+        WallpaperPreset.VELVET_PLUM -> strings.wpVelvetPlum
         WallpaperPreset.MIDNIGHT_OCEAN -> strings.wpMidnightOcean
         WallpaperPreset.SUNSET_HORIZON -> strings.wpSunsetHorizon
         WallpaperPreset.EMERALD_FOREST -> strings.wpEmeraldForest
@@ -3381,5 +3952,15 @@ private fun wallpaperPresetTitle(preset: WallpaperPreset, strings: AppStrings): 
         WallpaperPreset.CRIMSON_VELVET -> strings.wpCrimsonVelvet
         WallpaperPreset.ARCTIC_FROST -> strings.wpArcticFrost
         WallpaperPreset.OBSIDIAN_GOLD -> strings.wpObsidianGold
+        WallpaperPreset.MONO_SLATE -> strings.wpMonoSlate
+        WallpaperPreset.MONO_SAPPHIRE -> strings.wpMonoSapphire
+        WallpaperPreset.MONO_SAGE -> strings.wpMonoSage
+        WallpaperPreset.MONO_CHAMPAGNE -> strings.wpMonoChampagne
+        WallpaperPreset.MONO_PLUM -> strings.wpMonoPlum
+        WallpaperPreset.MONO_GRAPHITE -> strings.wpMonoGraphite
+        WallpaperPreset.MONO_ROSE -> strings.wpMonoRose
+        WallpaperPreset.MONO_NAVY -> strings.wpMonoNavy
+        WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmoke
+        WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspresso
     }
 }

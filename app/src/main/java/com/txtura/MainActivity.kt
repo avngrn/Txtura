@@ -27,22 +27,29 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.lifecycle.lifecycleScope
+import com.txtura.data.AppSettingsSnapshot
+import com.txtura.data.BackupManager
+import com.txtura.data.BackupRestorePayload
 import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedGroupingMode
 import com.txtura.data.MainListLayoutMode
+import com.txtura.data.LauncherIconShape
 import com.txtura.data.SmsMmsRepository
 import com.txtura.data.SwipeAction
+import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.ui.i18n.TxturaStrings
 import com.txtura.ui.screens.ConfirmMoveToTrashDialog
+import com.txtura.ui.screens.ConfirmRestoreDialog
 import com.txtura.ui.screens.ConversationDetailScreen
 import com.txtura.ui.screens.ConversationsListScreen
 import com.txtura.ui.screens.DefaultSmsRolePromptDialog
@@ -53,6 +60,9 @@ import com.txtura.ui.screens.WallpaperPickerDialog
 import com.txtura.ui.theme.TxturaTheme
 import com.txtura.ui.theme.TxturaThemeMode
 import kotlinx.coroutines.Dispatchers
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -72,29 +82,38 @@ class MainActivity : ComponentActivity() {
         private const val KEY_DELETED_GROUPING_MODE = "deleted_grouping_mode"
         private const val KEY_MAIN_WALLPAPER = "main_window_wallpaper"
         private const val KEY_CONTACT_WALLPAPERS = "contact_chat_wallpapers_v1"
+        private const val KEY_UI_COLOR_MODE = "ui_color_mode"
+        private const val KEY_LAUNCHER_ICON_SHAPE = "launcher_icon_shape"
         private const val GALLERY_TARGET_MAIN = "__MAIN__"
     }
 
     private var themeMode by mutableStateOf(TxturaThemeMode.AMOLED)
-    private var showContactPhotos by mutableStateOf(true)
+    private var showContactPhotos by mutableStateOf(value = true)
     private var listLayoutMode by mutableStateOf(MainListLayoutMode.DEFAULT)
     private var bubbleZoomScale by mutableFloatStateOf(1.0f)
     private var mainWallpaper by mutableStateOf(WallpaperConfig())
     private var contactWallpapers by mutableStateOf<Map<String, WallpaperConfig>>(emptyMap())
+    private var uiColorMode by mutableStateOf(UiColorMode.COLORFUL)
+    private var launcherIconShape by mutableStateOf(LauncherIconShape.ROUNDED_SQUARE)
     private var swipeRightAction by mutableStateOf(SwipeAction.PIN)
     private var swipeLeftAction by mutableStateOf(SwipeAction.DELETE)
     private var autoDeleteDays by mutableIntStateOf(30)
     private var deletedGroupingMode by mutableStateOf(DeletedGroupingMode.BY_DATE)
 
+    private var lastBackupTimestamp by mutableLongStateOf(0L)
+    private var pendingRestorePayload by mutableStateOf<BackupRestorePayload?>(null)
+    private var connectedGoogleAccount by mutableStateOf<String?>(null)
+    private var isGoogleDriveInstalled by mutableStateOf(value = false)
+
     private var activeThreadId by mutableStateOf<Long?>(null)
-    private var showSettingsScreen by mutableStateOf(false)
-    private var showDeletedMessagesScreen by mutableStateOf(false)
+    private var showSettingsScreen by mutableStateOf(value = false)
+    private var showDeletedMessagesScreen by mutableStateOf(value = false)
     private var showChatWallpaperDialogForThread by mutableStateOf<ConversationThread?>(null)
     private var wallpaperGalleryTargetKey by mutableStateOf<String?>(null)
     private var threadPendingDeleteConfirmation by mutableStateOf<ConversationThread?>(null)
     private var pendingMmsUri by mutableStateOf<Uri?>(null)
-    private var showNewMessageDialog by mutableStateOf(false)
-    private var showDefaultSmsRolePrompt by mutableStateOf(false)
+    private var showNewMessageDialog by mutableStateOf(value = false)
+    private var showDefaultSmsRolePrompt by mutableStateOf(value = false)
     private var prefilledRecipient by mutableStateOf("")
     private var prefilledBody by mutableStateOf("")
     private var rationaleBannerText by mutableStateOf<String?>(null)
@@ -145,22 +164,20 @@ class MainActivity : ComponentActivity() {
     // Zero-Permission Photo Picker for MMS attachments (avoids READ_MEDIA_IMAGES / READ_EXTERNAL_STORAGE)
     private val photoPickerLauncher =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-            if (uri != null) {
-                pendingMmsUri = uri
-            }
+            uri?.let { pendingMmsUri = it }
         }
 
     // Zero-Permission Photo Picker for Custom Wallpapers (Main Window or Per-Contact Chat)
     private val wallpaperPhotoPickerLauncher =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { pickedUri ->
             val targetKey = wallpaperGalleryTargetKey
-            if (pickedUri != null && targetKey != null) {
+            if ((pickedUri != null) && (targetKey != null)) {
                 lifecycleScope.launch {
                     val savedFileUri = copyPickedWallpaperToInternalStorage(pickedUri, targetKey)
                     if (savedFileUri != null) {
                         val customConfig = WallpaperConfig(
                             preset = WallpaperPreset.DEFAULT,
-                            customImageUri = savedFileUri.toString()
+                            customImageUri = savedFileUri.toString(),
                         )
                         if (targetKey == GALLERY_TARGET_MAIN) {
                             mainWallpaper = customConfig
@@ -217,10 +234,70 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    // Local / Google Drive Backup Document Creation Launcher
+    private val createBackupLauncher =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+            if (uri != null) {
+                lifecycleScope.launch {
+                    val settings = buildAppSettingsSnapshot()
+                    val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
+                    val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
+                    val currentThreads = SmsMmsRepository.threads.value
+                    val currentDeleted = SmsMmsRepository.deletedThreads.value
+
+                    val json = BackupManager.generateBackupJson(
+                        settings = settings,
+                        threads = currentThreads,
+                        deletedThreads = currentDeleted,
+                        pinnedAddresses = pinnedAddrs,
+                        pinnedMessageIds = pinnedMsgs,
+                        deletedThreadsMeta = deletedMeta
+                    )
+                    val success = BackupManager.saveBackupToUri(this@MainActivity, uri, json)
+                    if (success) {
+                        BackupManager.createInternalBackupFile(this@MainActivity, json)
+                        lastBackupTimestamp = System.currentTimeMillis()
+                        val locStrings = TxturaStrings.forLocale()
+                        val totalMsgs = currentThreads.sumOf { it.messages.size } + currentDeleted.sumOf { it.thread.messages.size }
+                        Toast.makeText(
+                            this@MainActivity,
+                            locStrings.backupCreatedSuccess(currentThreads.size + currentDeleted.size, totalMsgs),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+
+    // Local / Google Drive Backup File Open / Restore Launcher
+    private val restoreBackupLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                lifecycleScope.launch {
+                    try {
+                        val json = BackupManager.readBackupFromUri(this@MainActivity, uri)
+                        val payload = BackupManager.parseBackupJson(json)
+                        pendingRestorePayload = payload
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "Failed to read backup from $uri", e)
+                        val locStrings = TxturaStrings.forLocale()
+                        Toast.makeText(
+                            this@MainActivity,
+                            locStrings.backupErrorInvalid,
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         loadSavedAppPreferences()
+        lastBackupTimestamp = BackupManager.getLastBackupTimestamp(this)
+        connectedGoogleAccount = BackupManager.getConnectedGoogleAccount(this)
+        isGoogleDriveInstalled = BackupManager.isGoogleDriveInstalled(this)
         handleIncomingSmsIntentSafely(intent)
         checkFirstStartupPermissionsAndRole()
 
@@ -240,7 +317,7 @@ class MainActivity : ComponentActivity() {
             }
 
             val selectedThread = threads.find { it.id == activeThreadId }
-            val activeWallpaper = if (selectedThread != null && !showSettingsScreen && !showDeletedMessagesScreen) {
+            val activeWallpaper = if ((selectedThread != null) && !showSettingsScreen && !showDeletedMessagesScreen) {
                 contactWallpapers[contactWallpaperKey(selectedThread.address)] ?: mainWallpaper
             } else {
                 mainWallpaper
@@ -300,6 +377,8 @@ class MainActivity : ComponentActivity() {
                             showContactPhotos = showContactPhotos,
                             listLayoutMode = listLayoutMode,
                             mainWallpaper = mainWallpaper,
+                            uiColorMode = uiColorMode,
+                            launcherIconShape = launcherIconShape,
                             swipeRightAction = swipeRightAction,
                             swipeLeftAction = swipeLeftAction,
                             autoDeleteDays = autoDeleteDays,
@@ -320,6 +399,37 @@ class MainActivity : ComponentActivity() {
                             onSelectListLayoutMode = { mode ->
                                 listLayoutMode = mode
                                 saveListLayoutMode(mode)
+                            },
+                            onSelectUiColorMode = { mode ->
+                                uiColorMode = mode
+                                saveUiColorMode(mode)
+                                // If user switches mode, select the corresponding default/first preset if currently mismatched
+                                if (mode == UiColorMode.MONOCHROME && !mainWallpaper.preset.isMonochrome) {
+                                    val cfg = WallpaperConfig(preset = WallpaperPreset.MONO_SLATE, customImageUri = null)
+                                    mainWallpaper = cfg
+                                    saveMainWallpaper(cfg)
+                                } else if (mode == UiColorMode.COLORFUL && mainWallpaper.preset.isMonochrome) {
+                                    val cfg = WallpaperConfig(preset = WallpaperPreset.DEFAULT, customImageUri = null)
+                                    mainWallpaper = cfg
+                                    saveMainWallpaper(cfg)
+                                }
+                            },
+                            onSelectLauncherIconShape = { shape ->
+                                launcherIconShape = shape
+                                saveLauncherIconShape(shape)
+                                val locStrings = TxturaStrings.forLocale()
+                                val shapeName = when (shape) {
+                                    LauncherIconShape.CIRCLE -> locStrings.launcherIconShapeCircle
+                                    LauncherIconShape.SQUIRCLE -> locStrings.launcherIconShapeSquircle
+                                    LauncherIconShape.ROUNDED_SQUARE -> locStrings.launcherIconShapeRoundedSquare
+                                    LauncherIconShape.TEARDROP -> locStrings.launcherIconShapeTeardrop
+                                    LauncherIconShape.PEBBLE -> locStrings.launcherIconShapePebble
+                                }
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.launcherIconShapeSavedToast(shapeName),
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             },
                             onSelectMainWallpaperPreset = { preset ->
                                 val cfg = WallpaperConfig(preset = preset, customImageUri = null)
@@ -352,6 +462,15 @@ class MainActivity : ComponentActivity() {
                             onOpenDeletedMessages = {
                                 showDeletedMessagesScreen = true
                             },
+                            lastBackupTimestamp = lastBackupTimestamp,
+                            connectedGoogleAccount = connectedGoogleAccount,
+                            isGoogleDriveInstalled = isGoogleDriveInstalled,
+                            onCreateLocalBackup = ::handleCreateLocalBackup,
+                            onRestoreLocalBackup = ::handleRestoreLocalBackup,
+                            onShareBackupFile = ::handleShareBackupFile,
+                            onSaveToGoogleDrive = ::handleSaveToGoogleDrive,
+                            onRestoreFromGoogleDrive = ::handleRestoreFromGoogleDrive,
+                            onOpenSystemBackupSettings = ::handleOpenSystemBackupSettings,
                             onRequestSmsPermissions = ::requestSmsPermissionsSafely,
                             onRequestDefaultSmsRole = ::requestDefaultSmsRoleSafely,
                             onOpenSystemAppSettings = ::openAppDetailsSettings
@@ -548,6 +667,21 @@ class MainActivity : ComponentActivity() {
                         }
                     )
                 }
+
+                // Confirmation dialog before restoring conversations and settings from a backup
+                val restoreTarget = pendingRestorePayload
+                if (restoreTarget != null) {
+                    ConfirmRestoreDialog(
+                        payload = restoreTarget,
+                        onConfirm = {
+                            pendingRestorePayload = null
+                            applyRestorePayload(restoreTarget)
+                        },
+                        onDismiss = {
+                            pendingRestorePayload = null
+                        }
+                    )
+                }
             }
         }
     }
@@ -603,6 +737,12 @@ class MainActivity : ComponentActivity() {
         val savedGrouping = prefs.getString(KEY_DELETED_GROUPING_MODE, DeletedGroupingMode.BY_DATE.name)
         deletedGroupingMode = DeletedGroupingMode.entries.find { it.name == savedGrouping }
             ?: DeletedGroupingMode.BY_DATE
+
+        val savedColorMode = prefs.getString(KEY_UI_COLOR_MODE, UiColorMode.COLORFUL.name)
+        uiColorMode = UiColorMode.entries.find { it.name == savedColorMode } ?: UiColorMode.COLORFUL
+
+        val savedIconShape = prefs.getString(KEY_LAUNCHER_ICON_SHAPE, LauncherIconShape.ROUNDED_SQUARE.name)
+        launcherIconShape = LauncherIconShape.entries.find { it.name == savedIconShape } ?: LauncherIconShape.ROUNDED_SQUARE
     }
 
     private fun contactWallpaperKey(address: String): String {
@@ -697,6 +837,180 @@ class MainActivity : ComponentActivity() {
     private fun saveDeletedGroupingMode(mode: DeletedGroupingMode) {
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
             putString(KEY_DELETED_GROUPING_MODE, mode.name)
+        }
+    }
+
+    private fun saveUiColorMode(mode: UiColorMode) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
+            putString(KEY_UI_COLOR_MODE, mode.name)
+        }
+    }
+
+    private fun saveLauncherIconShape(shape: LauncherIconShape) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
+            putString(KEY_LAUNCHER_ICON_SHAPE, shape.name)
+        }
+    }
+
+    private fun buildAppSettingsSnapshot(): AppSettingsSnapshot {
+        return AppSettingsSnapshot(
+            themeMode = themeMode,
+            showContactPhotos = showContactPhotos,
+            listLayoutMode = listLayoutMode,
+            mainWallpaper = mainWallpaper,
+            contactWallpapers = contactWallpapers,
+            swipeRightAction = swipeRightAction,
+            swipeLeftAction = swipeLeftAction,
+            autoDeleteDays = autoDeleteDays,
+            deletedGroupingMode = deletedGroupingMode,
+            bubbleZoomScale = bubbleZoomScale,
+            uiColorMode = uiColorMode,
+            launcherIconShape = launcherIconShape
+        )
+    }
+
+    private fun handleCreateLocalBackup() {
+        val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+        createBackupLauncher.launch("txtura_backup_$dateStr.json")
+    }
+
+    private fun handleRestoreLocalBackup() {
+        restoreBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+    }
+
+    private fun handleSaveToGoogleDrive() {
+        lifecycleScope.launch {
+            val settings = buildAppSettingsSnapshot()
+            val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
+            val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
+            val currentThreads = SmsMmsRepository.threads.value
+            val currentDeleted = SmsMmsRepository.deletedThreads.value
+
+            val json = BackupManager.generateBackupJson(
+                settings = settings,
+                threads = currentThreads,
+                deletedThreads = currentDeleted,
+                pinnedAddresses = pinnedAddrs,
+                pinnedMessageIds = pinnedMsgs,
+                deletedThreadsMeta = deletedMeta
+            )
+            val file = BackupManager.createInternalBackupFile(this@MainActivity, json)
+            lastBackupTimestamp = System.currentTimeMillis()
+
+            if (BackupManager.isGoogleDriveInstalled(this@MainActivity)) {
+                try {
+                    val intent = BackupManager.createShareOrDriveIntent(
+                        this@MainActivity,
+                        file,
+                        targetGoogleDriveOnly = true
+                    )
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    val chooser = Intent.createChooser(
+                        BackupManager.createShareOrDriveIntent(
+                            this@MainActivity,
+                            file,
+                            targetGoogleDriveOnly = false
+                        ),
+                        TxturaStrings.forLocale().saveToGoogleDriveButton
+                    )
+                    startActivity(chooser)
+                }
+            } else {
+                val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                createBackupLauncher.launch("txtura_backup_$dateStr.json")
+            }
+        }
+    }
+
+    private fun handleRestoreFromGoogleDrive() {
+        restoreBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+    }
+
+    private fun handleShareBackupFile() {
+        lifecycleScope.launch {
+            val settings = buildAppSettingsSnapshot()
+            val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
+            val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
+            val currentThreads = SmsMmsRepository.threads.value
+            val currentDeleted = SmsMmsRepository.deletedThreads.value
+
+            val json = BackupManager.generateBackupJson(
+                settings = settings,
+                threads = currentThreads,
+                deletedThreads = currentDeleted,
+                pinnedAddresses = pinnedAddrs,
+                pinnedMessageIds = pinnedMsgs,
+                deletedThreadsMeta = deletedMeta
+            )
+            val file = BackupManager.createInternalBackupFile(this@MainActivity, json)
+            lastBackupTimestamp = System.currentTimeMillis()
+
+            val chooser = Intent.createChooser(
+                BackupManager.createShareOrDriveIntent(
+                    this@MainActivity,
+                    file,
+                    targetGoogleDriveOnly = false
+                ),
+                TxturaStrings.forLocale().shareBackupButton
+            )
+            startActivity(chooser)
+        }
+    }
+
+    private fun handleOpenSystemBackupSettings() {
+        try {
+            startActivity(BackupManager.createSystemBackupSettingsIntent())
+        } catch (_: Exception) {
+            openAppDetailsSettings()
+        }
+    }
+
+    private fun applyRestorePayload(payload: BackupRestorePayload) {
+        themeMode = payload.settings.themeMode
+        saveSelectedTheme(themeMode)
+
+        showContactPhotos = payload.settings.showContactPhotos
+        saveShowContactPhotos(showContactPhotos)
+
+        listLayoutMode = payload.settings.listLayoutMode
+        saveListLayoutMode(listLayoutMode)
+
+        mainWallpaper = payload.settings.mainWallpaper
+        saveMainWallpaper(mainWallpaper)
+
+        contactWallpapers = payload.settings.contactWallpapers
+        saveContactWallpapers(contactWallpapers)
+
+        swipeRightAction = payload.settings.swipeRightAction
+        saveSwipeRightAction(swipeRightAction)
+
+        swipeLeftAction = payload.settings.swipeLeftAction
+        saveSwipeLeftAction(swipeLeftAction)
+
+        autoDeleteDays = payload.settings.autoDeleteDays
+        saveAutoDeleteDays(autoDeleteDays)
+
+        deletedGroupingMode = payload.settings.deletedGroupingMode
+        saveDeletedGroupingMode(deletedGroupingMode)
+
+        bubbleZoomScale = payload.settings.bubbleZoomScale
+        saveBubbleZoomScale(bubbleZoomScale)
+
+        uiColorMode = payload.settings.uiColorMode
+        saveUiColorMode(uiColorMode)
+
+        launcherIconShape = payload.settings.launcherIconShape
+        saveLauncherIconShape(launcherIconShape)
+
+        lifecycleScope.launch {
+            val (threadCount, msgCount) = SmsMmsRepository.restoreDataFromBackup(this@MainActivity, payload)
+            val locStrings = TxturaStrings.forLocale()
+            Toast.makeText(
+                this@MainActivity,
+                locStrings.backupRestoreSuccess(threadCount, msgCount),
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 

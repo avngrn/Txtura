@@ -54,7 +54,7 @@ data class GlassPalette(
     val incomingBubbleSurface: Color,
     val safeColor: Color = EmeraldSafe,
     val cautionColor: Color = AmberCaution,
-    val dangerColor: Color = RoseDanger
+    val dangerColor: Color = RoseDanger,
 )
 
 val LightGlassPalette = GlassPalette(
@@ -69,11 +69,11 @@ val LightGlassPalette = GlassPalette(
     glassBorderBottom = LightGlassBorderBottom,
     textPrimary = LightTextPrimary,
     textSecondary = LightTextSecondary,
-    accentPrimary = IndigoElectric,
-    accentSecondary = CyanDeep,
-    outgoingBubbleStart = Color(0xDD4F46E5),
+    accentPrimary = IndigoRoyal,
+    accentSecondary = SapphireDeep,
+    outgoingBubbleStart = Color(0xDD4338CA),
     outgoingBubbleEnd = Color(0xDD0284C7),
-    incomingBubbleSurface = Color(0xD8FFFFFF)
+    incomingBubbleSurface = Color(0xEEFFFFFF)
 )
 
 val DarkGlassPalette = GlassPalette(
@@ -88,11 +88,11 @@ val DarkGlassPalette = GlassPalette(
     glassBorderBottom = DarkGlassBorderBottom,
     textPrimary = DarkTextPrimary,
     textSecondary = DarkTextSecondary,
-    accentPrimary = IndigoSoft,
-    accentSecondary = CyanGlow,
-    outgoingBubbleStart = Color(0xCC4F46E5),
-    outgoingBubbleEnd = Color(0xCC0891B2),
-    incomingBubbleSurface = Color(0x28FFFFFF)
+    accentPrimary = SapphireAccent,
+    accentSecondary = IndigoSoft,
+    outgoingBubbleStart = Color(0xCC312E81),
+    outgoingBubbleEnd = Color(0xCC0369A1),
+    incomingBubbleSurface = Color(0x401E293B)
 )
 
 val AmoledGlassPalette = GlassPalette(
@@ -107,11 +107,11 @@ val AmoledGlassPalette = GlassPalette(
     glassBorderBottom = AmoledGlassBorderBottom,
     textPrimary = AmoledTextPrimary,
     textSecondary = AmoledTextSecondary,
-    accentPrimary = CyanGlow,
-    accentSecondary = VioletGlass,
-    outgoingBubbleStart = Color(0xB800B4D8),
-    outgoingBubbleEnd = Color(0xB86366F1),
-    incomingBubbleSurface = Color(0x1AFFFFFF)
+    accentPrimary = SapphireAccent,
+    accentSecondary = WisteriaGlass,
+    outgoingBubbleStart = Color(0xD91E40AF),
+    outgoingBubbleEnd = Color(0xD94338CA),
+    incomingBubbleSurface = Color(0x3B161E2E)
 )
 
 val LocalGlassPalette = staticCompositionLocalOf { AmoledGlassPalette }
@@ -164,7 +164,6 @@ object WallpaperHarmonyEngine {
                     )
                     val sat = hsv[1]
                     val value = hsv[2]
-                    // Favor colorful mid-to-bright pixels over pure black/white
                     val weight = (sat * 0.75f + value * 0.25f).toDouble()
                     if (sat > 0.12f && value in 0.12f..0.95f) {
                         val rad = Math.toRadians(hsv[0].toDouble())
@@ -177,7 +176,7 @@ object WallpaperHarmonyEngine {
 
             val extracted = if (weightSum > 0.01) {
                 val avgHue = ((Math.toDegrees(atan2(sumY, sumX)).toFloat() + 360f) % 360f)
-                Color.hsv(avgHue, 0.78f, 0.88f)
+                Color.hsv(avgHue, 0.65f, 0.85f)
             } else {
                 Color(
                     red = (fallbackR / totalPixels).coerceIn(0f, 1f),
@@ -188,7 +187,7 @@ object WallpaperHarmonyEngine {
             customImageColorCache[uriString] = extracted
             extracted
         } catch (_: Exception) {
-            CyanGlow
+            SapphireAccent
         }
     }
 
@@ -198,43 +197,57 @@ object WallpaperHarmonyEngine {
      */
     fun presetComplementaryAccent(preset: WallpaperPreset, isDark: Boolean): Color {
         return when (preset) {
-            WallpaperPreset.DEFAULT -> if (isDark) CyanGlow else IndigoElectric
-            // Cool Aurora Teal/Blue bg -> Warm Coral-Rose complement
-            WallpaperPreset.AURORA_BOREALIS -> if (isDark) Color(0xFFFF6B9D) else Color(0xFFE11D48)
-            // Neon Magenta/Purple bg -> Electric Cyber Mint-Cyan complement
-            WallpaperPreset.CYBER_NEBULA -> if (isDark) Color(0xFF00F5D4) else Color(0xFF0D9488)
-            // Deep Ocean Blue bg -> Warm Golden Sunset Amber complement
-            WallpaperPreset.MIDNIGHT_OCEAN -> if (isDark) Color(0xFFFFB703) else Color(0xFFD97706)
-            // Warm Sunset Coral/Orange bg -> Cool Lagoon Turquoise-Cyan complement
-            WallpaperPreset.SUNSET_HORIZON -> if (isDark) Color(0xFF2EC4B6) else Color(0xFF0D9488)
-            // Emerald Forest Green bg -> Blossom Rose-Magenta complement
-            WallpaperPreset.EMERALD_FOREST -> if (isDark) Color(0xFFF472B6) else Color(0xFFDB2777)
-            // Royal Amethyst Purple bg -> Luminous Citrine Gold complement
+            WallpaperPreset.DEFAULT -> if (isDark) SapphireAccent else IndigoRoyal
+            WallpaperPreset.AURORA_BOREALIS -> if (isDark) Color(0xFFF472B6) else Color(0xFFE11D48)
+            WallpaperPreset.VELVET_PLUM -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+            WallpaperPreset.MIDNIGHT_OCEAN -> if (isDark) Color(0xFFF59E0B) else Color(0xFFD97706)
+            WallpaperPreset.SUNSET_HORIZON -> if (isDark) Color(0xFF14B8A6) else Color(0xFF0D9488)
+            WallpaperPreset.EMERALD_FOREST -> if (isDark) Color(0xFFFB7185) else Color(0xFFBE123C)
             WallpaperPreset.ROYAL_AMETHYST -> if (isDark) Color(0xFFFACC15) else Color(0xFFCA8A04)
-            // Starlight Blue/Indigo bg -> Warm Apricot-Gold complement
-            WallpaperPreset.STARLIGHT_GALAXY -> if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
-            // Crimson Velvet Red bg -> Aquamarine Mint-Cyan complement
-            WallpaperPreset.CRIMSON_VELVET -> if (isDark) Color(0xFF2DD4BF) else Color(0xFF0D9488)
-            // Arctic Frost Ice-Cyan bg -> Warm Sunset Coral-Peach complement
-            WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFB7185) else Color(0xFFE11D48)
-            // Obsidian Warm Gold bg -> Electric Cobalt-Sky Blue complement
+            WallpaperPreset.STARLIGHT_GALAXY -> if (isDark) Color(0xFF93C5FD) else Color(0xFF2563EB)
+            WallpaperPreset.CRIMSON_VELVET -> if (isDark) Color(0xFF2DD4BF) else Color(0xFF0F766E)
+            WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFDA4AF) else Color(0xFFE11D48)
             WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+
+            // 10 Refined Monochrome Presets (Tonal single-color accents)
+            WallpaperPreset.MONO_SLATE -> if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
+            WallpaperPreset.MONO_SAPPHIRE -> if (isDark) Color(0xFF60A5FA) else Color(0xFF1D4ED8)
+            WallpaperPreset.MONO_SAGE -> if (isDark) Color(0xFF4ADE80) else Color(0xFF15803D)
+            WallpaperPreset.MONO_CHAMPAGNE -> if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309)
+            WallpaperPreset.MONO_PLUM -> if (isDark) Color(0xFFC084FC) else Color(0xFF7E22CE)
+            WallpaperPreset.MONO_GRAPHITE -> if (isDark) Color(0xFFA3A3A3) else Color(0xFF404040)
+            WallpaperPreset.MONO_ROSE -> if (isDark) Color(0xFFF472B6) else Color(0xFFBE185D)
+            WallpaperPreset.MONO_NAVY -> if (isDark) Color(0xFF93C5FD) else Color(0xFF1E40AF)
+            WallpaperPreset.MONO_SMOKE -> if (isDark) Color(0xFFA8A29E) else Color(0xFF57534E)
+            WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFFB923C) else Color(0xFF9A3412)
         }
     }
 
     private fun presetSecondaryComplementaryAccent(preset: WallpaperPreset, isDark: Boolean): Color {
         return when (preset) {
-            WallpaperPreset.DEFAULT -> if (isDark) VioletGlass else CyanDeep
-            WallpaperPreset.AURORA_BOREALIS -> if (isDark) Color(0xFFC77DFF) else Color(0xFF9333EA)
-            WallpaperPreset.CYBER_NEBULA -> if (isDark) Color(0xFF4CC9F0) else Color(0xFF0284C7)
-            WallpaperPreset.MIDNIGHT_OCEAN -> if (isDark) Color(0xFFFB8500) else Color(0xFFEA580C)
+            WallpaperPreset.DEFAULT -> if (isDark) WisteriaGlass else SapphireDeep
+            WallpaperPreset.AURORA_BOREALIS -> if (isDark) Color(0xFFC084FC) else Color(0xFF9333EA)
+            WallpaperPreset.VELVET_PLUM -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
+            WallpaperPreset.MIDNIGHT_OCEAN -> if (isDark) Color(0xFFFB923C) else Color(0xFFEA580C)
             WallpaperPreset.SUNSET_HORIZON -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
             WallpaperPreset.EMERALD_FOREST -> if (isDark) Color(0xFFC084FC) else Color(0xFF9333EA)
             WallpaperPreset.ROYAL_AMETHYST -> if (isDark) Color(0xFF34D399) else Color(0xFF059669)
-            WallpaperPreset.STARLIGHT_GALAXY -> if (isDark) Color(0xFFFB7185) else Color(0xFFE11D48)
+            WallpaperPreset.STARLIGHT_GALAXY -> if (isDark) Color(0xFFC084FC) else Color(0xFF7C3AED)
             WallpaperPreset.CRIMSON_VELVET -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
-            WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
+            WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFCD34D) else Color(0xFFD97706)
             WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
+
+            // 10 Refined Monochrome Presets
+            WallpaperPreset.MONO_SLATE -> if (isDark) Color(0xFF64748B) else Color(0xFF334155)
+            WallpaperPreset.MONO_SAPPHIRE -> if (isDark) Color(0xFF3B82F6) else Color(0xFF1E3A8A)
+            WallpaperPreset.MONO_SAGE -> if (isDark) Color(0xFF22C55E) else Color(0xFF166534)
+            WallpaperPreset.MONO_CHAMPAGNE -> if (isDark) Color(0xFFF59E0B) else Color(0xFF78350F)
+            WallpaperPreset.MONO_PLUM -> if (isDark) Color(0xFFA855F7) else Color(0xFF581C87)
+            WallpaperPreset.MONO_GRAPHITE -> if (isDark) Color(0xFF737373) else Color(0xFF262626)
+            WallpaperPreset.MONO_ROSE -> if (isDark) Color(0xFFE11D48) else Color(0xFF831843)
+            WallpaperPreset.MONO_NAVY -> if (isDark) Color(0xFF60A5FA) else Color(0xFF172554)
+            WallpaperPreset.MONO_SMOKE -> if (isDark) Color(0xFF78716C) else Color(0xFF44403C)
+            WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFEA580C) else Color(0xFF7C2D12)
         }
     }
 
@@ -269,18 +282,18 @@ object WallpaperHarmonyEngine {
             val splitHue2 = (bgHue + 215f) % 360f
 
             val accentPrimary = if (isDark) {
-                Color.hsv(compHue, 0.78f, 0.98f)
+                Color.hsv(compHue, 0.68f, 0.92f)
             } else {
-                Color.hsv(compHue, 0.84f, 0.70f)
+                Color.hsv(compHue, 0.74f, 0.68f)
             }
             val accentSecondary = if (isDark) {
-                Color.hsv(splitHue1, 0.74f, 0.95f)
+                Color.hsv(splitHue1, 0.65f, 0.90f)
             } else {
-                Color.hsv(splitHue1, 0.80f, 0.66f)
+                Color.hsv(splitHue1, 0.70f, 0.64f)
             }
             val bubbleAlpha = if (isAmoled) 0.82f else 0.88f
-            val bubbleStart = Color.hsv(compHue, 0.76f, 0.74f).copy(alpha = bubbleAlpha)
-            val bubbleEnd = Color.hsv(splitHue2, 0.78f, 0.68f).copy(alpha = bubbleAlpha)
+            val bubbleStart = Color.hsv(compHue, 0.68f, 0.72f).copy(alpha = bubbleAlpha)
+            val bubbleEnd = Color.hsv(splitHue2, 0.70f, 0.66f).copy(alpha = bubbleAlpha)
 
             val tintedSurface = if (isDark) {
                 lerp(canonicalBase.glassSurface, customDominantColor.copy(alpha = canonicalBase.glassSurface.alpha), 0.22f)
@@ -324,25 +337,33 @@ object WallpaperHarmonyEngine {
         val compPrimary = presetComplementaryAccent(preset, isDark)
         val compSecondary = presetSecondaryComplementaryAccent(preset, isDark)
 
-        val bubbleAlpha = if (isAmoled) 0.80f else 0.88f
-        val bubbleStart = lerp(compPrimary, bgSecondary, 0.25f).copy(alpha = bubbleAlpha)
-        val bubbleEnd = lerp(compSecondary, bgPrimary, 0.30f).copy(alpha = bubbleAlpha)
+        val bubbleAlpha = if (isAmoled) 0.82f else 0.88f
+        val bubbleStart = if (preset.isMonochrome) {
+            Color(preset.primaryOrbHex).copy(alpha = bubbleAlpha)
+        } else {
+            lerp(compPrimary, bgSecondary, 0.25f).copy(alpha = bubbleAlpha)
+        }
+        val bubbleEnd = if (preset.isMonochrome) {
+            Color(preset.secondaryOrbHex).copy(alpha = bubbleAlpha)
+        } else {
+            lerp(compSecondary, bgPrimary, 0.30f).copy(alpha = bubbleAlpha)
+        }
 
         val surfaceBaseAlpha = canonicalBase.glassSurface.alpha
         val elevatedBaseAlpha = canonicalBase.glassSurfaceElevated.alpha
 
         val tintedSurface = if (isDark) {
-            lerp(Color.White, bgPrimary, 0.28f).copy(alpha = surfaceBaseAlpha)
+            lerp(Color.White, bgPrimary, 0.25f).copy(alpha = surfaceBaseAlpha)
         } else {
             lerp(Color.White, bgPrimary, 0.10f).copy(alpha = surfaceBaseAlpha)
         }
         val tintedElevated = if (isDark) {
-            lerp(Color.White, compPrimary, 0.22f).copy(alpha = elevatedBaseAlpha)
+            lerp(Color.White, compPrimary, 0.20f).copy(alpha = elevatedBaseAlpha)
         } else {
             lerp(Color.White, compPrimary, 0.08f).copy(alpha = elevatedBaseAlpha)
         }
         val tintedIncoming = if (isDark) {
-            lerp(Color.White, bgPrimary, 0.32f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+            lerp(Color.White, bgPrimary, 0.28f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
         } else {
             lerp(Color.White, bgPrimary, 0.09f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
         }
@@ -368,7 +389,7 @@ object WallpaperHarmonyEngine {
             palette.isAmoled -> darkColorScheme(
                 primary = palette.accentPrimary,
                 secondary = palette.accentSecondary,
-                tertiary = VioletGlass,
+                tertiary = WisteriaGlass,
                 background = palette.backgroundBase,
                 surface = palette.backgroundBase,
                 onPrimary = Color.Black,
@@ -378,7 +399,7 @@ object WallpaperHarmonyEngine {
             palette.isDark -> darkColorScheme(
                 primary = palette.accentPrimary,
                 secondary = palette.accentSecondary,
-                tertiary = VioletGlass,
+                tertiary = WisteriaGlass,
                 background = palette.backgroundBase,
                 surface = Color(0xFF111827),
                 onPrimary = Color.Black,
@@ -388,7 +409,7 @@ object WallpaperHarmonyEngine {
             else -> lightColorScheme(
                 primary = palette.accentPrimary,
                 secondary = palette.accentSecondary,
-                tertiary = VioletGlass,
+                tertiary = WisteriaGlass,
                 background = palette.backgroundBase,
                 surface = Color.White,
                 onPrimary = Color.White,

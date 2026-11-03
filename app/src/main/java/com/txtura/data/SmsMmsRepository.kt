@@ -1005,6 +1005,52 @@ object SmsMmsRepository {
         }
     }
 
+    /**
+     * Snapshot of pinned contact addresses and pinned message IDs for backup.
+     */
+    fun getPinnedDataSnapshot(): Pair<Set<String>, Set<Long>> {
+        return Pair(
+            synchronized(pinnedAddresses) { pinnedAddresses.toSet() },
+            synchronized(pinnedMessageIds) { pinnedMessageIds.toSet() }
+        )
+    }
+
+    /**
+     * Snapshot of deleted thread timestamps for backup.
+     */
+    fun getDeletedThreadsMetaSnapshot(): Map<Long, Long> {
+        return synchronized(deletedThreadTimestamps) { deletedThreadTimestamps.toMap() }
+    }
+
+    /**
+     * Restores threads, deleted trash entries, pinned contacts, and pinned message IDs from a backup payload.
+     */
+    suspend fun restoreDataFromBackup(
+        context: Context,
+        payload: BackupRestorePayload
+    ): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        synchronized(pinnedAddresses) {
+            pinnedAddresses.clear()
+            pinnedAddresses.addAll(payload.pinnedAddresses)
+        }
+        synchronized(pinnedMessageIds) {
+            pinnedMessageIds.clear()
+            pinnedMessageIds.addAll(payload.pinnedMessageIds)
+        }
+        synchronized(deletedThreadTimestamps) {
+            deletedThreadTimestamps.clear()
+            deletedThreadTimestamps.putAll(payload.deletedThreadsMeta)
+        }
+        savePersistedPins(context)
+
+        _threads.value = sortThreads(payload.threads)
+        _deletedThreads.value = payload.deletedThreads
+
+        val totalThreads = payload.threads.size + payload.deletedThreads.size
+        val totalMsgs = payload.totalMessagesCount
+        Pair(totalThreads, totalMsgs)
+    }
+
     private fun deleteFromSystemProviderIfDefault(context: Context, threadId: Long) {
         val appCtx = context.applicationContext
         ioScope.launch {

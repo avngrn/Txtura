@@ -216,8 +216,8 @@ fun GlassBackground(
                                         radius = radius3
                                     )
 
-                                    val hasStars = preset == WallpaperPreset.STARLIGHT_GALAXY ||
-                                        preset == WallpaperPreset.CYBER_NEBULA
+                                    val hasStars = (preset == WallpaperPreset.STARLIGHT_GALAXY) ||
+                                        (preset == WallpaperPreset.VELVET_PLUM)
                                     val starPositions = if (hasStars) {
                                         arrayOf(
                                             Offset(w * 0.18f, h * 0.12f),
@@ -858,6 +858,95 @@ object TxturaIcons {
                 moveTo(9f, 6f)
                 lineTo(15f, 12f)
                 lineTo(9f, 18f)
+            }
+        }.build()
+    }
+
+    val CloudUpload: ImageVector by lazy {
+        ImageVector.Builder("CloudUpload", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(16f, 16f)
+                lineTo(12f, 12f)
+                lineTo(8f, 16f)
+                moveTo(12f, 12f)
+                lineTo(12f, 21f)
+                moveTo(20.39f, 18.39f)
+                arcTo(5f, 5f, 0f, false, false, 18f, 9f)
+                arcTo(7f, 7f, 0f, false, false, 5f, 13f)
+                arcTo(4f, 4f, 0f, false, false, 6f, 21f)
+            }
+        }.build()
+    }
+
+    val CloudDownload: ImageVector by lazy {
+        ImageVector.Builder("CloudDownload", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(8f, 17f)
+                lineTo(12f, 21f)
+                lineTo(16f, 17f)
+                moveTo(12f, 12f)
+                lineTo(12f, 21f)
+                moveTo(20.39f, 18.39f)
+                arcTo(5f, 5f, 0f, false, false, 18f, 9f)
+                arcTo(7f, 7f, 0f, false, false, 5f, 13f)
+                arcTo(4f, 4f, 0f, false, false, 6f, 21f)
+            }
+        }.build()
+    }
+
+    val FolderBackup: ImageVector by lazy {
+        ImageVector.Builder("FolderBackup", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(4f, 20f)
+                lineTo(20f, 20f)
+                arcTo(2f, 2f, 0f, false, false, 22f, 18f)
+                lineTo(22f, 8f)
+                arcTo(2f, 2f, 0f, false, false, 20f, 6f)
+                lineTo(11.5f, 6f)
+                lineTo(9.5f, 4f)
+                lineTo(4f, 4f)
+                arcTo(2f, 2f, 0f, false, false, 2f, 6f)
+                lineTo(2f, 18f)
+                arcTo(2f, 2f, 0f, false, false, 4f, 20f)
+                close()
+                moveTo(12f, 11f)
+                lineTo(12f, 16f)
+                moveTo(9.5f, 13.5f)
+                lineTo(12f, 11f)
+                lineTo(14.5f, 13.5f)
+            }
+        }.build()
+    }
+
+    val CloudSync: ImageVector by lazy {
+        ImageVector.Builder("CloudSync", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(19.35f, 10.04f)
+                arcTo(7.5f, 7.5f, 0f, false, false, 5f, 12f)
+                arcTo(6f, 6f, 0f, false, false, 6f, 20f)
+                lineTo(19f, 20f)
+                arcTo(5f, 5f, 0f, false, false, 19.35f, 10.04f)
+                close()
             }
         }.build()
     }
