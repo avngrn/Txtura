@@ -23,6 +23,7 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -50,6 +51,7 @@ import androidx.core.net.toUri
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
 import com.txtura.ui.theme.LocalGlassPalette
+import com.txtura.ui.theme.WallpaperHarmonyEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -60,6 +62,7 @@ import java.io.File
  * - Default theme ambient glow orbs
  * - 10 curated artistic glassmorphic presets ([WallpaperPreset])
  * - Custom user-selected gallery photo ([WallpaperConfig.customImageUri]) with a readability scrim
+ * - Automatic complementary UI color adaptation provided via [LocalGlassPalette] and [MaterialTheme]
  */
 @Composable
 fun GlassBackground(
@@ -67,18 +70,21 @@ fun GlassBackground(
     wallpaperConfig: WallpaperConfig = WallpaperConfig(),
     content: @Composable BoxScope.() -> Unit
 ) {
-    val palette = LocalGlassPalette.current
+    val basePalette = LocalGlassPalette.current
     val context = LocalContext.current
     val customPath = wallpaperConfig.customImageUri
 
-    val customBitmap by produceState<android.graphics.Bitmap?>(initialValue = null, key1 = customPath) {
+    val customLoaded by produceState<Pair<android.graphics.Bitmap, Color>?>(
+        initialValue = null,
+        key1 = customPath
+    ) {
         value = if (customPath.isNullOrBlank()) {
             null
         } else {
             withContext(Dispatchers.IO) {
                 try {
                     val file = File(customPath)
-                    if (file.exists()) {
+                    val decoded = if (file.exists()) {
                         val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
                         BitmapFactory.decodeFile(file.absolutePath, opts)
                     } else {
@@ -88,11 +94,37 @@ fun GlassBackground(
                             BitmapFactory.decodeStream(stream, null, opts)
                         }
                     }
+                    decoded?.let { bmp ->
+                        val dominant = WallpaperHarmonyEngine.extractAndCacheDominantColor(customPath, bmp)
+                        bmp to dominant
+                    }
                 } catch (_: Exception) {
                     null
                 }
             }
         }
+    }
+
+    val customBitmap = customLoaded?.first
+    val customDominantColor = customLoaded?.second
+        ?: WallpaperHarmonyEngine.getCachedCustomColor(customPath)
+
+    val palette = remember(
+        basePalette.isDark,
+        basePalette.isAmoled,
+        wallpaperConfig,
+        customDominantColor
+    ) {
+        WallpaperHarmonyEngine.adaptPalette(
+            isDark = basePalette.isDark,
+            isAmoled = basePalette.isAmoled,
+            wallpaperConfig = wallpaperConfig,
+            customDominantColor = customDominantColor
+        )
+    }
+
+    val adaptedColorScheme = remember(palette) {
+        WallpaperHarmonyEngine.colorSchemeForPalette(palette)
     }
 
     val preset = wallpaperConfig.preset
@@ -103,117 +135,123 @@ fun GlassBackground(
         else -> Color(preset.baseColorHex)
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(bgBase)
-    ) {
-        val loadedCustom = customBitmap
-        if (loadedCustom != null) {
-            Image(
-                bitmap = loadedCustom.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-            // Subtle readability scrim so glass cards and text remain crisp over any photo
+    CompositionLocalProvider(LocalGlassPalette provides palette) {
+        MaterialTheme(
+            colorScheme = adaptedColorScheme,
+            typography = MaterialTheme.typography
+        ) {
             Box(
-                modifier = Modifier
+                modifier = modifier
                     .fillMaxSize()
-                    .background(
-                        if (palette.isDark) Color.Black.copy(alpha = 0.45f)
-                        else Color.White.copy(alpha = 0.35f)
+                    .background(bgBase)
+            ) {
+                if (customBitmap != null) {
+                    Image(
+                        bitmap = customBitmap.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
                     )
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .drawWithCache {
-                        val w = size.width
-                        val h = size.height
-                        if (preset == WallpaperPreset.DEFAULT) {
-                            val topCenter = Offset(w * 0.85f, h * 0.12f)
-                            val topRadius = (w * 0.72f).coerceAtLeast(1f)
-                            val topBrush = Brush.radialGradient(
-                                colors = listOf(palette.orbPrimary, Color.Transparent),
-                                center = topCenter,
-                                radius = topRadius
+                    // Subtle readability scrim so glass cards and text remain crisp over any photo
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                if (palette.isDark) Color.Black.copy(alpha = 0.45f)
+                                else Color.White.copy(alpha = 0.35f)
                             )
-                            val bottomCenter = Offset(w * 0.15f, h * 0.78f)
-                            val bottomRadius = (w * 0.68f).coerceAtLeast(1f)
-                            val bottomBrush = Brush.radialGradient(
-                                colors = listOf(palette.orbSecondary, Color.Transparent),
-                                center = bottomCenter,
-                                radius = bottomRadius
-                            )
-                            onDrawBehind {
-                                drawCircle(brush = topBrush, radius = topRadius, center = topCenter)
-                                drawCircle(brush = bottomBrush, radius = bottomRadius, center = bottomCenter)
-                            }
-                        } else {
-                            val c1 = Color(preset.primaryOrbHex).copy(alpha = if (palette.isDark) 0.34f else 0.26f)
-                            val c2 = Color(preset.secondaryOrbHex).copy(alpha = if (palette.isDark) 0.30f else 0.22f)
-                            val c3 = Color(preset.accentOrbHex).copy(alpha = if (palette.isDark) 0.24f else 0.18f)
-
-                            val center1 = Offset(w * 0.82f, h * 0.14f)
-                            val radius1 = (w * 0.85f).coerceAtLeast(1f)
-                            val brush1 = Brush.radialGradient(
-                                colors = listOf(c1, Color.Transparent),
-                                center = center1,
-                                radius = radius1
-                            )
-
-                            val center2 = Offset(w * 0.15f, h * 0.48f)
-                            val radius2 = (w * 0.78f).coerceAtLeast(1f)
-                            val brush2 = Brush.radialGradient(
-                                colors = listOf(c2, Color.Transparent),
-                                center = center2,
-                                radius = radius2
-                            )
-
-                            val center3 = Offset(w * 0.75f, h * 0.86f)
-                            val radius3 = (w * 0.75f).coerceAtLeast(1f)
-                            val brush3 = Brush.radialGradient(
-                                colors = listOf(c3, Color.Transparent),
-                                center = center3,
-                                radius = radius3
-                            )
-
-                            val hasStars = preset == WallpaperPreset.STARLIGHT_GALAXY ||
-                                preset == WallpaperPreset.CYBER_NEBULA
-                            val starPositions = if (hasStars) {
-                                arrayOf(
-                                    Offset(w * 0.18f, h * 0.12f),
-                                    Offset(w * 0.64f, h * 0.09f),
-                                    Offset(w * 0.88f, h * 0.27f),
-                                    Offset(w * 0.32f, h * 0.34f),
-                                    Offset(w * 0.12f, h * 0.66f),
-                                    Offset(w * 0.77f, h * 0.58f),
-                                    Offset(w * 0.45f, h * 0.81f),
-                                    Offset(w * 0.89f, h * 0.91f)
-                                )
-                            } else {
-                                emptyArray()
-                            }
-
-                            onDrawBehind {
-                                drawCircle(brush = brush1, radius = radius1, center = center1)
-                                drawCircle(brush = brush2, radius = radius2, center = center2)
-                                drawCircle(brush = brush3, radius = radius3, center = center3)
-                                starPositions.forEachIndexed { idx, pos ->
-                                    drawCircle(
-                                        color = Color.White.copy(alpha = if (idx % 2 == 0) 0.35f else 0.18f),
-                                        radius = if (idx % 3 == 0) 4.5f else 2.8f,
-                                        center = pos
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .drawWithCache {
+                                val w = size.width
+                                val h = size.height
+                                if (preset == WallpaperPreset.DEFAULT) {
+                                    val topCenter = Offset(w * 0.85f, h * 0.12f)
+                                    val topRadius = (w * 0.72f).coerceAtLeast(1f)
+                                    val topBrush = Brush.radialGradient(
+                                        colors = listOf(palette.orbPrimary, Color.Transparent),
+                                        center = topCenter,
+                                        radius = topRadius
                                     )
+                                    val bottomCenter = Offset(w * 0.15f, h * 0.78f)
+                                    val bottomRadius = (w * 0.68f).coerceAtLeast(1f)
+                                    val bottomBrush = Brush.radialGradient(
+                                        colors = listOf(palette.orbSecondary, Color.Transparent),
+                                        center = bottomCenter,
+                                        radius = bottomRadius
+                                    )
+                                    onDrawBehind {
+                                        drawCircle(brush = topBrush, radius = topRadius, center = topCenter)
+                                        drawCircle(brush = bottomBrush, radius = bottomRadius, center = bottomCenter)
+                                    }
+                                } else {
+                                    val c1 = Color(preset.primaryOrbHex).copy(alpha = if (palette.isDark) 0.34f else 0.26f)
+                                    val c2 = Color(preset.secondaryOrbHex).copy(alpha = if (palette.isDark) 0.30f else 0.22f)
+                                    val c3 = Color(preset.accentOrbHex).copy(alpha = if (palette.isDark) 0.24f else 0.18f)
+
+                                    val center1 = Offset(w * 0.82f, h * 0.14f)
+                                    val radius1 = (w * 0.85f).coerceAtLeast(1f)
+                                    val brush1 = Brush.radialGradient(
+                                        colors = listOf(c1, Color.Transparent),
+                                        center = center1,
+                                        radius = radius1
+                                    )
+
+                                    val center2 = Offset(w * 0.15f, h * 0.48f)
+                                    val radius2 = (w * 0.78f).coerceAtLeast(1f)
+                                    val brush2 = Brush.radialGradient(
+                                        colors = listOf(c2, Color.Transparent),
+                                        center = center2,
+                                        radius = radius2
+                                    )
+
+                                    val center3 = Offset(w * 0.75f, h * 0.86f)
+                                    val radius3 = (w * 0.75f).coerceAtLeast(1f)
+                                    val brush3 = Brush.radialGradient(
+                                        colors = listOf(c3, Color.Transparent),
+                                        center = center3,
+                                        radius = radius3
+                                    )
+
+                                    val hasStars = preset == WallpaperPreset.STARLIGHT_GALAXY ||
+                                        preset == WallpaperPreset.CYBER_NEBULA
+                                    val starPositions = if (hasStars) {
+                                        arrayOf(
+                                            Offset(w * 0.18f, h * 0.12f),
+                                            Offset(w * 0.64f, h * 0.09f),
+                                            Offset(w * 0.88f, h * 0.27f),
+                                            Offset(w * 0.32f, h * 0.34f),
+                                            Offset(w * 0.12f, h * 0.66f),
+                                            Offset(w * 0.77f, h * 0.58f),
+                                            Offset(w * 0.45f, h * 0.81f),
+                                            Offset(w * 0.89f, h * 0.91f)
+                                        )
+                                    } else {
+                                        emptyArray()
+                                    }
+
+                                    onDrawBehind {
+                                        drawCircle(brush = brush1, radius = radius1, center = center1)
+                                        drawCircle(brush = brush2, radius = radius2, center = center2)
+                                        drawCircle(brush = brush3, radius = radius3, center = center3)
+                                        starPositions.forEachIndexed { idx, pos ->
+                                            drawCircle(
+                                                color = Color.White.copy(alpha = if (idx % 2 == 0) 0.35f else 0.18f),
+                                                radius = if (idx % 3 == 0) 4.5f else 2.8f,
+                                                center = pos
+                                            )
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }
-            )
+                    )
+                }
+                content()
+            }
         }
-        content()
     }
 }
 

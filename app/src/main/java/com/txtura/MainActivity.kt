@@ -239,8 +239,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            TxturaTheme(themeMode = themeMode) {
-                val selectedThread = threads.find { it.id == activeThreadId }
+            val selectedThread = threads.find { it.id == activeThreadId }
+            val activeWallpaper = if (selectedThread != null && !showSettingsScreen && !showDeletedMessagesScreen) {
+                contactWallpapers[contactWallpaperKey(selectedThread.address)] ?: mainWallpaper
+            } else {
+                mainWallpaper
+            }
+
+            TxturaTheme(
+                themeMode = themeMode,
+                wallpaperConfig = activeWallpaper
+            ) {
                 val strings = TxturaStrings.current()
 
                 when {

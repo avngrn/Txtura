@@ -98,6 +98,7 @@ import com.txtura.ui.i18n.AppStrings
 import com.txtura.ui.i18n.TxturaStrings
 import com.txtura.ui.theme.LocalGlassPalette
 import com.txtura.ui.theme.TxturaThemeMode
+import com.txtura.ui.theme.WallpaperHarmonyEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -127,7 +128,6 @@ fun ConversationsListScreen(
     onOpenDeletedMessages: () -> Unit = {},
     onOpenSettings: () -> Unit
 ) {
-    val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(ConversationFilter.ALL) }
@@ -151,6 +151,7 @@ fun ConversationsListScreen(
     }
 
     GlassBackground(wallpaperConfig = mainWallpaper) {
+        val palette = LocalGlassPalette.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -404,7 +405,6 @@ fun SettingsScreen(
     onRequestDefaultSmsRole: () -> Unit,
     onOpenSystemAppSettings: () -> Unit
 ) {
-    val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
     val scrollState = rememberScrollState()
     val retentionOptions = listOf(7, 15, 30, 60, 90)
@@ -417,6 +417,7 @@ fun SettingsScreen(
     var showSecurityMeasuresDialog by remember { mutableStateOf(false) }
 
     GlassBackground(wallpaperConfig = mainWallpaper) {
+        val palette = LocalGlassPalette.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -1527,7 +1528,6 @@ fun ConversationDetailScreen(
     onSendMessage: (String, Uri?) -> Unit,
     onCopyOtp: (String) -> Unit
 ) {
-    val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
     var draftText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -1547,6 +1547,7 @@ fun ConversationDetailScreen(
     val smsSegments = if (draftText.isEmpty()) 1 else ((draftText.length - 1) / charsPerSegment) + 1
 
     GlassBackground(wallpaperConfig = wallpaperConfig) {
+        val palette = LocalGlassPalette.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -3159,6 +3160,7 @@ fun WallpaperPresetSelectorGrid(
         WallpaperPreset.entries.forEach { preset ->
             val selected = !currentConfig.isCustomGalleryImage && currentConfig.preset == preset
             val label = wallpaperPresetTitle(preset, strings)
+            val compAccent = WallpaperHarmonyEngine.presetComplementaryAccent(preset, palette.isDark)
             val previewColors = listOf(
                 Color(preset.primaryOrbHex),
                 Color(preset.secondaryOrbHex),
@@ -3168,7 +3170,7 @@ fun WallpaperPresetSelectorGrid(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 elevated = selected,
-                accentHighlight = if (selected) palette.accentPrimary else null,
+                accentHighlight = if (selected) compAccent else null,
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
                 onClick = { onSelectPreset(preset) }
             ) {
@@ -3181,23 +3183,33 @@ fun WallpaperPresetSelectorGrid(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.weight(1f)
                     ) {
-                        // Miniature wallpaper gradient swatch
+                        // Miniature wallpaper gradient swatch + complementary UI accent dot
                         Box(
+                            contentAlignment = Alignment.BottomEnd,
                             modifier = Modifier
-                                .size(width = 42.dp, height = 26.dp)
+                                .size(width = 44.dp, height = 26.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(Brush.linearGradient(colors = previewColors))
                                 .border(
                                     1.dp,
-                                    if (selected) palette.accentPrimary else Color.White.copy(alpha = 0.35f),
+                                    if (selected) compAccent else Color.White.copy(alpha = 0.35f),
                                     RoundedCornerShape(8.dp)
                                 )
-                        )
+                                .padding(3.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(9.dp)
+                                    .clip(CircleShape)
+                                    .background(compAccent)
+                                    .border(1.dp, Color.Black.copy(alpha = 0.55f), CircleShape)
+                            )
+                        }
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
                             text = label,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (selected) palette.accentPrimary else palette.textPrimary,
+                            color = if (selected) compAccent else palette.textPrimary,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
                         )
                     }
@@ -3205,7 +3217,7 @@ fun WallpaperPresetSelectorGrid(
                         Icon(
                             imageVector = TxturaIcons.CheckDouble,
                             contentDescription = null,
-                            tint = palette.accentPrimary,
+                            tint = compAccent,
                             modifier = Modifier.size(16.dp)
                         )
                     }

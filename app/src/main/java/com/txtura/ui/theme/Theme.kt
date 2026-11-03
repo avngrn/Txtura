@@ -1,7 +1,9 @@
 package com.txtura.ui.theme
 
 import android.app.Activity
+import android.graphics.Bitmap
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -9,10 +11,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import com.txtura.data.WallpaperConfig
+import com.txtura.data.WallpaperPreset
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.atan2
+import androidx.core.graphics.get
+import androidx.core.graphics.scale
 
 enum class TxturaThemeMode(val label: String) {
     AMOLED("AMOLED"),
@@ -103,56 +116,313 @@ val AmoledGlassPalette = GlassPalette(
 
 val LocalGlassPalette = staticCompositionLocalOf { AmoledGlassPalette }
 
-private val LightColors = lightColorScheme(
-    primary = IndigoElectric,
-    secondary = CyanDeep,
-    tertiary = VioletGlass,
-    background = LightBgBase,
-    surface = Color.White,
-    onPrimary = Color.White,
-    onBackground = LightTextPrimary,
-    onSurface = LightTextPrimary
-)
+/**
+ * Complementary Color Harmony Engine:
+ * Adapts UI accents, message bubbles, specular glass borders, and card surfaces so they are
+ * color-wheel complementary and visually harmonious with the active wallpaper preset or custom Gallery photo.
+ */
+object WallpaperHarmonyEngine {
 
-private val DarkColors = darkColorScheme(
-    primary = IndigoSoft,
-    secondary = CyanGlow,
-    tertiary = VioletGlass,
-    background = DarkBgBase,
-    surface = Color(0xFF111827),
-    onPrimary = Color.White,
-    onBackground = DarkTextPrimary,
-    onSurface = DarkTextPrimary
-)
+    private val customImageColorCache = ConcurrentHashMap<String, Color>()
 
-private val AmoledColors = darkColorScheme(
-    primary = CyanGlow,
-    secondary = IndigoSoft,
-    tertiary = VioletGlass,
-    background = AmoledBgBase,
-    surface = AmoledBgBase,
-    onPrimary = Color.Black,
-    onBackground = AmoledTextPrimary,
-    onSurface = AmoledTextPrimary
-)
+    fun getCachedCustomColor(uriString: String?): Color? {
+        if (uriString.isNullOrBlank()) return null
+        return customImageColorCache[uriString]
+    }
+
+    /**
+     * Extracts the dominant vibrant color from a user-selected Gallery photo bitmap.
+     */
+    fun extractAndCacheDominantColor(uriString: String, bitmap: Bitmap): Color {
+        customImageColorCache[uriString]?.let { return it }
+        return try {
+            val small = bitmap.scale(16, 16)
+            val hsv = FloatArray(3)
+            var sumX = 0.0
+            var sumY = 0.0
+            var weightSum = 0.0
+            var fallbackR = 0f
+            var fallbackG = 0f
+            var fallbackB = 0f
+            val totalPixels = small.width * small.height
+
+            for (y in 0 until small.height) {
+                for (x in 0 until small.width) {
+                    val pixel = small[x, y]
+                    val r = android.graphics.Color.red(pixel) / 255f
+                    val g = android.graphics.Color.green(pixel) / 255f
+                    val b = android.graphics.Color.blue(pixel) / 255f
+                    fallbackR += r
+                    fallbackG += g
+                    fallbackB += b
+
+                    android.graphics.Color.RGBToHSV(
+                        android.graphics.Color.red(pixel),
+                        android.graphics.Color.green(pixel),
+                        android.graphics.Color.blue(pixel),
+                        hsv
+                    )
+                    val sat = hsv[1]
+                    val value = hsv[2]
+                    // Favor colorful mid-to-bright pixels over pure black/white
+                    val weight = (sat * 0.75f + value * 0.25f).toDouble()
+                    if (sat > 0.12f && value in 0.12f..0.95f) {
+                        val rad = Math.toRadians(hsv[0].toDouble())
+                        sumX += cos(rad) * weight
+                        sumY += sin(rad) * weight
+                        weightSum += weight
+                    }
+                }
+            }
+
+            val extracted = if (weightSum > 0.01) {
+                val avgHue = ((Math.toDegrees(atan2(sumY, sumX)).toFloat() + 360f) % 360f)
+                Color.hsv(avgHue, 0.78f, 0.88f)
+            } else {
+                Color(
+                    red = (fallbackR / totalPixels).coerceIn(0f, 1f),
+                    green = (fallbackG / totalPixels).coerceIn(0f, 1f),
+                    blue = (fallbackB / totalPixels).coerceIn(0f, 1f)
+                )
+            }
+            customImageColorCache[uriString] = extracted
+            extracted
+        } catch (_: Exception) {
+            CyanGlow
+        }
+    }
+
+    /**
+     * Returns the primary complementary UI accent color for a given [WallpaperPreset],
+     * used both by the live theme and by the preset preview swatches.
+     */
+    fun presetComplementaryAccent(preset: WallpaperPreset, isDark: Boolean): Color {
+        return when (preset) {
+            WallpaperPreset.DEFAULT -> if (isDark) CyanGlow else IndigoElectric
+            // Cool Aurora Teal/Blue bg -> Warm Coral-Rose complement
+            WallpaperPreset.AURORA_BOREALIS -> if (isDark) Color(0xFFFF6B9D) else Color(0xFFE11D48)
+            // Neon Magenta/Purple bg -> Electric Cyber Mint-Cyan complement
+            WallpaperPreset.CYBER_NEBULA -> if (isDark) Color(0xFF00F5D4) else Color(0xFF0D9488)
+            // Deep Ocean Blue bg -> Warm Golden Sunset Amber complement
+            WallpaperPreset.MIDNIGHT_OCEAN -> if (isDark) Color(0xFFFFB703) else Color(0xFFD97706)
+            // Warm Sunset Coral/Orange bg -> Cool Lagoon Turquoise-Cyan complement
+            WallpaperPreset.SUNSET_HORIZON -> if (isDark) Color(0xFF2EC4B6) else Color(0xFF0D9488)
+            // Emerald Forest Green bg -> Blossom Rose-Magenta complement
+            WallpaperPreset.EMERALD_FOREST -> if (isDark) Color(0xFFF472B6) else Color(0xFFDB2777)
+            // Royal Amethyst Purple bg -> Luminous Citrine Gold complement
+            WallpaperPreset.ROYAL_AMETHYST -> if (isDark) Color(0xFFFACC15) else Color(0xFFCA8A04)
+            // Starlight Blue/Indigo bg -> Warm Apricot-Gold complement
+            WallpaperPreset.STARLIGHT_GALAXY -> if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
+            // Crimson Velvet Red bg -> Aquamarine Mint-Cyan complement
+            WallpaperPreset.CRIMSON_VELVET -> if (isDark) Color(0xFF2DD4BF) else Color(0xFF0D9488)
+            // Arctic Frost Ice-Cyan bg -> Warm Sunset Coral-Peach complement
+            WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFB7185) else Color(0xFFE11D48)
+            // Obsidian Warm Gold bg -> Electric Cobalt-Sky Blue complement
+            WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+        }
+    }
+
+    private fun presetSecondaryComplementaryAccent(preset: WallpaperPreset, isDark: Boolean): Color {
+        return when (preset) {
+            WallpaperPreset.DEFAULT -> if (isDark) VioletGlass else CyanDeep
+            WallpaperPreset.AURORA_BOREALIS -> if (isDark) Color(0xFFC77DFF) else Color(0xFF9333EA)
+            WallpaperPreset.CYBER_NEBULA -> if (isDark) Color(0xFF4CC9F0) else Color(0xFF0284C7)
+            WallpaperPreset.MIDNIGHT_OCEAN -> if (isDark) Color(0xFFFB8500) else Color(0xFFEA580C)
+            WallpaperPreset.SUNSET_HORIZON -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+            WallpaperPreset.EMERALD_FOREST -> if (isDark) Color(0xFFC084FC) else Color(0xFF9333EA)
+            WallpaperPreset.ROYAL_AMETHYST -> if (isDark) Color(0xFF34D399) else Color(0xFF059669)
+            WallpaperPreset.STARLIGHT_GALAXY -> if (isDark) Color(0xFFFB7185) else Color(0xFFE11D48)
+            WallpaperPreset.CRIMSON_VELVET -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+            WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
+            WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
+        }
+    }
+
+    /**
+     * Produces a canonical, idempotent [GlassPalette] adapted to be complementary to [wallpaperConfig].
+     */
+    fun adaptPalette(
+        isDark: Boolean,
+        isAmoled: Boolean,
+        wallpaperConfig: WallpaperConfig,
+        customDominantColor: Color? = getCachedCustomColor(wallpaperConfig.customImageUri)
+    ): GlassPalette {
+        val canonicalBase = when {
+            !isDark -> LightGlassPalette
+            isAmoled -> AmoledGlassPalette
+            else -> DarkGlassPalette
+        }
+
+        // 1. Custom Gallery Photo Wallpaper -> compute true 180° & 145° split-complementary HSV palette
+        if (wallpaperConfig.isCustomGalleryImage && customDominantColor != null) {
+            val hsv = FloatArray(3)
+            val argb = customDominantColor.toArgb()
+            android.graphics.Color.RGBToHSV(
+                android.graphics.Color.red(argb),
+                android.graphics.Color.green(argb),
+                android.graphics.Color.blue(argb),
+                hsv
+            )
+            val bgHue = hsv[0]
+            val compHue = (bgHue + 180f) % 360f
+            val splitHue1 = (bgHue + 145f) % 360f
+            val splitHue2 = (bgHue + 215f) % 360f
+
+            val accentPrimary = if (isDark) {
+                Color.hsv(compHue, 0.78f, 0.98f)
+            } else {
+                Color.hsv(compHue, 0.84f, 0.70f)
+            }
+            val accentSecondary = if (isDark) {
+                Color.hsv(splitHue1, 0.74f, 0.95f)
+            } else {
+                Color.hsv(splitHue1, 0.80f, 0.66f)
+            }
+            val bubbleAlpha = if (isAmoled) 0.82f else 0.88f
+            val bubbleStart = Color.hsv(compHue, 0.76f, 0.74f).copy(alpha = bubbleAlpha)
+            val bubbleEnd = Color.hsv(splitHue2, 0.78f, 0.68f).copy(alpha = bubbleAlpha)
+
+            val tintedSurface = if (isDark) {
+                lerp(canonicalBase.glassSurface, customDominantColor.copy(alpha = canonicalBase.glassSurface.alpha), 0.22f)
+            } else {
+                lerp(canonicalBase.glassSurface, customDominantColor.copy(alpha = canonicalBase.glassSurface.alpha), 0.12f)
+            }
+            val tintedElevated = if (isDark) {
+                lerp(canonicalBase.glassSurfaceElevated, accentPrimary.copy(alpha = canonicalBase.glassSurfaceElevated.alpha), 0.18f)
+            } else {
+                lerp(canonicalBase.glassSurfaceElevated, accentPrimary.copy(alpha = canonicalBase.glassSurfaceElevated.alpha), 0.10f)
+            }
+            val tintedIncoming = if (isDark) {
+                lerp(canonicalBase.incomingBubbleSurface, customDominantColor.copy(alpha = 0.24f), 0.30f)
+            } else {
+                lerp(canonicalBase.incomingBubbleSurface, customDominantColor.copy(alpha = 0.88f), 0.12f)
+            }
+
+            return canonicalBase.copy(
+                orbPrimary = customDominantColor.copy(alpha = 0.32f),
+                orbSecondary = accentPrimary.copy(alpha = 0.26f),
+                glassSurface = tintedSurface,
+                glassSurfaceElevated = tintedElevated,
+                glassBorderTop = accentPrimary.copy(alpha = if (isDark) 0.44f else 0.65f),
+                glassBorderBottom = customDominantColor.copy(alpha = if (isDark) 0.18f else 0.32f),
+                accentPrimary = accentPrimary,
+                accentSecondary = accentSecondary,
+                outgoingBubbleStart = bubbleStart,
+                outgoingBubbleEnd = bubbleEnd,
+                incomingBubbleSurface = tintedIncoming
+            )
+        }
+
+        // 2. Built-in Wallpaper Preset
+        val preset = wallpaperConfig.preset
+        if (preset == WallpaperPreset.DEFAULT) {
+            return canonicalBase
+        }
+
+        val bgPrimary = Color(preset.primaryOrbHex)
+        val bgSecondary = Color(preset.secondaryOrbHex)
+        val compPrimary = presetComplementaryAccent(preset, isDark)
+        val compSecondary = presetSecondaryComplementaryAccent(preset, isDark)
+
+        val bubbleAlpha = if (isAmoled) 0.80f else 0.88f
+        val bubbleStart = lerp(compPrimary, bgSecondary, 0.25f).copy(alpha = bubbleAlpha)
+        val bubbleEnd = lerp(compSecondary, bgPrimary, 0.30f).copy(alpha = bubbleAlpha)
+
+        val surfaceBaseAlpha = canonicalBase.glassSurface.alpha
+        val elevatedBaseAlpha = canonicalBase.glassSurfaceElevated.alpha
+
+        val tintedSurface = if (isDark) {
+            lerp(Color.White, bgPrimary, 0.28f).copy(alpha = surfaceBaseAlpha)
+        } else {
+            lerp(Color.White, bgPrimary, 0.10f).copy(alpha = surfaceBaseAlpha)
+        }
+        val tintedElevated = if (isDark) {
+            lerp(Color.White, compPrimary, 0.22f).copy(alpha = elevatedBaseAlpha)
+        } else {
+            lerp(Color.White, compPrimary, 0.08f).copy(alpha = elevatedBaseAlpha)
+        }
+        val tintedIncoming = if (isDark) {
+            lerp(Color.White, bgPrimary, 0.32f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+        } else {
+            lerp(Color.White, bgPrimary, 0.09f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+        }
+
+        return canonicalBase.copy(
+            backgroundBase = if (isDark) Color(preset.baseColorHex) else canonicalBase.backgroundBase,
+            orbPrimary = bgPrimary.copy(alpha = if (isDark) 0.30f else 0.24f),
+            orbSecondary = bgSecondary.copy(alpha = if (isDark) 0.26f else 0.20f),
+            glassSurface = tintedSurface,
+            glassSurfaceElevated = tintedElevated,
+            glassBorderTop = compPrimary.copy(alpha = if (isDark) 0.45f else 0.65f),
+            glassBorderBottom = bgPrimary.copy(alpha = if (isDark) 0.20f else 0.32f),
+            accentPrimary = compPrimary,
+            accentSecondary = compSecondary,
+            outgoingBubbleStart = bubbleStart,
+            outgoingBubbleEnd = bubbleEnd,
+            incomingBubbleSurface = tintedIncoming
+        )
+    }
+
+    fun colorSchemeForPalette(palette: GlassPalette): ColorScheme {
+        return when {
+            palette.isAmoled -> darkColorScheme(
+                primary = palette.accentPrimary,
+                secondary = palette.accentSecondary,
+                tertiary = VioletGlass,
+                background = palette.backgroundBase,
+                surface = palette.backgroundBase,
+                onPrimary = Color.Black,
+                onBackground = palette.textPrimary,
+                onSurface = palette.textPrimary
+            )
+            palette.isDark -> darkColorScheme(
+                primary = palette.accentPrimary,
+                secondary = palette.accentSecondary,
+                tertiary = VioletGlass,
+                background = palette.backgroundBase,
+                surface = Color(0xFF111827),
+                onPrimary = Color.Black,
+                onBackground = palette.textPrimary,
+                onSurface = palette.textPrimary
+            )
+            else -> lightColorScheme(
+                primary = palette.accentPrimary,
+                secondary = palette.accentSecondary,
+                tertiary = VioletGlass,
+                background = palette.backgroundBase,
+                surface = Color.White,
+                onPrimary = Color.White,
+                onBackground = palette.textPrimary,
+                onSurface = palette.textPrimary
+            )
+        }
+    }
+}
 
 @Composable
 fun TxturaTheme(
     themeMode: TxturaThemeMode = TxturaThemeMode.AMOLED,
+    wallpaperConfig: WallpaperConfig = WallpaperConfig(),
     content: @Composable () -> Unit
 ) {
     val systemDark = isSystemInDarkTheme()
-    val palette = when (themeMode) {
+    val basePalette = when (themeMode) {
         TxturaThemeMode.LIGHT -> LightGlassPalette
         TxturaThemeMode.DARK -> DarkGlassPalette
         TxturaThemeMode.AMOLED -> AmoledGlassPalette
         TxturaThemeMode.SYSTEM -> if (systemDark) AmoledGlassPalette else LightGlassPalette
     }
 
-    val colorScheme = when {
-        palette.isAmoled -> AmoledColors
-        palette.isDark -> DarkColors
-        else -> LightColors
+    val adaptedPalette = remember(basePalette, wallpaperConfig) {
+        WallpaperHarmonyEngine.adaptPalette(
+            isDark = basePalette.isDark,
+            isAmoled = basePalette.isAmoled,
+            wallpaperConfig = wallpaperConfig
+        )
+    }
+
+    val colorScheme = remember(adaptedPalette) {
+        WallpaperHarmonyEngine.colorSchemeForPalette(adaptedPalette)
     }
 
     val view = LocalView.current
@@ -160,13 +430,13 @@ fun TxturaTheme(
         SideEffect {
             val window = (view.context as? Activity)?.window ?: return@SideEffect
             WindowCompat.getInsetsController(window, view).apply {
-                isAppearanceLightStatusBars = !palette.isDark
-                isAppearanceLightNavigationBars = !palette.isDark
+                isAppearanceLightStatusBars = !adaptedPalette.isDark
+                isAppearanceLightNavigationBars = !adaptedPalette.isDark
             }
         }
     }
 
-    CompositionLocalProvider(LocalGlassPalette provides palette) {
+    CompositionLocalProvider(LocalGlassPalette provides adaptedPalette) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = Typography,
