@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -129,13 +130,22 @@ fun ConversationsListScreen(
     onCopyOtp: (String) -> Unit,
     onOpenNewMessage: () -> Unit,
     onOpenDeletedMessages: () -> Unit = {},
+    onMarkAllRead: () -> Unit = {},
     onOpenSettings: () -> Unit
 ) {
     val strings = TxturaStrings.current()
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(ConversationFilter.ALL) }
+    var showMarkAllReadConfirmation by remember { mutableStateOf(false) }
 
-    val filteredThreads = remember(threads, searchQuery, selectedFilter) {
+    val serviceThreadById = remember(threads, selectedFilter) {
+        if (selectedFilter == ConversationFilter.SERVICES || selectedFilter == ConversationFilter.PEOPLE) {
+            threads.associate { thread -> thread.id to isServiceThread(thread) }
+        } else {
+            emptyMap()
+        }
+    }
+    val filteredThreads = remember(threads, searchQuery, selectedFilter, serviceThreadById) {
         threads.filter { thread ->
             val matchesSearch = searchQuery.isBlank() ||
                 thread.contactName.contains(searchQuery, ignoreCase = true) ||
@@ -146,10 +156,23 @@ fun ConversationsListScreen(
                 ConversationFilter.ALL -> true
                 ConversationFilter.PINNED -> thread.isPinned || thread.pinnedMessages.isNotEmpty()
                 ConversationFilter.UNREAD -> thread.unreadCount > 0
-                ConversationFilter.SERVICES -> isServiceThread(thread)
+                ConversationFilter.SERVICES -> serviceThreadById[thread.id] == true
+                ConversationFilter.PEOPLE -> {
+                    val digitCount = thread.address.count(Char::isDigit)
+                    digitCount in 7..15 && serviceThreadById[thread.id] != true
+                }
             }
             matchesSearch && matchesFilter
         }
+    }
+
+    if (showMarkAllReadConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showMarkAllReadConfirmation = false },
+            title = { Text("Označiti sve poruke kao pročitane?") },
+            confirmButton = { TextButton(onClick = { showMarkAllReadConfirmation = false; onMarkAllRead() }) { Text("Označi") } },
+            dismissButton = { TextButton(onClick = { showMarkAllReadConfirmation = false }) { Text(strings.cancel) } }
+        )
     }
 
     GlassBackground(wallpaperConfig = mainWallpaper) {
@@ -215,6 +238,13 @@ fun ConversationsListScreen(
                     }
 
                     GlassTooltipIconButton(
+                        icon = TxturaIcons.CheckDouble,
+                        tooltipText = "Označi sve kao pročitano",
+                        tint = palette.accentPrimary,
+                        onClick = { showMarkAllReadConfirmation = true }
+                    )
+
+                    GlassTooltipIconButton(
                         icon = TxturaIcons.SettingsGear,
                         tooltipText = strings.settingsTooltip,
                         tint = palette.accentPrimary,
@@ -276,12 +306,12 @@ fun ConversationsListScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Filter Chips (4 static items - Row avoids LazyRow virtualization overhead)
+            // Horizontal category strip: people, services, unread, pinned, all.
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
             ) {
-                ConversationFilter.entries.forEach { filter ->
+                listOf(ConversationFilter.PEOPLE, ConversationFilter.SERVICES, ConversationFilter.UNREAD, ConversationFilter.PINNED, ConversationFilter.ALL).forEach { filter ->
                     val selected = filter == selectedFilter
                     val label = filterLabel(filter, strings)
                     GlassCard(
@@ -390,10 +420,11 @@ private fun isServiceThread(thread: ConversationThread): Boolean {
 
 private fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
     return when (filter) {
-        ConversationFilter.ALL -> strings.filterAll
-        ConversationFilter.PINNED -> strings.filterPinned
-        ConversationFilter.UNREAD -> strings.filterUnread
-        ConversationFilter.SERVICES -> strings.filterServices
+        ConversationFilter.ALL -> "Sve poruke"
+        ConversationFilter.PINNED -> "Zakačeno"
+        ConversationFilter.UNREAD -> "Nepročitano"
+        ConversationFilter.SERVICES -> "Servisi"
+        ConversationFilter.PEOPLE -> "Osobe"
     }
 }
 
@@ -538,7 +569,7 @@ fun SettingsScreen(
                     subtitle = strings.appearanceSectionDesc,
                     accentHighlight = if (expandedAppearance) palette.accentPrimary else null,
                     expanded = expandedAppearance,
-                    onToggleExpand = { expandedAppearance = !expandedAppearance }
+                    onToggleExpand = { val open = !expandedAppearance; expandedAppearance = open; expandedWallpaper = false; expandedSwipe = false; expandedTrash = false; expandedBackup = false; expandedPermissions = false }
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         ThemeOptionRow(
@@ -815,7 +846,7 @@ fun SettingsScreen(
                     subtitle = strings.wallpaperSectionDesc,
                     accentHighlight = if (expandedWallpaper) palette.accentPrimary else null,
                     expanded = expandedWallpaper,
-                    onToggleExpand = { expandedWallpaper = !expandedWallpaper }
+                    onToggleExpand = { val open = !expandedWallpaper; expandedWallpaper = open; expandedAppearance = false; expandedSwipe = false; expandedTrash = false; expandedBackup = false; expandedPermissions = false }
                 ) {
                     Text(
                         text = strings.mainWallpaperButton,
@@ -893,7 +924,7 @@ fun SettingsScreen(
                     subtitle = strings.swipeSectionDesc,
                     accentHighlight = if (expandedSwipe) palette.accentSecondary else null,
                     expanded = expandedSwipe,
-                    onToggleExpand = { expandedSwipe = !expandedSwipe }
+                    onToggleExpand = { val open = !expandedSwipe; expandedSwipe = open; expandedAppearance = false; expandedWallpaper = false; expandedTrash = false; expandedBackup = false; expandedPermissions = false }
                 ) {
                     Text(
                         text = strings.swipeRightLabel,
@@ -985,7 +1016,7 @@ fun SettingsScreen(
                     subtitle = strings.trashSectionDesc,
                     accentHighlight = if (expandedTrash) palette.cautionColor else null,
                     expanded = expandedTrash,
-                    onToggleExpand = { expandedTrash = !expandedTrash }
+                    onToggleExpand = { val open = !expandedTrash; expandedTrash = open; expandedAppearance = false; expandedWallpaper = false; expandedSwipe = false; expandedBackup = false; expandedPermissions = false }
                 ) {
                     // Open Deleted Messages Folder Button
                     GlassCard(
@@ -1109,7 +1140,7 @@ fun SettingsScreen(
                     }
                 }
 
-                // SECTION: Backup & Restore (Google Account & Local Backup)
+                // SECTION: Local Backup & Restore
                 ExpandableSettingsSection(
                     icon = TxturaIcons.FolderBackup,
                     iconTint = palette.accentPrimary,
@@ -1117,8 +1148,10 @@ fun SettingsScreen(
                     subtitle = strings.backupSectionDesc,
                     accentHighlight = if (expandedBackup) palette.accentPrimary else null,
                     expanded = expandedBackup,
-                    onToggleExpand = { expandedBackup = !expandedBackup }
+                    onToggleExpand = { val open = !expandedBackup; expandedBackup = open; expandedAppearance = false; expandedWallpaper = false; expandedSwipe = false; expandedTrash = false; expandedPermissions = false }
                 ) {
+                    if (false) {
+                    // Legacy Google Drive actions are hidden; local backup is the supported option.
                     // Last Backup Status & Google Account info card
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
@@ -1274,6 +1307,8 @@ fun SettingsScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
+                    }
+
                     // Subsection: Local Device Backup
                     Text(
                         text = strings.localBackupTitle,
@@ -1379,7 +1414,7 @@ fun SettingsScreen(
                     subtitle = "${strings.smsMmsContactsPermLabel} • ${strings.defaultSmsRoleLabel}",
                     accentHighlight = if (!hasSmsPermission || !isDefaultSmsApp) palette.accentPrimary else if (expandedPermissions) palette.safeColor else null,
                     expanded = expandedPermissions,
-                    onToggleExpand = { expandedPermissions = !expandedPermissions }
+                    onToggleExpand = { val open = !expandedPermissions; expandedPermissions = open; expandedAppearance = false; expandedWallpaper = false; expandedSwipe = false; expandedTrash = false; expandedBackup = false }
                 ) {
                     PermissionStatusRow(
                         label = strings.smsMmsContactsPermLabel,
@@ -2674,6 +2709,28 @@ private fun Uri.isDemoUri(): Boolean {
     return authority == "com.txtura.demo"
 }
 
+private fun decodeSampledBitmap(
+    context: android.content.Context,
+    uri: Uri,
+    requestedWidth: Int,
+    requestedHeight: Int
+): android.graphics.Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    var sampleSize = 1
+    while (bounds.outWidth / (sampleSize * 2) >= requestedWidth &&
+        bounds.outHeight / (sampleSize * 2) >= requestedHeight
+    ) {
+        sampleSize *= 2
+    }
+    val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+    return context.contentResolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, options)
+    }
+}
+
 /**
  * Displays a contact's actual photo from Contacts (if available) or a glassmorphic initials avatar.
  */
@@ -2688,18 +2745,13 @@ private fun ContactAvatarView(
     val photoUri = thread.contactPhotoUri
     val avatarColor = Color(thread.avatarAccentColorHex)
 
-    val contactBitmap by produceState<android.graphics.Bitmap?>(initialValue = null, key1 = photoUri) {
-        value = if (photoUri == null) {
-            null
-        } else {
-            withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openInputStream(photoUri)?.use { stream ->
-                        BitmapFactory.decodeStream(stream)
-                    }
-                } catch (_: Exception) {
-                    null
-                }
+    val targetBitmapSizePx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(1) }
+    val contactBitmap by produceState<android.graphics.Bitmap?>(initialValue = null, key1 = photoUri, key2 = targetBitmapSizePx) {
+        value = if (photoUri == null) null else withContext(Dispatchers.IO) {
+            try {
+                decodeSampledBitmap(context, photoUri, targetBitmapSizePx * 2, targetBitmapSizePx * 2)
+            } catch (_: Exception) {
+                null
             }
         }
     }

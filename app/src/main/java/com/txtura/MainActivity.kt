@@ -567,6 +567,7 @@ class MainActivity : ComponentActivity() {
                                 showNewMessageDialog = true
                             },
                             onOpenDeletedMessages = { showDeletedMessagesScreen = true },
+                            onMarkAllRead = { threads.forEach { thread -> SmsMmsRepository.markThreadRead(this@MainActivity, thread.id) } },
                             onOpenSettings = { showSettingsScreen = true }
                         )
                     }

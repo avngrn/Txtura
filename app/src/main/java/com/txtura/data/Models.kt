@@ -37,7 +37,8 @@ enum class ConversationFilter {
     ALL,
     PINNED,
     UNREAD,
-    SERVICES
+    SERVICES,
+    PEOPLE
 }
 
 enum class UiColorMode {
