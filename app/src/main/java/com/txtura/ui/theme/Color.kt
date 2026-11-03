@@ -1,0 +1,46 @@
+package com.txtura.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+// Primary brand accents (Electric Cyan + Indigo + Violet)
+val CyanGlow = Color(0xFF00E5FF)
+val CyanDeep = Color(0xFF0088A3)
+val IndigoElectric = Color(0xFF6366F1)
+val IndigoSoft = Color(0xFF818CF8)
+val VioletGlass = Color(0xFFA855F7)
+val EmeraldSafe = Color(0xFF10B981)
+val AmberCaution = Color(0xFFF59E0B)
+val RoseDanger = Color(0xFFF43F5E)
+
+// Light Glass Palette
+val LightBgBase = Color(0xFFEEF3FA)
+val LightOrbPrimary = Color(0x446366F1)
+val LightOrbSecondary = Color(0x4400D4FF)
+val LightGlassSurface = Color(0xB8FFFFFF)
+val LightGlassSurfaceElevated = Color(0xD9FFFFFF)
+val LightGlassBorderTop = Color(0xE6FFFFFF)
+val LightGlassBorderBottom = Color(0x4094A3B8)
+val LightTextPrimary = Color(0xFF0F172A)
+val LightTextSecondary = Color(0xFF475569)
+
+// Dark Glass Palette (Deep Slate)
+val DarkBgBase = Color(0xFF090D16)
+val DarkOrbPrimary = Color(0x386366F1)
+val DarkOrbSecondary = Color(0x2E00E5FF)
+val DarkGlassSurface = Color(0x24FFFFFF)
+val DarkGlassSurfaceElevated = Color(0x33FFFFFF)
+val DarkGlassBorderTop = Color(0x4DFFFFFF)
+val DarkGlassBorderBottom = Color(0x14FFFFFF)
+val DarkTextPrimary = Color(0xFFF8FAFC)
+val DarkTextSecondary = Color(0xFF94A3B8)
+
+// True AMOLED Glass Palette (#000000 Pure Pitch Black)
+val AmoledBgBase = Color(0xFF000000)
+val AmoledOrbPrimary = Color(0x2900E5FF)
+val AmoledOrbSecondary = Color(0x247C3AED)
+val AmoledGlassSurface = Color(0x16FFFFFF)
+val AmoledGlassSurfaceElevated = Color(0x24FFFFFF)
+val AmoledGlassBorderTop = Color(0x4500E5FF)
+val AmoledGlassBorderBottom = Color(0x18FFFFFF)
+val AmoledTextPrimary = Color(0xFFFFFFFF)
+val AmoledTextSecondary = Color(0xFFA1A1AA)
