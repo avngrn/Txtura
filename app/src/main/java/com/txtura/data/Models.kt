@@ -34,11 +34,34 @@ enum class DeliveryStatus {
 }
 
 enum class ConversationFilter {
-    ALL,
-    PINNED,
-    UNREAD,
+    PEOPLE,
     SERVICES,
-    PEOPLE
+    UNREAD,
+    PINNED,
+    ALL;
+
+    companion object {
+        val defaultOrder: List<ConversationFilter> = listOf(
+            PEOPLE,
+            SERVICES,
+            UNREAD,
+            PINNED,
+            ALL
+        )
+
+        fun deserializeOrder(raw: String?): List<ConversationFilter> {
+            if (raw.isNullOrBlank()) return defaultOrder
+            val parsed = raw.split(",")
+                .mapNotNull { name -> entries.find { it.name == name.trim() } }
+                .distinct()
+            val missing = defaultOrder.filter { it !in parsed }
+            return if (parsed.isEmpty()) defaultOrder else (parsed + missing)
+        }
+
+        fun serializeOrder(order: List<ConversationFilter>): String {
+            return order.distinct().joinToString(",") { it.name }
+        }
+    }
 }
 
 enum class UiColorMode {
@@ -107,7 +130,7 @@ enum class WallpaperPreset(
     ARCTIC_FROST(0xFF05131C, 0xFF0284C7, 0xFF0369A1, 0xFF38BDF8),
     OBSIDIAN_GOLD(0xFF110C04, 0xFFB45309, 0xFF92400E, 0xFFD97706),
 
-    // 10 Refined Monochrome Presets (Tonal single-color harmonies)
+    // 10 Refined Monochrome Presets (Light/Dark base + 1 distinct accent color)
     MONO_SLATE(0xFF0B0F17, 0xFF334155, 0xFF475569, 0xFF64748B, true),
     MONO_SAPPHIRE(0xFF050B18, 0xFF1E3A8A, 0xFF1D4ED8, 0xFF2563EB, true),
     MONO_SAGE(0xFF06120D, 0xFF14532D, 0xFF166534, 0xFF15803D, true),
@@ -116,8 +139,8 @@ enum class WallpaperPreset(
     MONO_GRAPHITE(0xFF0A0A0A, 0xFF262626, 0xFF404040, 0xFF525252, true),
     MONO_ROSE(0xFF15080C, 0xFF831843, 0xFF9D174D, 0xFFBE185D, true),
     MONO_NAVY(0xFF040915, 0xFF172554, 0xFF1E3A8A, 0xFF1E40AF, true),
-    MONO_SMOKE(0xFF0F0E0E, 0xFF3B3533, 0xFF524946, 0xFF6B605C, true),
-    MONO_ESPRESSO(0xFF110A06, 0xFF451A03, 0xFF5A2304, 0xFF78350F, true);
+    MONO_SMOKE(0xFF0F0E0E, 0xFF0D9488, 0xFF0F766E, 0xFF14B8A6, true),
+    MONO_ESPRESSO(0xFF110A06, 0xFF9A3412, 0xFFC2410C, 0xFFEA580C, true);
 
     companion object {
         val colorfulPresets: List<WallpaperPreset>
@@ -186,6 +209,7 @@ data class ChatMessage(
     val type: MessageType = MessageType.SMS,
     val status: DeliveryStatus = DeliveryStatus.DELIVERED,
     val isPinned: Boolean = false,
+    val isHighlighted: Boolean = false,
     val attachment: MmsAttachment? = null,
     val securityAnalysis: SecurityAnalysisResult = SecurityAnalysisResult(
         riskLevel = SecurityRiskLevel.SAFE,
@@ -209,9 +233,19 @@ data class ConversationThread(
 
     val pinnedMessages: List<ChatMessage> = messages.filter { it.isPinned }
 
+    val highlightedMessages: List<ChatMessage> = messages.filter { it.isHighlighted }
+
     val highestRiskLevel: SecurityRiskLevel =
         messages.maxOfOrNull { it.securityAnalysis.riskLevel } ?: SecurityRiskLevel.SAFE
 }
+
+data class ContactPickerItem(
+    val name: String,
+    val address: String,
+    val initials: String,
+    val photoUri: Uri? = null,
+    val existingThreadId: Long? = null
+)
 
 /**
  * Represents a conversation moved to the Deleted Messages (Trash) folder,
@@ -240,7 +274,9 @@ data class AppSettingsSnapshot(
     val deletedGroupingMode: DeletedGroupingMode,
     val bubbleZoomScale: Float,
     val uiColorMode: UiColorMode = UiColorMode.COLORFUL,
-    val launcherIconShape: LauncherIconShape = LauncherIconShape.ROUNDED_SQUARE
+    val launcherIconShape: LauncherIconShape = LauncherIconShape.ROUNDED_SQUARE,
+    val uiOpacity: Float = 1.0f,
+    val categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder
 )
 
 data class BackupRestorePayload(
@@ -250,6 +286,8 @@ data class BackupRestorePayload(
     val settings: AppSettingsSnapshot,
     val pinnedAddresses: Set<String>,
     val pinnedMessageIds: Set<Long>,
+    val highlightedMessageIds: Set<Long> = emptySet(),
+    val blockedAddresses: Set<String> = emptySet(),
     val deletedThreadsMeta: Map<Long, Long>,
     val threads: List<ConversationThread>,
     val deletedThreads: List<DeletedConversationEntry>
@@ -328,10 +366,12 @@ object BackupManager {
         deletedThreads: List<DeletedConversationEntry>,
         pinnedAddresses: Set<String>,
         pinnedMessageIds: Set<Long>,
+        highlightedMessageIds: Set<Long> = emptySet(),
+        blockedAddresses: Set<String> = emptySet(),
         deletedThreadsMeta: Map<Long, Long>
     ): String {
         val root = JSONObject()
-        root.put("version", 1)
+        root.put("version", 2)
         root.put("createdAtMillis", System.currentTimeMillis())
         root.put("deviceModel", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
 
@@ -348,6 +388,8 @@ object BackupManager {
         settingsObj.put("bubbleZoomScale", settings.bubbleZoomScale.toDouble())
         settingsObj.put("uiColorMode", settings.uiColorMode.name)
         settingsObj.put("launcherIconShape", settings.launcherIconShape.name)
+        settingsObj.put("uiOpacity", settings.uiOpacity.toDouble())
+        settingsObj.put("categoryOrder", ConversationFilter.serializeOrder(settings.categoryOrder))
 
         val contactWpObj = JSONObject()
         settings.contactWallpapers.forEach { (addr, wp) ->
@@ -356,7 +398,7 @@ object BackupManager {
         settingsObj.put("contactWallpapers", contactWpObj)
         root.put("settings", settingsObj)
 
-        // 2. Pins & Metadata
+        // 2. Pins, Highlights, Blocked & Metadata
         val pinnedAddrsArray = JSONArray()
         pinnedAddresses.forEach { pinnedAddrsArray.put(it) }
         root.put("pinnedAddresses", pinnedAddrsArray)
@@ -364,6 +406,14 @@ object BackupManager {
         val pinnedMsgsArray = JSONArray()
         pinnedMessageIds.forEach { pinnedMsgsArray.put(it) }
         root.put("pinnedMessageIds", pinnedMsgsArray)
+
+        val highlightedMsgsArray = JSONArray()
+        highlightedMessageIds.forEach { highlightedMsgsArray.put(it) }
+        root.put("highlightedMessageIds", highlightedMsgsArray)
+
+        val blockedAddrsArray = JSONArray()
+        blockedAddresses.forEach { blockedAddrsArray.put(it) }
+        root.put("blockedAddresses", blockedAddrsArray)
 
         val deletedMetaObj = JSONObject()
         deletedThreadsMeta.forEach { (id, ts) ->
@@ -413,6 +463,7 @@ object BackupManager {
             msgObj.put("type", msg.type.name)
             msgObj.put("status", msg.status.name)
             msgObj.put("isPinned", msg.isPinned)
+            msgObj.put("isHighlighted", msg.isHighlighted)
             msg.attachment?.let { att ->
                 val attObj = JSONObject()
                 attObj.put("uri", att.uri.toString())
@@ -458,6 +509,8 @@ object BackupManager {
         val uiColorMode = UiColorMode.entries.find { it.name == uiColorModeStr } ?: UiColorMode.COLORFUL
         val iconShapeStr = settingsObj.optString("launcherIconShape", LauncherIconShape.ROUNDED_SQUARE.name)
         val launcherIconShape = LauncherIconShape.entries.find { it.name == iconShapeStr } ?: LauncherIconShape.ROUNDED_SQUARE
+        val uiOpacity = settingsObj.optDouble("uiOpacity", 1.0).toFloat().coerceIn(0.25f, 1.35f)
+        val categoryOrder = ConversationFilter.deserializeOrder(settingsObj.optString("categoryOrder", null))
 
         val contactWpMap = mutableMapOf<String, WallpaperConfig>()
         val contactWpObj = settingsObj.optJSONObject("contactWallpapers")
@@ -482,10 +535,12 @@ object BackupManager {
             deletedGroupingMode = groupingMode,
             bubbleZoomScale = bubbleZoom,
             uiColorMode = uiColorMode,
-            launcherIconShape = launcherIconShape
+            launcherIconShape = launcherIconShape,
+            uiOpacity = uiOpacity,
+            categoryOrder = categoryOrder
         )
 
-        // 2. Pins & Metadata
+        // 2. Pins, Highlights, Blocked & Metadata
         val pinnedAddrs = mutableSetOf<String>()
         root.optJSONArray("pinnedAddresses")?.let { arr ->
             for (i in 0 until arr.length()) {
@@ -497,6 +552,20 @@ object BackupManager {
         root.optJSONArray("pinnedMessageIds")?.let { arr ->
             for (i in 0 until arr.length()) {
                 pinnedMsgs.add(arr.getLong(i))
+            }
+        }
+
+        val highlightedMsgs = mutableSetOf<Long>()
+        root.optJSONArray("highlightedMessageIds")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                highlightedMsgs.add(arr.getLong(i))
+            }
+        }
+
+        val blockedAddrs = mutableSetOf<String>()
+        root.optJSONArray("blockedAddresses")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                blockedAddrs.add(arr.getString(i))
             }
         }
 
@@ -516,7 +585,7 @@ object BackupManager {
         root.optJSONArray("threads")?.let { arr ->
             for (i in 0 until arr.length()) {
                 arr.optJSONObject(i)?.let { tObj ->
-                    threads.add(deserializeThread(tObj, pinnedMsgs))
+                    threads.add(deserializeThread(tObj, pinnedMsgs, highlightedMsgs))
                 }
             }
         }
@@ -531,7 +600,7 @@ object BackupManager {
                     if (tObj != null) {
                         deletedThreads.add(
                             DeletedConversationEntry(
-                                thread = deserializeThread(tObj, pinnedMsgs),
+                                thread = deserializeThread(tObj, pinnedMsgs, highlightedMsgs),
                                 deletedAtMillis = deletedAt
                             )
                         )
@@ -547,13 +616,19 @@ object BackupManager {
             settings = settings,
             pinnedAddresses = pinnedAddrs,
             pinnedMessageIds = pinnedMsgs,
+            highlightedMessageIds = highlightedMsgs,
+            blockedAddresses = blockedAddrs,
             deletedThreadsMeta = deletedMeta,
             threads = threads,
             deletedThreads = deletedThreads
         )
     }
 
-    private fun deserializeThread(obj: JSONObject, pinnedMsgs: Set<Long>): ConversationThread {
+    private fun deserializeThread(
+        obj: JSONObject,
+        pinnedMsgs: Set<Long>,
+        highlightedMsgs: Set<Long>
+    ): ConversationThread {
         val id = obj.optLong("id", System.currentTimeMillis())
         val name = obj.optString("contactName", "Unknown")
         val addr = obj.optString("address", "")
@@ -577,6 +652,7 @@ object BackupManager {
                     val statusStr = mObj.optString("status", DeliveryStatus.DELIVERED.name)
                     val status = DeliveryStatus.entries.find { it.name == statusStr } ?: DeliveryStatus.DELIVERED
                     val mPinned = mObj.optBoolean("isPinned", mId in pinnedMsgs)
+                    val mHighlighted = mObj.optBoolean("isHighlighted", mId in highlightedMsgs)
 
                     var attachment: MmsAttachment? = null
                     mObj.optJSONObject("attachment")?.let { aObj ->
@@ -601,6 +677,7 @@ object BackupManager {
                             type = type,
                             status = status,
                             isPinned = mPinned,
+                            isHighlighted = mHighlighted,
                             attachment = attachment,
                             securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(mBody)
                         )

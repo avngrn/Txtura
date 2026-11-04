@@ -29,6 +29,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
@@ -37,10 +38,12 @@ import androidx.lifecycle.lifecycleScope
 import com.txtura.data.AppSettingsSnapshot
 import com.txtura.data.BackupManager
 import com.txtura.data.BackupRestorePayload
+import com.txtura.data.ContactPickerItem
+import com.txtura.data.ConversationFilter
 import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedGroupingMode
-import com.txtura.data.MainListLayoutMode
 import com.txtura.data.LauncherIconShape
+import com.txtura.data.MainListLayoutMode
 import com.txtura.data.SmsMmsRepository
 import com.txtura.data.SwipeAction
 import com.txtura.data.UiColorMode
@@ -59,13 +62,13 @@ import com.txtura.ui.screens.SettingsScreen
 import com.txtura.ui.screens.WallpaperPickerDialog
 import com.txtura.ui.theme.TxturaTheme
 import com.txtura.ui.theme.TxturaThemeMode
-import kotlinx.coroutines.Dispatchers
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -84,6 +87,8 @@ class MainActivity : ComponentActivity() {
         private const val KEY_CONTACT_WALLPAPERS = "contact_chat_wallpapers_v1"
         private const val KEY_UI_COLOR_MODE = "ui_color_mode"
         private const val KEY_LAUNCHER_ICON_SHAPE = "launcher_icon_shape"
+        private const val KEY_UI_OPACITY = "ui_opacity_scale"
+        private const val KEY_CATEGORY_ORDER = "category_order_v1"
         private const val GALLERY_TARGET_MAIN = "__MAIN__"
     }
 
@@ -95,6 +100,8 @@ class MainActivity : ComponentActivity() {
     private var contactWallpapers by mutableStateOf<Map<String, WallpaperConfig>>(emptyMap())
     private var uiColorMode by mutableStateOf(UiColorMode.COLORFUL)
     private var launcherIconShape by mutableStateOf(LauncherIconShape.ROUNDED_SQUARE)
+    private var uiOpacity by mutableFloatStateOf(1.0f)
+    private var categoryOrder by mutableStateOf(ConversationFilter.defaultOrder)
     private var swipeRightAction by mutableStateOf(SwipeAction.PIN)
     private var swipeLeftAction by mutableStateOf(SwipeAction.DELETE)
     private var autoDeleteDays by mutableIntStateOf(30)
@@ -219,14 +226,28 @@ class MainActivity : ComponentActivity() {
             try {
                 contentResolver.query(
                     contactUri,
-                    arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                    arrayOf(
+                        ContactsContract.CommonDataKinds.Phone.NUMBER,
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+                    ),
                     null,
                     null,
                     null
                 )?.use { cursor ->
                     if (cursor.moveToFirst()) {
                         val rawNumber = cursor.getString(0).orEmpty()
-                        prefilledRecipient = MessageSecurityAnalyzer.sanitizePhoneNumber(rawNumber)
+                        val displayName = cursor.getString(1)
+                        val cleanNumber = MessageSecurityAnalyzer.sanitizePhoneNumber(rawNumber).ifBlank { rawNumber.trim() }
+                        if (cleanNumber.isNotBlank()) {
+                            prefilledRecipient = cleanNumber
+                            val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
+                                context = this@MainActivity,
+                                recipientAddress = cleanNumber,
+                                preferredName = displayName
+                            )
+                            showNewMessageDialog = false
+                            activeThreadId = threadId
+                        }
                     }
                 }
             } catch (_: Exception) {
@@ -241,6 +262,8 @@ class MainActivity : ComponentActivity() {
                 lifecycleScope.launch {
                     val settings = buildAppSettingsSnapshot()
                     val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
+                    val highlightedMsgs = SmsMmsRepository.getHighlightedMessageIdsSnapshot()
+                    val blockedAddrs = SmsMmsRepository.getBlockedAddressesSnapshot()
                     val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
                     val currentThreads = SmsMmsRepository.threads.value
                     val currentDeleted = SmsMmsRepository.deletedThreads.value
@@ -251,6 +274,8 @@ class MainActivity : ComponentActivity() {
                         deletedThreads = currentDeleted,
                         pinnedAddresses = pinnedAddrs,
                         pinnedMessageIds = pinnedMsgs,
+                        highlightedMessageIds = highlightedMsgs,
+                        blockedAddresses = blockedAddrs,
                         deletedThreadsMeta = deletedMeta
                     )
                     val success = BackupManager.saveBackupToUri(this@MainActivity, uri, json)
@@ -295,6 +320,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         loadSavedAppPreferences()
+        SmsMmsRepository.initializePersistedState(this)
         lastBackupTimestamp = BackupManager.getLastBackupTimestamp(this)
         connectedGoogleAccount = BackupManager.getConnectedGoogleAccount(this)
         isGoogleDriveInstalled = BackupManager.isGoogleDriveInstalled(this)
@@ -304,16 +330,20 @@ class MainActivity : ComponentActivity() {
         setContent {
             val threads by SmsMmsRepository.threads.collectAsState()
             val deletedThreads by SmsMmsRepository.deletedThreads.collectAsState()
+            val blockedSenders by SmsMmsRepository.blockedSenders.collectAsState()
 
             // Query permissions dynamically (never cache permission state in fields)
             val hasSmsPerm = rememberDynamicSmsPermissionState(permissionRefreshTick)
             val isDefaultSms = rememberDynamicDefaultSmsState(permissionRefreshTick)
 
-            LaunchedEffect(hasSmsPerm, isDefaultSms, autoDeleteDays) {
+            var availableContacts by remember { mutableStateOf<List<ContactPickerItem>>(emptyList()) }
+
+            LaunchedEffect(hasSmsPerm, isDefaultSms, autoDeleteDays, threads.size) {
                 SmsMmsRepository.purgeExpiredDeletedThreads(this@MainActivity, autoDeleteDays)
                 if (hasSmsPerm || isDefaultSms) {
                     SmsMmsRepository.syncDeviceMessages(this@MainActivity, autoDeleteDays)
                 }
+                availableContacts = SmsMmsRepository.loadAvailableContactsForPicker(this@MainActivity)
             }
 
             val selectedThread = threads.find { it.id == activeThreadId }
@@ -325,7 +355,9 @@ class MainActivity : ComponentActivity() {
 
             TxturaTheme(
                 themeMode = themeMode,
-                wallpaperConfig = activeWallpaper
+                wallpaperConfig = activeWallpaper,
+                uiOpacity = uiOpacity,
+                uiColorMode = uiColorMode
             ) {
                 val strings = TxturaStrings.current()
 
@@ -379,6 +411,35 @@ class MainActivity : ComponentActivity() {
                             mainWallpaper = mainWallpaper,
                             uiColorMode = uiColorMode,
                             launcherIconShape = launcherIconShape,
+                            uiOpacity = uiOpacity,
+                            onUpdateUiOpacity = { newOpacity ->
+                                uiOpacity = newOpacity.coerceIn(0.25f, 1.0f)
+                                saveUiOpacity(uiOpacity)
+                            },
+                            categoryOrder = categoryOrder,
+                            onUpdateCategoryOrder = { newOrder ->
+                                categoryOrder = newOrder
+                                saveCategoryOrder(newOrder)
+                            },
+                            blockedSenders = blockedSenders,
+                            onBlockSender = { address ->
+                                SmsMmsRepository.blockSender(this@MainActivity, address)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.senderBlockedToast(address),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            onUnblockSender = { address ->
+                                SmsMmsRepository.unblockSender(this@MainActivity, address)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.senderUnblockedToast(address),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
                             swipeRightAction = swipeRightAction,
                             swipeLeftAction = swipeLeftAction,
                             autoDeleteDays = autoDeleteDays,
@@ -403,7 +464,6 @@ class MainActivity : ComponentActivity() {
                             onSelectUiColorMode = { mode ->
                                 uiColorMode = mode
                                 saveUiColorMode(mode)
-                                // If user switches mode, select the corresponding default/first preset if currently mismatched
                                 if (mode == UiColorMode.MONOCHROME && !mainWallpaper.preset.isMonochrome) {
                                     val cfg = WallpaperConfig(preset = WallpaperPreset.MONO_SLATE, customImageUri = null)
                                     mainWallpaper = cfg
@@ -495,6 +555,7 @@ class MainActivity : ComponentActivity() {
                             },
                             wallpaperConfig = activeChatWallpaper,
                             pendingAttachmentUri = pendingMmsUri,
+                            availableContacts = availableContacts,
                             onBack = {
                                 activeThreadId = null
                                 pendingMmsUri = null
@@ -504,6 +565,35 @@ class MainActivity : ComponentActivity() {
                             },
                             onTogglePinMessage = { msgId ->
                                 SmsMmsRepository.togglePinMessage(this@MainActivity, selectedThread.id, msgId)
+                            },
+                            onToggleHighlightMessage = { msgId ->
+                                SmsMmsRepository.toggleHighlightMessage(this@MainActivity, selectedThread.id, msgId)
+                            },
+                            onDeleteMessage = { msgId ->
+                                SmsMmsRepository.deleteMessage(this@MainActivity, selectedThread.id, msgId)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.messageDeletedToast,
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            onCopyMessageText = { text ->
+                                copyMessageTextToClipboard(text)
+                            },
+                            onForwardMessage = { recipientAddress, body ->
+                                val targetThreadId = SmsMmsRepository.sendMessage(
+                                    context = this@MainActivity,
+                                    recipientAddress = recipientAddress,
+                                    rawBody = body
+                                )
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.messageForwardedToast(recipientAddress),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                activeThreadId = targetThreadId
                             },
                             onOpenChatWallpaperPicker = {
                                 showChatWallpaperDialogForThread = selectedThread
@@ -540,11 +630,17 @@ class MainActivity : ComponentActivity() {
                         ConversationsListScreen(
                             threads = threads,
                             deletedCount = deletedThreads.size,
+                            autoDeleteDays = autoDeleteDays,
                             showContactPhotos = showContactPhotos,
                             listLayoutMode = listLayoutMode,
                             mainWallpaper = mainWallpaper,
                             swipeRightAction = swipeRightAction,
                             swipeLeftAction = swipeLeftAction,
+                            categoryOrder = categoryOrder,
+                            onUpdateCategoryOrder = { newOrder ->
+                                categoryOrder = newOrder
+                                saveCategoryOrder(newOrder)
+                            },
                             onOpenThread = { id ->
                                 SmsMmsRepository.markThreadRead(this@MainActivity, id)
                                 activeThreadId = id
@@ -558,6 +654,37 @@ class MainActivity : ComponentActivity() {
                             onMarkThreadRead = { id ->
                                 SmsMmsRepository.markThreadRead(this@MainActivity, id)
                             },
+                            onDeleteSelectedThreads = { threadIds ->
+                                SmsMmsRepository.moveThreadsToTrash(
+                                    context = this@MainActivity,
+                                    threadIds = threadIds,
+                                    retentionDays = autoDeleteDays
+                                )
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.threadsDeletedToast(threadIds.size),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            onMarkSelectedThreadsRead = { threadIds ->
+                                SmsMmsRepository.markThreadsRead(this@MainActivity, threadIds)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.threadsMarkedReadToast(threadIds.size),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            onBlockSelectedSenders = { addresses ->
+                                SmsMmsRepository.blockSenders(this@MainActivity, addresses)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.sendersBlockedToast(addresses.size),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
                             onCallSender = ::dialPhoneNumberSafely,
                             onOpenContact = ::openOrInsertContactSafely,
                             onCopyOtp = ::copyOtpConfidentially,
@@ -567,7 +694,15 @@ class MainActivity : ComponentActivity() {
                                 showNewMessageDialog = true
                             },
                             onOpenDeletedMessages = { showDeletedMessagesScreen = true },
-                            onMarkAllRead = { threads.forEach { thread -> SmsMmsRepository.markThreadRead(this@MainActivity, thread.id) } },
+                            onMarkAllRead = {
+                                SmsMmsRepository.markAllThreadsRead(this@MainActivity)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.allMessagesMarkedReadToast,
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
                             onOpenSettings = { showSettingsScreen = true }
                         )
                     }
@@ -641,17 +776,25 @@ class MainActivity : ComponentActivity() {
                 if (showNewMessageDialog) {
                     NewMessageDialog(
                         initialRecipient = prefilledRecipient,
-                        initialBody = prefilledBody,
+                        availableContacts = availableContacts,
                         onPickContact = ::launchSystemContactPicker,
                         onDismiss = { showNewMessageDialog = false },
-                        onSend = { recipient, body ->
-                            val createdThreadId = SmsMmsRepository.sendMessage(
+                        onSelectRecipient = { recipient, preferredName ->
+                            val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                                 context = this@MainActivity,
                                 recipientAddress = recipient,
-                                rawBody = body
+                                preferredName = preferredName
                             )
+                            if (prefilledBody.isNotBlank()) {
+                                SmsMmsRepository.sendMessage(
+                                    context = this@MainActivity,
+                                    recipientAddress = recipient,
+                                    rawBody = prefilledBody
+                                )
+                                prefilledBody = ""
+                            }
                             showNewMessageDialog = false
-                            activeThreadId = createdThreadId
+                            activeThreadId = threadId
                         }
                     )
                 }
@@ -744,6 +887,9 @@ class MainActivity : ComponentActivity() {
 
         val savedIconShape = prefs.getString(KEY_LAUNCHER_ICON_SHAPE, LauncherIconShape.ROUNDED_SQUARE.name)
         launcherIconShape = LauncherIconShape.entries.find { it.name == savedIconShape } ?: LauncherIconShape.ROUNDED_SQUARE
+
+        uiOpacity = prefs.getFloat(KEY_UI_OPACITY, 1.0f).coerceIn(0.25f, 1.0f)
+        categoryOrder = ConversationFilter.deserializeOrder(prefs.getString(KEY_CATEGORY_ORDER, null))
     }
 
     private fun contactWallpaperKey(address: String): String {
@@ -853,6 +999,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun saveUiOpacity(opacity: Float) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
+            putFloat(KEY_UI_OPACITY, opacity.coerceIn(0.25f, 1.0f))
+        }
+    }
+
+    private fun saveCategoryOrder(order: List<ConversationFilter>) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
+            putString(KEY_CATEGORY_ORDER, ConversationFilter.serializeOrder(order))
+        }
+    }
+
     private fun buildAppSettingsSnapshot(): AppSettingsSnapshot {
         return AppSettingsSnapshot(
             themeMode = themeMode,
@@ -866,7 +1024,9 @@ class MainActivity : ComponentActivity() {
             deletedGroupingMode = deletedGroupingMode,
             bubbleZoomScale = bubbleZoomScale,
             uiColorMode = uiColorMode,
-            launcherIconShape = launcherIconShape
+            launcherIconShape = launcherIconShape,
+            uiOpacity = uiOpacity,
+            categoryOrder = categoryOrder
         )
     }
 
@@ -883,6 +1043,8 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val settings = buildAppSettingsSnapshot()
             val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
+            val highlightedMsgs = SmsMmsRepository.getHighlightedMessageIdsSnapshot()
+            val blockedAddrs = SmsMmsRepository.getBlockedAddressesSnapshot()
             val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
             val currentThreads = SmsMmsRepository.threads.value
             val currentDeleted = SmsMmsRepository.deletedThreads.value
@@ -893,6 +1055,8 @@ class MainActivity : ComponentActivity() {
                 deletedThreads = currentDeleted,
                 pinnedAddresses = pinnedAddrs,
                 pinnedMessageIds = pinnedMsgs,
+                highlightedMessageIds = highlightedMsgs,
+                blockedAddresses = blockedAddrs,
                 deletedThreadsMeta = deletedMeta
             )
             val file = BackupManager.createInternalBackupFile(this@MainActivity, json)
@@ -932,6 +1096,8 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val settings = buildAppSettingsSnapshot()
             val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
+            val highlightedMsgs = SmsMmsRepository.getHighlightedMessageIdsSnapshot()
+            val blockedAddrs = SmsMmsRepository.getBlockedAddressesSnapshot()
             val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
             val currentThreads = SmsMmsRepository.threads.value
             val currentDeleted = SmsMmsRepository.deletedThreads.value
@@ -942,6 +1108,8 @@ class MainActivity : ComponentActivity() {
                 deletedThreads = currentDeleted,
                 pinnedAddresses = pinnedAddrs,
                 pinnedMessageIds = pinnedMsgs,
+                highlightedMessageIds = highlightedMsgs,
+                blockedAddresses = blockedAddrs,
                 deletedThreadsMeta = deletedMeta
             )
             val file = BackupManager.createInternalBackupFile(this@MainActivity, json)
@@ -1004,6 +1172,12 @@ class MainActivity : ComponentActivity() {
         launcherIconShape = payload.settings.launcherIconShape
         saveLauncherIconShape(launcherIconShape)
 
+        uiOpacity = payload.settings.uiOpacity
+        saveUiOpacity(uiOpacity)
+
+        categoryOrder = payload.settings.categoryOrder
+        saveCategoryOrder(categoryOrder)
+
         lifecycleScope.launch {
             val (threadCount, msgCount) = SmsMmsRepository.restoreDataFromBackup(this@MainActivity, payload)
             val locStrings = TxturaStrings.forLocale()
@@ -1048,7 +1222,15 @@ class MainActivity : ComponentActivity() {
         val validated = MessageSecurityAnalyzer.validateIncomingSmsIntent(this, incoming) ?: return
         prefilledRecipient = validated.recipientAddress
         prefilledBody = validated.prefilledBody.orEmpty()
-        showNewMessageDialog = true
+        if (prefilledRecipient.isNotBlank() && prefilledBody.isBlank()) {
+            val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
+                context = this,
+                recipientAddress = prefilledRecipient
+            )
+            activeThreadId = threadId
+        } else {
+            showNewMessageDialog = true
+        }
     }
 
     /**
@@ -1188,6 +1370,15 @@ class MainActivity : ComponentActivity() {
             data = Uri.fromParts("package", packageName, null)
         }
         startActivity(settingsIntent)
+    }
+
+    private fun copyMessageTextToClipboard(text: String) {
+        val strings = TxturaStrings.forLocale()
+        val clipboard = getSystemService(ClipboardManager::class.java) ?: return
+        val clip = ClipData.newPlainText("Message", text)
+        @Suppress("UsePropertyAccessSyntax")
+        clipboard.setPrimaryClip(clip)
+        Toast.makeText(this, strings.messageCopiedToast, Toast.LENGTH_SHORT).show()
     }
 
     /**

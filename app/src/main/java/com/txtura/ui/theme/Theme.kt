@@ -17,15 +17,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
+import androidx.core.graphics.get
+import androidx.core.graphics.scale
 import androidx.core.view.WindowCompat
+import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
-import kotlin.math.atan2
-import androidx.core.graphics.get
-import androidx.core.graphics.scale
 
 enum class TxturaThemeMode(val label: String) {
     AMOLED("AMOLED"),
@@ -55,6 +56,8 @@ data class GlassPalette(
     val safeColor: Color = EmeraldSafe,
     val cautionColor: Color = AmberCaution,
     val dangerColor: Color = RoseDanger,
+    val uiOpacity: Float = 1.0f,
+    val uiColorMode: UiColorMode = UiColorMode.COLORFUL
 )
 
 val LightGlassPalette = GlassPalette(
@@ -120,6 +123,7 @@ val LocalGlassPalette = staticCompositionLocalOf { AmoledGlassPalette }
  * Complementary Color Harmony Engine:
  * Adapts UI accents, message bubbles, specular glass borders, and card surfaces so they are
  * color-wheel complementary and visually harmonious with the active wallpaper preset or custom Gallery photo.
+ * For Monochrome themes, the base strictly follows Light vs Dark/AMOLED mode and applies 1 of 10 accent colors.
  */
 object WallpaperHarmonyEngine {
 
@@ -194,6 +198,7 @@ object WallpaperHarmonyEngine {
     /**
      * Returns the primary complementary UI accent color for a given [WallpaperPreset],
      * used both by the live theme and by the preset preview swatches.
+     * For the 10 Monochrome themes, provides 10 distinct accent colors adapted to Light vs Dark mode.
      */
     fun presetComplementaryAccent(preset: WallpaperPreset, isDark: Boolean): Color {
         return when (preset) {
@@ -209,21 +214,26 @@ object WallpaperHarmonyEngine {
             WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFDA4AF) else Color(0xFFE11D48)
             WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
 
-            // 10 Refined Monochrome Presets (Tonal single-color accents)
+            // 10 Monochrome Themes: Light/Dark mode base + 1 distinct accent color
             WallpaperPreset.MONO_SLATE -> if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
-            WallpaperPreset.MONO_SAPPHIRE -> if (isDark) Color(0xFF60A5FA) else Color(0xFF1D4ED8)
-            WallpaperPreset.MONO_SAGE -> if (isDark) Color(0xFF4ADE80) else Color(0xFF15803D)
-            WallpaperPreset.MONO_CHAMPAGNE -> if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309)
-            WallpaperPreset.MONO_PLUM -> if (isDark) Color(0xFFC084FC) else Color(0xFF7E22CE)
-            WallpaperPreset.MONO_GRAPHITE -> if (isDark) Color(0xFFA3A3A3) else Color(0xFF404040)
-            WallpaperPreset.MONO_ROSE -> if (isDark) Color(0xFFF472B6) else Color(0xFFBE185D)
-            WallpaperPreset.MONO_NAVY -> if (isDark) Color(0xFF93C5FD) else Color(0xFF1E40AF)
-            WallpaperPreset.MONO_SMOKE -> if (isDark) Color(0xFFA8A29E) else Color(0xFF57534E)
-            WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFFB923C) else Color(0xFF9A3412)
+            WallpaperPreset.MONO_SAPPHIRE -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+            WallpaperPreset.MONO_SAGE -> if (isDark) Color(0xFF34D399) else Color(0xFF059669)
+            WallpaperPreset.MONO_CHAMPAGNE -> if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
+            WallpaperPreset.MONO_PLUM -> if (isDark) Color(0xFFC084FC) else Color(0xFF7C3AED)
+            WallpaperPreset.MONO_GRAPHITE -> if (isDark) Color(0xFFE2E8F0) else Color(0xFF334155)
+            WallpaperPreset.MONO_ROSE -> if (isDark) Color(0xFFFB7185) else Color(0xFFE11D48)
+            WallpaperPreset.MONO_NAVY -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
+            WallpaperPreset.MONO_SMOKE -> if (isDark) Color(0xFF2DD4BF) else Color(0xFF0D9488)
+            WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFFB923C) else Color(0xFFEA580C)
         }
     }
 
     private fun presetSecondaryComplementaryAccent(preset: WallpaperPreset, isDark: Boolean): Color {
+        if (preset.isMonochrome) {
+            // Monochrome mode uses a single accent color family
+            val primary = presetComplementaryAccent(preset, isDark)
+            return if (isDark) lerp(primary, Color.White, 0.15f) else lerp(primary, Color.Black, 0.15f)
+        }
         return when (preset) {
             WallpaperPreset.DEFAULT -> if (isDark) WisteriaGlass else SapphireDeep
             WallpaperPreset.AURORA_BOREALIS -> if (isDark) Color(0xFFC084FC) else Color(0xFF9333EA)
@@ -236,29 +246,44 @@ object WallpaperHarmonyEngine {
             WallpaperPreset.CRIMSON_VELVET -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
             WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFCD34D) else Color(0xFFD97706)
             WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
-
-            // 10 Refined Monochrome Presets
-            WallpaperPreset.MONO_SLATE -> if (isDark) Color(0xFF64748B) else Color(0xFF334155)
-            WallpaperPreset.MONO_SAPPHIRE -> if (isDark) Color(0xFF3B82F6) else Color(0xFF1E3A8A)
-            WallpaperPreset.MONO_SAGE -> if (isDark) Color(0xFF22C55E) else Color(0xFF166534)
-            WallpaperPreset.MONO_CHAMPAGNE -> if (isDark) Color(0xFFF59E0B) else Color(0xFF78350F)
-            WallpaperPreset.MONO_PLUM -> if (isDark) Color(0xFFA855F7) else Color(0xFF581C87)
-            WallpaperPreset.MONO_GRAPHITE -> if (isDark) Color(0xFF737373) else Color(0xFF262626)
-            WallpaperPreset.MONO_ROSE -> if (isDark) Color(0xFFE11D48) else Color(0xFF831843)
-            WallpaperPreset.MONO_NAVY -> if (isDark) Color(0xFF60A5FA) else Color(0xFF172554)
-            WallpaperPreset.MONO_SMOKE -> if (isDark) Color(0xFF78716C) else Color(0xFF44403C)
-            WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFEA580C) else Color(0xFF7C2D12)
+            else -> presetComplementaryAccent(preset, isDark)
         }
     }
 
+    private fun applyOpacityMultiplier(palette: GlassPalette, uiOpacity: Float, uiColorMode: UiColorMode): GlassPalette {
+        val factor = uiOpacity.coerceIn(0.20f, 1.35f)
+        return palette.copy(
+            glassSurface = palette.glassSurface.copy(
+                alpha = (palette.glassSurface.alpha * factor).coerceIn(0.06f, 0.98f)
+            ),
+            glassSurfaceElevated = palette.glassSurfaceElevated.copy(
+                alpha = (palette.glassSurfaceElevated.alpha * factor).coerceIn(0.08f, 0.99f)
+            ),
+            incomingBubbleSurface = palette.incomingBubbleSurface.copy(
+                alpha = (palette.incomingBubbleSurface.alpha * factor).coerceIn(0.08f, 0.98f)
+            ),
+            outgoingBubbleStart = palette.outgoingBubbleStart.copy(
+                alpha = (palette.outgoingBubbleStart.alpha * factor).coerceIn(0.18f, 0.98f)
+            ),
+            outgoingBubbleEnd = palette.outgoingBubbleEnd.copy(
+                alpha = (palette.outgoingBubbleEnd.alpha * factor).coerceIn(0.18f, 0.98f)
+            ),
+            uiOpacity = factor,
+            uiColorMode = uiColorMode
+        )
+    }
+
     /**
-     * Produces a canonical, idempotent [GlassPalette] adapted to be complementary to [wallpaperConfig].
+     * Produces a canonical, idempotent [GlassPalette] adapted to be complementary to [wallpaperConfig],
+     * respecting [uiColorMode] and [uiOpacity].
      */
     fun adaptPalette(
         isDark: Boolean,
         isAmoled: Boolean,
         wallpaperConfig: WallpaperConfig,
-        customDominantColor: Color? = getCachedCustomColor(wallpaperConfig.customImageUri)
+        customDominantColor: Color? = getCachedCustomColor(wallpaperConfig.customImageUri),
+        uiOpacity: Float = 1.0f,
+        uiColorMode: UiColorMode = UiColorMode.COLORFUL
     ): GlassPalette {
         val canonicalBase = when {
             !isDark -> LightGlassPalette
@@ -311,7 +336,7 @@ object WallpaperHarmonyEngine {
                 lerp(canonicalBase.incomingBubbleSurface, customDominantColor.copy(alpha = 0.88f), 0.12f)
             }
 
-            return canonicalBase.copy(
+            val adapted = canonicalBase.copy(
                 orbPrimary = customDominantColor.copy(alpha = 0.32f),
                 orbSecondary = accentPrimary.copy(alpha = 0.26f),
                 glassSurface = tintedSurface,
@@ -324,12 +349,70 @@ object WallpaperHarmonyEngine {
                 outgoingBubbleEnd = bubbleEnd,
                 incomingBubbleSurface = tintedIncoming
             )
+            return applyOpacityMultiplier(adapted, uiOpacity, uiColorMode)
         }
 
         // 2. Built-in Wallpaper Preset
         val preset = wallpaperConfig.preset
+        val isMonochromeTheme = preset.isMonochrome || uiColorMode == UiColorMode.MONOCHROME
+
+        if (isMonochromeTheme) {
+            val activeMonoPreset = if (preset.isMonochrome) preset else WallpaperPreset.MONO_SLATE
+            val singleAccent = presetComplementaryAccent(activeMonoPreset, isDark)
+            val secondaryTone = presetSecondaryComplementaryAccent(activeMonoPreset, isDark)
+
+            // Monochrome base strictly follows Light vs Dark/AMOLED mode
+            val monoBgBase = when {
+                !isDark -> Color(0xFFF4F6F9)
+                isAmoled -> Color(0xFF000000)
+                else -> Color(0xFF0B0E14)
+            }
+
+            val surfaceBaseAlpha = canonicalBase.glassSurface.alpha
+            val elevatedBaseAlpha = canonicalBase.glassSurfaceElevated.alpha
+
+            val monoSurface = if (isDark) {
+                lerp(Color(0xFF181C24), singleAccent, 0.10f).copy(alpha = surfaceBaseAlpha)
+            } else {
+                lerp(Color.White, singleAccent, 0.05f).copy(alpha = surfaceBaseAlpha)
+            }
+            val monoElevated = if (isDark) {
+                lerp(Color(0xFF222731), singleAccent, 0.16f).copy(alpha = elevatedBaseAlpha)
+            } else {
+                lerp(Color.White, singleAccent, 0.09f).copy(alpha = elevatedBaseAlpha)
+            }
+            val monoIncoming = if (isDark) {
+                lerp(Color(0xFF1A1F29), singleAccent, 0.12f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+            } else {
+                lerp(Color.White, singleAccent, 0.06f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+            }
+
+            val bubbleAlpha = if (isAmoled) 0.84f else 0.90f
+            val bubbleBase = if (isDark) {
+                lerp(singleAccent, Color(0xFF0F172A), 0.35f)
+            } else {
+                singleAccent
+            }
+
+            val adapted = canonicalBase.copy(
+                backgroundBase = monoBgBase,
+                orbPrimary = singleAccent.copy(alpha = if (isDark) 0.22f else 0.16f),
+                orbSecondary = singleAccent.copy(alpha = if (isDark) 0.14f else 0.10f),
+                glassSurface = monoSurface,
+                glassSurfaceElevated = monoElevated,
+                glassBorderTop = singleAccent.copy(alpha = if (isDark) 0.48f else 0.55f),
+                glassBorderBottom = singleAccent.copy(alpha = if (isDark) 0.16f else 0.22f),
+                accentPrimary = singleAccent,
+                accentSecondary = secondaryTone,
+                outgoingBubbleStart = bubbleBase.copy(alpha = bubbleAlpha),
+                outgoingBubbleEnd = lerp(bubbleBase, Color.Black, 0.18f).copy(alpha = bubbleAlpha),
+                incomingBubbleSurface = monoIncoming
+            )
+            return applyOpacityMultiplier(adapted, uiOpacity, uiColorMode)
+        }
+
         if (preset == WallpaperPreset.DEFAULT) {
-            return canonicalBase
+            return applyOpacityMultiplier(canonicalBase, uiOpacity, uiColorMode)
         }
 
         val bgPrimary = Color(preset.primaryOrbHex)
@@ -338,16 +421,8 @@ object WallpaperHarmonyEngine {
         val compSecondary = presetSecondaryComplementaryAccent(preset, isDark)
 
         val bubbleAlpha = if (isAmoled) 0.82f else 0.88f
-        val bubbleStart = if (preset.isMonochrome) {
-            Color(preset.primaryOrbHex).copy(alpha = bubbleAlpha)
-        } else {
-            lerp(compPrimary, bgSecondary, 0.25f).copy(alpha = bubbleAlpha)
-        }
-        val bubbleEnd = if (preset.isMonochrome) {
-            Color(preset.secondaryOrbHex).copy(alpha = bubbleAlpha)
-        } else {
-            lerp(compSecondary, bgPrimary, 0.30f).copy(alpha = bubbleAlpha)
-        }
+        val bubbleStart = lerp(compPrimary, bgSecondary, 0.25f).copy(alpha = bubbleAlpha)
+        val bubbleEnd = lerp(compSecondary, bgPrimary, 0.30f).copy(alpha = bubbleAlpha)
 
         val surfaceBaseAlpha = canonicalBase.glassSurface.alpha
         val elevatedBaseAlpha = canonicalBase.glassSurfaceElevated.alpha
@@ -368,7 +443,7 @@ object WallpaperHarmonyEngine {
             lerp(Color.White, bgPrimary, 0.09f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
         }
 
-        return canonicalBase.copy(
+        val adapted = canonicalBase.copy(
             backgroundBase = if (isDark) Color(preset.baseColorHex) else canonicalBase.backgroundBase,
             orbPrimary = bgPrimary.copy(alpha = if (isDark) 0.30f else 0.24f),
             orbSecondary = bgSecondary.copy(alpha = if (isDark) 0.26f else 0.20f),
@@ -382,6 +457,7 @@ object WallpaperHarmonyEngine {
             outgoingBubbleEnd = bubbleEnd,
             incomingBubbleSurface = tintedIncoming
         )
+        return applyOpacityMultiplier(adapted, uiOpacity, uiColorMode)
     }
 
     fun colorSchemeForPalette(palette: GlassPalette): ColorScheme {
@@ -424,6 +500,8 @@ object WallpaperHarmonyEngine {
 fun TxturaTheme(
     themeMode: TxturaThemeMode = TxturaThemeMode.AMOLED,
     wallpaperConfig: WallpaperConfig = WallpaperConfig(),
+    uiOpacity: Float = 1.0f,
+    uiColorMode: UiColorMode = UiColorMode.COLORFUL,
     content: @Composable () -> Unit
 ) {
     val systemDark = isSystemInDarkTheme()
@@ -434,11 +512,13 @@ fun TxturaTheme(
         TxturaThemeMode.SYSTEM -> if (systemDark) AmoledGlassPalette else LightGlassPalette
     }
 
-    val adaptedPalette = remember(basePalette, wallpaperConfig) {
+    val adaptedPalette = remember(basePalette, wallpaperConfig, uiOpacity, uiColorMode) {
         WallpaperHarmonyEngine.adaptPalette(
             isDark = basePalette.isDark,
             isAmoled = basePalette.isAmoled,
-            wallpaperConfig = wallpaperConfig
+            wallpaperConfig = wallpaperConfig,
+            uiOpacity = uiOpacity,
+            uiColorMode = uiColorMode
         )
     }
 

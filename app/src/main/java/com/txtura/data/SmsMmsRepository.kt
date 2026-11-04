@@ -45,13 +45,23 @@ object SmsMmsRepository {
     private const val PREFS_NAME = "txtura_pinned_prefs"
     private const val KEY_PINNED_ADDRS = "pinned_addresses"
     private const val KEY_PINNED_MSGS = "pinned_message_ids"
+    private const val KEY_HIGHLIGHTED_MSGS = "highlighted_message_ids"
+    private const val KEY_BLOCKED_ADDRS = "blocked_sender_addresses"
     private const val KEY_DELETED_THREADS = "deleted_threads_meta"
 
-    // Keeps track of pinned contact addresses and pinned individual message IDs
+    // Keeps track of pinned contact addresses, pinned message IDs, highlighted message IDs, and blocked senders
     private val pinnedAddresses: MutableSet<String> =
         Collections.synchronizedSet(mutableSetOf("+381641122334", "BANK-OTP"))
     private val pinnedMessageIds: MutableSet<Long> =
         Collections.synchronizedSet(mutableSetOf(1L, 4L))
+    private val highlightedMessageIds: MutableSet<Long> =
+        Collections.synchronizedSet(mutableSetOf())
+    private val blockedAddresses: MutableSet<String> =
+        Collections.synchronizedSet(mutableSetOf())
+
+    // Cached threads that were hidden because their sender was blocked (so unblocking can restore them in demo/memory mode)
+    private val blockedThreadsCache: MutableMap<String, ConversationThread> =
+        Collections.synchronizedMap(mutableMapOf())
 
     // Map of soft-deleted threadId -> deletedAtMillis (persisted across app restarts)
     private val deletedThreadTimestamps: MutableMap<Long, Long> =
@@ -62,6 +72,9 @@ object SmsMmsRepository {
 
     private val _deletedThreads = MutableStateFlow<List<DeletedConversationEntry>>(emptyList())
     val deletedThreads: StateFlow<List<DeletedConversationEntry>> = _deletedThreads.asStateFlow()
+
+    private val _blockedSenders = MutableStateFlow<List<String>>(emptyList())
+    val blockedSenders: StateFlow<List<String>> = _blockedSenders.asStateFlow()
 
     /**
      * Dynamically checks if READ_SMS is granted at invocation time (never cached in fields).
@@ -97,6 +110,10 @@ object SmsMmsRepository {
         }
     }
 
+    fun initializePersistedState(context: Context) {
+        loadPersistedPins(context)
+    }
+
     private fun loadPersistedPins(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.getStringSet(KEY_PINNED_ADDRS, null)?.let { saved ->
@@ -106,6 +123,15 @@ object SmsMmsRepository {
         prefs.getStringSet(KEY_PINNED_MSGS, null)?.let { saved ->
             pinnedMessageIds.clear()
             saved.mapNotNull { it.toLongOrNull() }.forEach { pinnedMessageIds.add(it) }
+        }
+        prefs.getStringSet(KEY_HIGHLIGHTED_MSGS, null)?.let { saved ->
+            highlightedMessageIds.clear()
+            saved.mapNotNull { it.toLongOrNull() }.forEach { highlightedMessageIds.add(it) }
+        }
+        prefs.getStringSet(KEY_BLOCKED_ADDRS, null)?.let { saved ->
+            blockedAddresses.clear()
+            blockedAddresses.addAll(saved)
+            _blockedSenders.value = blockedAddresses.sorted()
         }
         prefs.getStringSet(KEY_DELETED_THREADS, null)?.let { saved ->
             deletedThreadTimestamps.clear()
@@ -131,16 +157,105 @@ object SmsMmsRepository {
                 .toSet()
         }
         prefs.edit {
-            putStringSet(KEY_PINNED_ADDRS, pinnedAddresses.toSet())
-            putStringSet(KEY_PINNED_MSGS, pinnedMessageIds.asSequence().map { it.toString() }.toSet())
+            putStringSet(KEY_PINNED_ADDRS, synchronized(pinnedAddresses) { pinnedAddresses.toSet() })
+            putStringSet(KEY_PINNED_MSGS, synchronized(pinnedMessageIds) { pinnedMessageIds.asSequence().map { it.toString() }.toSet() })
+            putStringSet(KEY_HIGHLIGHTED_MSGS, synchronized(highlightedMessageIds) { highlightedMessageIds.asSequence().map { it.toString() }.toSet() })
+            putStringSet(KEY_BLOCKED_ADDRS, synchronized(blockedAddresses) { blockedAddresses.toSet() })
             putStringSet(KEY_DELETED_THREADS, serializedDeleted)
         }
     }
 
     /**
-     * Loads the complete existing SMS and MMS history (both received messages and sent replies,
-     * unread states, and MMS media parts) from Android's system Telephony provider so the user
-     * can seamlessly continue all existing conversations after installing Txtura.
+     * Checks if a sender address is currently blocked.
+     */
+    fun isSenderBlocked(address: String): Boolean {
+        val clean = address.trim()
+        if (clean.isBlank()) return false
+        val normKey = normalizeAddressKey(clean)
+        return synchronized(blockedAddresses) {
+            blockedAddresses.any { blocked ->
+                blocked.equals(clean, ignoreCase = true) ||
+                    normalizeAddressKey(blocked) == normKey ||
+                    arePhoneNumbersEqual(blocked, clean)
+            }
+        }
+    }
+
+    /**
+     * Blocks a single sender address and removes their active conversations from the inbox.
+     */
+    fun blockSender(context: Context, address: String) {
+        blockSenders(context, listOf(address))
+    }
+
+    /**
+     * Blocks multiple sender addresses and removes their active conversations from the inbox.
+     */
+    fun blockSenders(context: Context, addresses: Collection<String>) {
+        val cleaned = addresses.map { it.trim() }.filter { it.isNotBlank() }
+        if (cleaned.isEmpty()) return
+
+        synchronized(blockedAddresses) {
+            cleaned.forEach { addr ->
+                val alreadyPresent = blockedAddresses.any {
+                    it.equals(addr, ignoreCase = true) || arePhoneNumbersEqual(it, addr)
+                }
+                if (!alreadyPresent) {
+                    blockedAddresses.add(addr)
+                }
+            }
+            _blockedSenders.value = blockedAddresses.sorted()
+        }
+        savePersistedPins(context)
+
+        _threads.update { current ->
+            val remaining = mutableListOf<ConversationThread>()
+            for (thread in current) {
+                if (isSenderBlocked(thread.address)) {
+                    blockedThreadsCache[normalizeAddressKey(thread.address)] = thread
+                } else {
+                    remaining.add(thread)
+                }
+            }
+            remaining
+        }
+    }
+
+    /**
+     * Unblocks a previously blocked sender address and restores their thread if cached or on device.
+     */
+    fun unblockSender(context: Context, address: String) {
+        val clean = address.trim()
+        val normKey = normalizeAddressKey(clean)
+        synchronized(blockedAddresses) {
+            blockedAddresses.removeAll { blocked ->
+                blocked.equals(clean, ignoreCase = true) ||
+                    normalizeAddressKey(blocked) == normKey ||
+                    arePhoneNumbersEqual(blocked, clean)
+            }
+            _blockedSenders.value = blockedAddresses.sorted()
+        }
+        savePersistedPins(context)
+
+        val cached = blockedThreadsCache.remove(normKey)
+        if (cached != null) {
+            _threads.update { current ->
+                if (current.none { it.id == cached.id }) {
+                    sortThreads(current + cached)
+                } else {
+                    current
+                }
+            }
+        }
+        ioScope.launch {
+            if (hasReadSmsPermission(context)) {
+                syncDeviceMessages(context)
+            }
+        }
+    }
+
+    /**
+     * Loads the complete existing SMS and MMS history from Android's system Telephony provider.
      */
     suspend fun syncDeviceMessages(
         context: Context,
@@ -149,6 +264,10 @@ object SmsMmsRepository {
         loadPersistedPins(context)
         purgeExpiredDeletedThreads(context, retentionDays)
         if (!hasReadSmsPermission(context)) {
+            // Even in demo mode, filter out blocked senders
+            _threads.update { current ->
+                current.filterNot { isSenderBlocked(it.address) }
+            }
             return@withContext
         }
 
@@ -221,6 +340,7 @@ object SmsMmsRepository {
                             type = MessageType.SMS,
                             status = deliveryStatus,
                             isPinned = id in pinnedMessageIds,
+                            isHighlighted = id in highlightedMessageIds,
                             securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(cleanBody)
                         )
                     )
@@ -282,10 +402,14 @@ object SmsMmsRepository {
                 )
             }
 
-        // Partition threads into active inbox vs soft-deleted Trash threads
+        // Partition threads into active inbox vs soft-deleted Trash threads, excluding blocked senders
         val activeList = mutableListOf<ConversationThread>()
         val trashedFromDevice = mutableListOf<DeletedConversationEntry>()
         for (thread in deviceThreads) {
+            if (isSenderBlocked(thread.address)) {
+                blockedThreadsCache[normalizeAddressKey(thread.address)] = thread
+                continue
+            }
             val deletedAt = deletedThreadTimestamps[thread.id]
             if (deletedAt != null) {
                 trashedFromDevice.add(
@@ -344,7 +468,6 @@ object SmsMmsRepository {
                 while (cursor.moveToNext()) {
                     val mmsId = cursor.getLong(idIdx)
                     val threadId = cursor.getLong(threadIdx)
-                    // Telephony.Mms.DATE is stored in seconds, convert to milliseconds
                     val rawDate = cursor.getLong(dateIdx)
                     val dateMillis = if (rawDate < 10_000_000_000L) rawDate * 1000L else rawDate
                     val msgBox = cursor.getInt(boxIdx)
@@ -362,7 +485,6 @@ object SmsMmsRepository {
                     val cleanBody = MessageSecurityAnalyzer.sanitizeMessageText(
                         mmsText.ifBlank { fallbackBody }
                     )
-                    // Offset MMS ID so it never collides with SMS _ID
                     val uniqueMsgId = 1_000_000_000L + mmsId
 
                     outMessages.add(
@@ -373,10 +495,10 @@ object SmsMmsRepository {
                             body = cleanBody,
                             timestampMillis = dateMillis,
                             isIncoming = isIncoming,
-                            // Categorize as MMS strictly when a real file/media attachment is present
                             type = if (mmsAttachment != null) MessageType.MMS else MessageType.SMS,
                             status = DeliveryStatus.DELIVERED,
                             isPinned = uniqueMsgId in pinnedMessageIds,
+                            isHighlighted = uniqueMsgId in highlightedMessageIds,
                             attachment = mmsAttachment,
                             securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(cleanBody)
                         )
@@ -403,7 +525,6 @@ object SmsMmsRepository {
                     val addr = cursor.getString(0).orEmpty()
                     val type = cursor.getInt(1)
                     if (addr.isNotBlank() && !addr.equals("insert-address-token", ignoreCase = true)) {
-                        // Type 137 = PduHeaders.FROM, Type 151 = PduHeaders.TO
                         if (type == 137) return addr
                         if (fallbackAddr == null) fallbackAddr = addr
                     }
@@ -574,6 +695,140 @@ object SmsMmsRepository {
     }
 
     /**
+     * Queries device contacts (when READ_CONTACTS is granted) combined with existing conversation
+     * participants so the user can immediately pick a recipient when starting a New Message.
+     */
+    suspend fun loadAvailableContactsForPicker(context: Context): List<ContactPickerItem> =
+        withContext(Dispatchers.IO) {
+            val result = LinkedHashMap<String, ContactPickerItem>()
+            val activeThreads = _threads.value
+
+            // 1. Add existing conversation threads first (with existingThreadId)
+            for (thread in activeThreads) {
+                val key = normalizeAddressKey(thread.address)
+                result[key] = ContactPickerItem(
+                    name = thread.contactName,
+                    address = thread.address,
+                    initials = thread.avatarInitials,
+                    photoUri = thread.contactPhotoUri,
+                    existingThreadId = thread.id
+                )
+            }
+
+            // 2. Query system Contacts if permission is granted
+            if (ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.READ_CONTACTS
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                try {
+                    val projection = arrayOf(
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                        ContactsContract.CommonDataKinds.Phone.NUMBER,
+                        ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI
+                    )
+                    context.contentResolver.query(
+                        ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                        projection,
+                        null,
+                        null,
+                        "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC LIMIT 250"
+                    )?.use { cursor ->
+                        val nameIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                        val numIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                        val photoIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI)
+
+                        while (cursor.moveToNext()) {
+                            val rawName = cursor.getString(nameIdx).orEmpty().trim()
+                            val rawNum = cursor.getString(numIdx).orEmpty().trim()
+                            val photoStr = cursor.getString(photoIdx)
+                            val cleanNum = MessageSecurityAnalyzer.sanitizePhoneNumber(rawNum)
+                            if (cleanNum.isNotBlank()) {
+                                val key = normalizeAddressKey(cleanNum)
+                                if (!result.containsKey(key)) {
+                                    val displayName = rawName.ifBlank { cleanNum }
+                                    val matchingThread = activeThreads.find {
+                                        arePhoneNumbersEqual(it.address, cleanNum)
+                                    }
+                                    result[key] = ContactPickerItem(
+                                        name = displayName,
+                                        address = cleanNum,
+                                        initials = computeInitials(displayName),
+                                        photoUri = photoStr?.takeIf { it.isNotBlank() }?.toUri(),
+                                        existingThreadId = matchingThread?.id
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Ignore contact query failure
+                }
+            }
+
+            result.values.toList()
+        }
+
+    /**
+     * Finds an existing conversation thread with [rawRecipient] (restoring from Trash if needed)
+     * or creates a new conversation thread if no previous chat exists with that person,
+     * returning the thread ID so the chat screen can open immediately.
+     */
+    fun getOrCreateConversationWithRecipient(
+        context: Context,
+        rawRecipient: String,
+        preferredName: String? = null
+    ): Long {
+        val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(rawRecipient)
+            .ifBlank { rawRecipient.trim().take(24) }
+
+        // 1. Check active threads
+        val existingActive = _threads.value.find {
+            arePhoneNumbersEqual(it.address, cleanAddress) ||
+                it.address.equals(cleanAddress, ignoreCase = true) ||
+                it.contactName.equals(cleanAddress, ignoreCase = true)
+        }
+        if (existingActive != null) {
+            markThreadRead(context, existingActive.id)
+            return existingActive.id
+        }
+
+        // 2. Check soft-deleted threads (restore if user starts a chat with them)
+        val existingDeleted = _deletedThreads.value.find {
+            arePhoneNumbersEqual(it.thread.address, cleanAddress) ||
+                it.thread.address.equals(cleanAddress, ignoreCase = true)
+        }
+        if (existingDeleted != null) {
+            restoreDeletedThread(context, existingDeleted.thread.id)
+            return existingDeleted.thread.id
+        }
+
+        // 3. Create a brand-new conversation thread
+        val newThreadId = nextId.incrementAndGet()
+        val resolvedName = preferredName?.takeIf { it.isNotBlank() }
+            ?: resolveContactNameSafely(context, cleanAddress)
+            ?: cleanAddress
+        val resolvedPhotoUri = resolveContactPhotoUriSafely(context, cleanAddress)
+
+        val newThread = ConversationThread(
+            id = newThreadId,
+            contactName = resolvedName,
+            address = cleanAddress,
+            avatarInitials = computeInitials(resolvedName),
+            avatarAccentColorHex = 0xFF00E5FF,
+            contactPhotoUri = resolvedPhotoUri,
+            messages = emptyList(),
+            unreadCount = 0,
+            isPinned = isAddressPinned(cleanAddress)
+        )
+
+        _threads.update { current ->
+            sortThreads(listOf(newThread) + current)
+        }
+        return newThreadId
+    }
+
+    /**
      * Sends an SMS or MMS message securely and writes it to the system Telephony provider
      * when Txtura is the Default SMS App so conversation history persists across apps.
      */
@@ -647,7 +902,6 @@ object SmsMmsRepository {
                     }
                     deliveryStatus = DeliveryStatus.DELIVERED
 
-                    // If Txtura is Default SMS App, persist outgoing SMS into system Telephony.Sms.Sent
                     persistMessageToSystemProviderIfDefault(
                         context = context,
                         address = cleanAddress,
@@ -723,7 +977,7 @@ object SmsMmsRepository {
 
     /**
      * Called by SmsDeliverReceiver or MmsWapPushReceiver when a new message arrives.
-     * Also writes the incoming SMS to the system Telephony provider when Txtura holds ROLE_SMS.
+     * Drops messages from blocked senders.
      */
     fun onIncomingMessageReceived(
         context: Context? = null,
@@ -733,6 +987,14 @@ object SmsMmsRepository {
     ) {
         val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(senderAddress)
             .ifBlank { senderAddress.take(24) }
+        if (context != null) {
+            loadPersistedPins(context)
+        }
+        if (isSenderBlocked(cleanAddress)) {
+            Log.i(TAG, "Dropped incoming message from blocked sender: $cleanAddress")
+            return
+        }
+
         val cleanBody = MessageSecurityAnalyzer.sanitizeMessageText(rawBody)
         val now = System.currentTimeMillis()
         val msgId = nextId.incrementAndGet()
@@ -799,12 +1061,19 @@ object SmsMmsRepository {
     }
 
     /**
-     * Marks a conversation as read both in memory and in the Android Telephony database
-     * (when Txtura is the Default SMS app).
+     * Marks a conversation as read both in memory and in the Android Telephony database.
      */
     fun markThreadRead(context: Context, threadId: Long) {
+        markThreadsRead(context, setOf(threadId))
+    }
+
+    /**
+     * Marks multiple conversations as read.
+     */
+    fun markThreadsRead(context: Context, threadIds: Set<Long>) {
+        if (threadIds.isEmpty()) return
         _threads.update { list ->
-            list.map { if (it.id == threadId) it.copy(unreadCount = 0) else it }
+            list.map { if (it.id in threadIds) it.copy(unreadCount = 0) else it }
         }
         val appCtx = context.applicationContext
         ioScope.launch {
@@ -814,17 +1083,27 @@ object SmsMmsRepository {
                         put(Telephony.Sms.READ, 1)
                         put(Telephony.Sms.SEEN, 1)
                     }
-                    appCtx.contentResolver.update(
-                        Telephony.Sms.CONTENT_URI,
-                        values,
-                        "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.READ} = ?",
-                        arrayOf(threadId.toString(), "0")
-                    )
+                    threadIds.forEach { tid ->
+                        appCtx.contentResolver.update(
+                            Telephony.Sms.CONTENT_URI,
+                            values,
+                            "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.READ} = ?",
+                            arrayOf(tid.toString(), "0")
+                        )
+                    }
                 } catch (_: Exception) {
                     // Ignore if not default SMS app or read-only provider
                 }
             }
         }
+    }
+
+    /**
+     * Marks all conversations as read.
+     */
+    fun markAllThreadsRead(context: Context) {
+        val allIds = _threads.value.map { it.id }.toSet()
+        markThreadsRead(context, allIds)
     }
 
     private fun persistMessageToSystemProviderIfDefault(
@@ -911,26 +1190,108 @@ object SmsMmsRepository {
     }
 
     /**
-     * Moves a conversation thread to the Deleted Messages (Trash) folder instead of immediately
-     * destroying it. It will be automatically permanently deleted after [retentionDays] days.
+     * Highlights or unhighlights a specific message inside a contact's conversation.
+     */
+    fun toggleHighlightMessage(context: Context, threadId: Long, messageId: Long) {
+        _threads.update { list ->
+            list.map { thread ->
+                if (thread.id == threadId) {
+                    val updatedMessages = thread.messages.map { msg ->
+                        if (msg.id == messageId) {
+                            val newHighlighted = !msg.isHighlighted
+                            if (newHighlighted) {
+                                highlightedMessageIds.add(msg.id)
+                            } else {
+                                highlightedMessageIds.remove(msg.id)
+                            }
+                            msg.copy(isHighlighted = newHighlighted)
+                        } else {
+                            msg
+                        }
+                    }
+                    thread.copy(messages = updatedMessages)
+                } else {
+                    thread
+                }
+            }
+        }
+        savePersistedPins(context)
+    }
+
+    /**
+     * Deletes a single message from a conversation thread.
+     */
+    fun deleteMessage(context: Context, threadId: Long, messageId: Long) {
+        pinnedMessageIds.remove(messageId)
+        highlightedMessageIds.remove(messageId)
+        savePersistedPins(context)
+
+        _threads.update { list ->
+            val updated = list.map { thread ->
+                if (thread.id == threadId) {
+                    thread.copy(messages = thread.messages.filterNot { it.id == messageId })
+                } else {
+                    thread
+                }
+            }
+            sortThreads(updated)
+        }
+
+        val appCtx = context.applicationContext
+        ioScope.launch {
+            if (!isDefaultSmsApp(appCtx)) return@launch
+            try {
+                if (messageId < 1_000_000_000L) {
+                    appCtx.contentResolver.delete(
+                        Telephony.Sms.CONTENT_URI,
+                        "${Telephony.Sms._ID} = ?",
+                        arrayOf(messageId.toString())
+                    )
+                }
+            } catch (_: Exception) {
+                // Ignore if read-only
+            }
+        }
+    }
+
+    /**
+     * Moves a conversation thread to the Deleted Messages (Trash) folder.
      */
     fun moveThreadToTrash(
         context: Context,
         threadId: Long,
         retentionDays: Int = 30
     ) {
+        moveThreadsToTrash(context, setOf(threadId), retentionDays)
+    }
+
+    /**
+     * Moves multiple conversation threads to the Deleted Messages (Trash) folder.
+     */
+    fun moveThreadsToTrash(
+        context: Context,
+        threadIds: Set<Long>,
+        retentionDays: Int = 30
+    ) {
+        if (threadIds.isEmpty()) return
         val now = System.currentTimeMillis()
-        val target = _threads.value.find { it.id == threadId } ?: return
-        deletedThreadTimestamps[threadId] = now
+        val targets = _threads.value.filter { it.id in threadIds }
+        if (targets.isEmpty()) return
+
+        targets.forEach { target ->
+            deletedThreadTimestamps[target.id] = now
+        }
         savePersistedPins(context)
 
-        _threads.update { list -> list.filterNot { it.id == threadId } }
+        _threads.update { list -> list.filterNot { it.id in threadIds } }
         _deletedThreads.update { currentTrash ->
-            val entry = DeletedConversationEntry(
-                thread = target,
-                deletedAtMillis = now
-            )
-            (listOf(entry) + currentTrash.filterNot { it.thread.id == threadId })
+            val newEntries = targets.map { target ->
+                DeletedConversationEntry(
+                    thread = target,
+                    deletedAtMillis = now
+                )
+            }
+            (newEntries + currentTrash.filterNot { it.thread.id in threadIds })
                 .sortedByDescending { it.deletedAtMillis }
         }
         purgeExpiredDeletedThreads(context, retentionDays)
@@ -1015,6 +1376,14 @@ object SmsMmsRepository {
         )
     }
 
+    fun getHighlightedMessageIdsSnapshot(): Set<Long> {
+        return synchronized(highlightedMessageIds) { highlightedMessageIds.toSet() }
+    }
+
+    fun getBlockedAddressesSnapshot(): Set<String> {
+        return synchronized(blockedAddresses) { blockedAddresses.toSet() }
+    }
+
     /**
      * Snapshot of deleted thread timestamps for backup.
      */
@@ -1023,7 +1392,8 @@ object SmsMmsRepository {
     }
 
     /**
-     * Restores threads, deleted trash entries, pinned contacts, and pinned message IDs from a backup payload.
+     * Restores threads, deleted trash entries, pinned contacts, pinned message IDs,
+     * highlighted message IDs, and blocked addresses from a backup payload.
      */
     suspend fun restoreDataFromBackup(
         context: Context,
@@ -1037,13 +1407,22 @@ object SmsMmsRepository {
             pinnedMessageIds.clear()
             pinnedMessageIds.addAll(payload.pinnedMessageIds)
         }
+        synchronized(highlightedMessageIds) {
+            highlightedMessageIds.clear()
+            highlightedMessageIds.addAll(payload.highlightedMessageIds)
+        }
+        synchronized(blockedAddresses) {
+            blockedAddresses.clear()
+            blockedAddresses.addAll(payload.blockedAddresses)
+            _blockedSenders.value = blockedAddresses.sorted()
+        }
         synchronized(deletedThreadTimestamps) {
             deletedThreadTimestamps.clear()
             deletedThreadTimestamps.putAll(payload.deletedThreadsMeta)
         }
         savePersistedPins(context)
 
-        _threads.value = sortThreads(payload.threads)
+        _threads.value = sortThreads(payload.threads.filterNot { isSenderBlocked(it.address) })
         _deletedThreads.value = payload.deletedThreads
 
         val totalThreads = payload.threads.size + payload.deletedThreads.size
@@ -1067,7 +1446,7 @@ object SmsMmsRepository {
         }
     }
 
-    private fun arePhoneNumbersEqual(a: String, b: String): Boolean {
+    fun arePhoneNumbersEqual(a: String, b: String): Boolean {
         if (a.equals(b, ignoreCase = true)) return true
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
@@ -1102,7 +1481,7 @@ object SmsMmsRepository {
         )
     }
 
-    private fun computeInitials(name: String): String {
+    fun computeInitials(name: String): String {
         val parts = name.trim().split(" ").filter { it.isNotBlank() }
         return when {
             parts.size >= 2 -> "${parts[0].first().uppercaseChar()}${parts[1].first().uppercaseChar()}"
@@ -1221,7 +1600,7 @@ object SmsMmsRepository {
             ConversationThread(
                 id = 903L,
                 contactName = if (isSr) "DExpress Kurir" else "Express Courier",
-                address = "+381641234567",
+                address = "DEXPRESS",
                 avatarInitials = "EC",
                 avatarAccentColorHex = 0xFF6366F1,
                 unreadCount = 0,
@@ -1229,7 +1608,7 @@ object SmsMmsRepository {
                     ChatMessage(
                         id = 5L,
                         threadId = 903L,
-                        address = "+381641234567",
+                        address = "DEXPRESS",
                         body = courierMsg,
                         timestampMillis = now - 7_200_000L,
                         isIncoming = true,
