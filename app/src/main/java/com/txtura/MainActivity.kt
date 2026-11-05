@@ -42,7 +42,6 @@ import com.txtura.data.ContactPickerItem
 import com.txtura.data.ConversationFilter
 import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedGroupingMode
-import com.txtura.data.LauncherIconShape
 import com.txtura.data.MainListLayoutMode
 import com.txtura.data.SmsMmsRepository
 import com.txtura.data.SwipeAction
@@ -86,8 +85,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_MAIN_WALLPAPER = "main_window_wallpaper"
         private const val KEY_CONTACT_WALLPAPERS = "contact_chat_wallpapers_v1"
         private const val KEY_UI_COLOR_MODE = "ui_color_mode"
-        private const val KEY_LAUNCHER_ICON_SHAPE = "launcher_icon_shape"
-        private const val KEY_UI_OPACITY = "ui_opacity_v2"
+        private const val KEY_UI_OPACITY = "ui_opacity_v3"
         private const val KEY_CATEGORY_ORDER = "category_order_v1"
         private const val GALLERY_TARGET_MAIN = "__MAIN__"
     }
@@ -99,8 +97,7 @@ class MainActivity : ComponentActivity() {
     private var mainWallpaper by mutableStateOf(WallpaperConfig())
     private var contactWallpapers by mutableStateOf<Map<String, WallpaperConfig>>(emptyMap())
     private var uiColorMode by mutableStateOf(UiColorMode.COLORFUL)
-    private var launcherIconShape by mutableStateOf(LauncherIconShape.ROUNDED_SQUARE)
-    private var uiOpacity by mutableFloatStateOf(1.0f)
+    private var uiOpacity by mutableFloatStateOf(0.50f)
     private var categoryOrder by mutableStateOf(ConversationFilter.defaultOrder)
     private var swipeRightAction by mutableStateOf(SwipeAction.PIN)
     private var swipeLeftAction by mutableStateOf(SwipeAction.DELETE)
@@ -406,7 +403,6 @@ class MainActivity : ComponentActivity() {
                             listLayoutMode = listLayoutMode,
                             mainWallpaper = mainWallpaper,
                             uiColorMode = uiColorMode,
-                            launcherIconShape = launcherIconShape,
                             uiOpacity = uiOpacity,
                             onUpdateUiOpacity = { newOpacity ->
                                 uiOpacity = newOpacity.coerceIn(0.0f, 1.0f)
@@ -472,23 +468,6 @@ class MainActivity : ComponentActivity() {
                                     mainWallpaper = cfg
                                     saveMainWallpaper(cfg)
                                 }
-                            },
-                            onSelectLauncherIconShape = { shape ->
-                                launcherIconShape = shape
-                                saveLauncherIconShape(shape)
-                                val locStrings = TxturaStrings.forLocale()
-                                val shapeName = when (shape) {
-                                    LauncherIconShape.CIRCLE -> locStrings.launcherIconShapeCircle
-                                    LauncherIconShape.SQUIRCLE -> locStrings.launcherIconShapeSquircle
-                                    LauncherIconShape.ROUNDED_SQUARE -> locStrings.launcherIconShapeRoundedSquare
-                                    LauncherIconShape.TEARDROP -> locStrings.launcherIconShapeTeardrop
-                                    LauncherIconShape.PEBBLE -> locStrings.launcherIconShapePebble
-                                }
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    locStrings.launcherIconShapeSavedToast(shapeName),
-                                    Toast.LENGTH_SHORT
-                                ).show()
                             },
                             onSelectMainWallpaperPreset = { preset ->
                                 val cfg = WallpaperConfig(
@@ -910,10 +889,7 @@ class MainActivity : ComponentActivity() {
         val savedColorMode = prefs.getString(KEY_UI_COLOR_MODE, UiColorMode.COLORFUL.name)
         uiColorMode = UiColorMode.entries.find { it.name == savedColorMode } ?: UiColorMode.COLORFUL
 
-        val savedIconShape = prefs.getString(KEY_LAUNCHER_ICON_SHAPE, LauncherIconShape.ROUNDED_SQUARE.name)
-        launcherIconShape = LauncherIconShape.entries.find { it.name == savedIconShape } ?: LauncherIconShape.ROUNDED_SQUARE
-
-        uiOpacity = prefs.getFloat(KEY_UI_OPACITY, 1.0f).coerceIn(0.0f, 1.0f)
+        uiOpacity = prefs.getFloat(KEY_UI_OPACITY, 0.50f).coerceIn(0.0f, 1.0f)
         categoryOrder = ConversationFilter.deserializeOrder(prefs.getString(KEY_CATEGORY_ORDER, null))
     }
 
@@ -1018,12 +994,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun saveLauncherIconShape(shape: LauncherIconShape) {
-        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
-            putString(KEY_LAUNCHER_ICON_SHAPE, shape.name)
-        }
-    }
-
     private fun saveUiOpacity(opacity: Float) {
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
             putFloat(KEY_UI_OPACITY, opacity.coerceIn(0.0f, 1.0f))
@@ -1049,7 +1019,6 @@ class MainActivity : ComponentActivity() {
             deletedGroupingMode = deletedGroupingMode,
             bubbleZoomScale = bubbleZoomScale,
             uiColorMode = uiColorMode,
-            launcherIconShape = launcherIconShape,
             uiOpacity = uiOpacity,
             categoryOrder = categoryOrder
         )
@@ -1132,9 +1101,6 @@ class MainActivity : ComponentActivity() {
 
         uiColorMode = payload.settings.uiColorMode
         saveUiColorMode(uiColorMode)
-
-        launcherIconShape = payload.settings.launcherIconShape
-        saveLauncherIconShape(launcherIconShape)
 
         uiOpacity = payload.settings.uiOpacity
         saveUiOpacity(uiOpacity)

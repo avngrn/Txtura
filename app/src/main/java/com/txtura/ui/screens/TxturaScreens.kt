@@ -52,8 +52,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -73,7 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -100,7 +98,6 @@ import com.txtura.data.ConversationFilter
 import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedConversationEntry
 import com.txtura.data.DeletedGroupingMode
-import com.txtura.data.LauncherIconShape
 import com.txtura.data.MainListLayoutMode
 import com.txtura.data.SwipeAction
 import com.txtura.data.UiColorMode
@@ -112,7 +109,9 @@ import com.txtura.ui.components.GlassAlertDialog
 import com.txtura.ui.components.GlassBackground
 import com.txtura.ui.components.GlassCard
 import com.txtura.ui.components.GlassIconButton
+import com.txtura.ui.components.GlassModernSlider
 import com.txtura.ui.components.GlassTooltipIconButton
+import com.txtura.ui.components.OverflowTooltipText
 import com.txtura.ui.components.TxturaIcons
 import com.txtura.ui.components.drawTxturaTexture
 import com.txtura.ui.i18n.AppStrings
@@ -840,7 +839,7 @@ fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
 /**
  * Dedicated Settings Screen ("Settings" / "Podešavanja") organized into 5 intuitive expandable categories
  * featuring Sliders, On/Off Switches, Segmented Pills, and compact visual pickers:
- * 1. Izgled, Teme i Providnost (Providnost UI slajder 100% podrazumevano, 4-segmentni birač teme, On/Off Monohromatski režim, Pozadina i 2-kolonski prikaz 10 tema, Stil ikonice, On/Off Kompaktni prikaz, On/Off Slike kontakata)
+ * 1. Izgled, Teme i Providnost (Providnost UI slajder 50% podrazumevano, 4-segmentni birač teme, On/Off Monohromatski režim, Pozadina i 1-kolonski prikaz tema sa nazivima i opisima, On/Off Kompaktni prikaz, On/Off Slike kontakata)
  * 2. Poruke i Svajp radnje (On/Off + horizontalni birač za Svajp udesno/ulevo, Slajder za automatsko brisanje iz korpe 7-90 dana, On/Off grupisanje po kontaktu, Otvaranje Korpe)
  * 3. Blokiranje pošiljalaca poruka (Brzi unos i lista blokiranih sa 1-klik odblokiranjem)
  * 4. Bekap i vraćanje podataka (Lokalni bekap, vraćanje i deljenje/izvoz)
@@ -849,12 +848,11 @@ fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
 @Composable
 fun SettingsScreen(
     themeMode: TxturaThemeMode,
-    uiOpacity: Float = 1.0f,
+    uiOpacity: Float = 0.50f,
     showContactPhotos: Boolean,
     listLayoutMode: MainListLayoutMode = MainListLayoutMode.DEFAULT,
     mainWallpaper: WallpaperConfig = WallpaperConfig(),
     uiColorMode: UiColorMode = UiColorMode.COLORFUL,
-    launcherIconShape: LauncherIconShape = LauncherIconShape.ROUNDED_SQUARE,
     swipeRightAction: SwipeAction,
     swipeLeftAction: SwipeAction,
     autoDeleteDays: Int,
@@ -871,7 +869,6 @@ fun SettingsScreen(
     onToggleShowContactPhotos: (Boolean) -> Unit,
     onSelectListLayoutMode: (MainListLayoutMode) -> Unit = {},
     onSelectUiColorMode: (UiColorMode) -> Unit = {},
-    onSelectLauncherIconShape: (LauncherIconShape) -> Unit = {},
     onSelectMainWallpaperPreset: (WallpaperPreset) -> Unit = {},
     onSelectMainWallpaperTexture: (WallpaperTexture) -> Unit = {},
     onPickMainWallpaperFromGallery: () -> Unit = {},
@@ -992,7 +989,7 @@ fun SettingsScreen(
                     }
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        // 1A. Providnost korisničkog interfejsa (Slajder: 100% podrazumevano + brzi procenti)
+                        // 1A. Providnost i zamućivanje korisničkog interfejsa (Suptilan, moderan stakleni slajder - 50% podrazumevano)
                         val clampedOpacity = uiOpacity.coerceIn(0.0f, 1.0f)
                         val transparencyPercent = (clampedOpacity * 100f).roundToInt().coerceIn(0, 100)
                         GlassCard(
@@ -1013,66 +1010,67 @@ fun SettingsScreen(
                                             color = palette.textPrimary,
                                             fontWeight = FontWeight.SemiBold
                                         )
-                                        Text(
+                                        OverflowTooltipText(
                                             text = strings.uiTransparencySub,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = palette.textSecondary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            maxLines = 1
                                         )
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(50))
-                                            .background(palette.accentPrimary.copy(alpha = 0.18f))
-                                            .border(1.dp, palette.accentPrimary, RoundedCornerShape(50))
-                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                            .background(palette.glassSurfaceElevated)
+                                            .border(
+                                                0.8.dp,
+                                                palette.glassBorderTop.copy(alpha = 0.45f),
+                                                RoundedCornerShape(50)
+                                            )
+                                            .padding(horizontal = 9.dp, vertical = 3.dp)
                                     ) {
                                         Text(
                                             text = "$transparencyPercent%",
-                                            style = MaterialTheme.typography.labelMedium,
+                                            style = MaterialTheme.typography.labelSmall,
                                             color = palette.accentPrimary,
-                                            fontWeight = FontWeight.Bold
+                                            fontWeight = FontWeight.SemiBold
                                         )
                                     }
                                 }
 
-                                Slider(
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                GlassModernSlider(
                                     value = clampedOpacity,
                                     onValueChange = { onUpdateUiOpacity(it.coerceIn(0.0f, 1.0f)) },
                                     valueRange = 0.0f..1.0f,
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = palette.accentPrimary,
-                                        activeTrackColor = palette.accentPrimary,
-                                        inactiveTrackColor = palette.glassSurfaceElevated
-                                    ),
+                                    tickFractions = listOf(0f, 0.25f, 0.5f, 0.75f, 1f),
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
-                                // Quick-tap percentage pills (25%, 50%, 75%, 100%)
                                 Row(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    modifier = Modifier.fillMaxWidth()
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp)
                                 ) {
-                                    listOf(25, 50, 75, 100).forEach { pct ->
+                                    listOf(0, 25, 50, 75, 100).forEach { pct ->
                                         val isCurrentPct = abs(transparencyPercent - pct) <= 3
-                                        GlassCard(
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(50),
-                                            elevated = isCurrentPct,
-                                            accentHighlight = if (isCurrentPct) palette.accentPrimary else null,
-                                            contentPadding = PaddingValues(vertical = 5.dp),
-                                            onClick = { onUpdateUiOpacity(pct / 100f) }
-                                        ) {
-                                            Text(
-                                                text = "$pct%",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = if (isCurrentPct) palette.accentPrimary else palette.textSecondary,
-                                                fontWeight = if (isCurrentPct) FontWeight.Bold else FontWeight.Medium,
-                                                modifier = Modifier.align(Alignment.Center)
-                                            )
-                                        }
+                                        Text(
+                                            text = "$pct%",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontSize = 10.sp,
+                                            color = if (isCurrentPct) {
+                                                palette.accentPrimary
+                                            } else {
+                                                palette.textSecondary.copy(alpha = 0.65f)
+                                            },
+                                            fontWeight = if (isCurrentPct) FontWeight.Bold else FontWeight.Normal,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .clickable { onUpdateUiOpacity(pct / 100f) }
+                                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                        )
                                     }
                                 }
                             }
@@ -1128,14 +1126,13 @@ fun SettingsScreen(
                                                         )
                                                 )
                                                 Spacer(modifier = Modifier.height(4.dp))
-                                                Text(
+                                                OverflowTooltipText(
                                                     text = mode.label,
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = if (selected) palette.accentPrimary else palette.textSecondary,
                                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                                     maxLines = 1,
-                                                    softWrap = false,
-                                                    overflow = TextOverflow.Ellipsis
+                                                    softWrap = false
                                                 )
                                             }
                                         }
@@ -1144,17 +1141,7 @@ fun SettingsScreen(
                             }
                         }
 
-                        // 1C. On/Off Prekidač: Monohromatske teme (10) vs Višebojne teme (10)
-                        val isMonochromeActive = uiColorMode == UiColorMode.MONOCHROME
-                        SettingsSwitchRow(
-                            title = strings.uiColorModeMonochromeTitle,
-                            subtitle = if (isMonochromeActive) strings.uiColorModeMonochromeDesc else strings.uiColorModeColorfulTitle,
-                            checked = isMonochromeActive
-                        ) { enabled ->
-                            onSelectUiColorMode(if (enabled) UiColorMode.MONOCHROME else UiColorMode.COLORFUL)
-                        }
-
-                        // 1D. Pozadina glavnog prozora, 10 akcenatskih tema i Txtura teksture
+                        // 1C. Pozadina glavnog prozora, 10 akcenatskih tema i Txtura teksture
                         ExpandableSubSettingItem(
                             title = strings.wallpaperSectionTitle,
                             subtitle = "${wallpaperPresetTitle(mainWallpaper.preset, strings)} • ${wallpaperTextureTitle(mainWallpaper.resolvedTexture, strings)}",
@@ -1223,96 +1210,7 @@ fun SettingsScreen(
                             )
                         }
 
-                        // 1E. Stil ikonice aplikacije (Vizuelni birač oblika u jednom redu)
-                        GlassCard(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
-                        ) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                Text(
-                                    text = strings.launcherIconShapeSectionTitle,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = palette.textPrimary,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    LauncherIconShape.entries.forEach { shape ->
-                                        val selected = shape == launcherIconShape
-                                        val shapeObj = when (shape) {
-                                            LauncherIconShape.CIRCLE -> CircleShape
-                                            LauncherIconShape.SQUIRCLE -> RoundedCornerShape(percent = 38)
-                                            LauncherIconShape.ROUNDED_SQUARE -> RoundedCornerShape(percent = 22)
-                                            LauncherIconShape.TEARDROP -> RoundedCornerShape(topStartPercent = 50, topEndPercent = 50, bottomEndPercent = 50, bottomStartPercent = 10)
-                                            LauncherIconShape.PEBBLE -> RoundedCornerShape(topStartPercent = 45, topEndPercent = 18, bottomEndPercent = 45, bottomStartPercent = 18)
-                                        }
-                                        val shapeLabel = when (shape) {
-                                            LauncherIconShape.CIRCLE -> strings.launcherIconShapeCircle
-                                            LauncherIconShape.SQUIRCLE -> strings.launcherIconShapeSquircle
-                                            LauncherIconShape.ROUNDED_SQUARE -> strings.launcherIconShapeRoundedSquare
-                                            LauncherIconShape.TEARDROP -> strings.launcherIconShapeTeardrop
-                                            LauncherIconShape.PEBBLE -> strings.launcherIconShapePebble
-                                        }
-                                        GlassCard(
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(12.dp),
-                                            elevated = selected,
-                                            accentHighlight = if (selected) palette.accentPrimary else null,
-                                            contentPadding = PaddingValues(vertical = 7.dp, horizontal = 3.dp),
-                                            onClick = { onSelectLauncherIconShape(shape) }
-                                        ) {
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                Box(
-                                                    contentAlignment = Alignment.Center,
-                                                    modifier = Modifier
-                                                        .size(26.dp)
-                                                        .clip(shapeObj)
-                                                        .background(
-                                                            Brush.linearGradient(
-                                                                listOf(
-                                                                    Color(0xFF0F172A),
-                                                                    if (selected) palette.accentPrimary else Color(0xFF334155)
-                                                                )
-                                                            )
-                                                        )
-                                                        .border(
-                                                            1.dp,
-                                                            if (selected) palette.accentPrimary else Color.White.copy(alpha = 0.25f),
-                                                            shapeObj
-                                                        )
-                                                ) {
-                                                    Text(
-                                                        text = "T",
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = if (selected) palette.accentPrimary else Color.White
-                                                    )
-                                                }
-                                                Spacer(modifier = Modifier.height(4.dp))
-                                                Text(
-                                                    text = shapeLabel,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    fontSize = 10.sp,
-                                                    color = if (selected) palette.accentPrimary else palette.textSecondary,
-                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // 1F. On/Off Prekidač: Kompaktni prikaz poruka u glavnom prozoru
+                        // 1E. On/Off Prekidač: Kompaktni prikaz poruka u glavnom prozoru
                         val isCompactMode = listLayoutMode == MainListLayoutMode.COMPACT
                         SettingsSwitchRow(
                             title = strings.layoutModeCompact,
@@ -1408,7 +1306,9 @@ fun SettingsScreen(
                                     }
                                 }
 
-                                Slider(
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                GlassModernSlider(
                                     value = currentStepIndex.toFloat(),
                                     onValueChange = { rawIdx ->
                                         val idx = rawIdx.roundToInt().coerceIn(0, retentionOptions.lastIndex)
@@ -1418,12 +1318,9 @@ fun SettingsScreen(
                                         }
                                     },
                                     valueRange = 0f..retentionOptions.lastIndex.toFloat(),
-                                    steps = retentionOptions.size - 2,
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = palette.accentPrimary,
-                                        activeTrackColor = palette.accentPrimary,
-                                        inactiveTrackColor = palette.glassSurfaceElevated
-                                    ),
+                                    tickFractions = List(retentionOptions.size) { i ->
+                                        i.toFloat() / retentionOptions.lastIndex.coerceAtLeast(1)
+                                    },
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
@@ -1678,13 +1575,12 @@ fun SettingsScreen(
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
+                                    OverflowTooltipText(
                                         text = strings.createLocalBackupButton,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = palette.accentPrimary,
                                         fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        maxLines = 1
                                     )
                                 }
                             }
@@ -1708,13 +1604,12 @@ fun SettingsScreen(
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
+                                    OverflowTooltipText(
                                         text = strings.restoreLocalBackupButton,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = palette.textPrimary,
                                         fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        maxLines = 1
                                     )
                                 }
                             }
@@ -1848,12 +1743,11 @@ private fun SettingsSwitchRow(
                     fontWeight = FontWeight.SemiBold
                 )
                 if (!subtitle.isNullOrBlank()) {
-                    Text(
+                    OverflowTooltipText(
                         text = subtitle,
                         style = MaterialTheme.typography.labelSmall,
                         color = if (checked) palette.accentPrimary else palette.textSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        maxLines = 1
                     )
                 }
             }
@@ -2011,12 +1905,11 @@ private fun ExpandableSubSettingItem(
                         fontWeight = FontWeight.SemiBold
                     )
                     if (!subtitle.isNullOrBlank()) {
-                        Text(
+                        OverflowTooltipText(
                             text = subtitle,
                             style = MaterialTheme.typography.labelSmall,
                             color = palette.textSecondary,
-                            maxLines = if (expanded) 2 else 1,
-                            overflow = TextOverflow.Ellipsis
+                            maxLines = if (expanded) 2 else 1
                         )
                     }
                 }
@@ -2154,12 +2047,11 @@ private fun ExpandableSettingsSection(
                             color = palette.textPrimary,
                             fontWeight = FontWeight.Bold
                         )
-                        Text(
+                        OverflowTooltipText(
                             text = subtitle,
                             style = MaterialTheme.typography.labelSmall,
                             color = palette.textSecondary,
-                            maxLines = if (expanded) 3 else 1,
-                            overflow = TextOverflow.Ellipsis
+                            maxLines = if (expanded) 3 else 1
                         )
                     }
                 }
@@ -2682,12 +2574,11 @@ fun ConversationDetailScreen(
                             .clickable(onClick = onOpenContact)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
+                            OverflowTooltipText(
                                 text = thread.contactName,
                                 style = MaterialTheme.typography.titleMedium,
                                 color = palette.textPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                maxLines = 1
                             )
                             if (thread.isPinned) {
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -2707,12 +2598,11 @@ fun ConversationDetailScreen(
                                 modifier = Modifier.size(13.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text(
+                            OverflowTooltipText(
                                 text = "${thread.address} • ${strings.protectedChannelSuffix}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = palette.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                maxLines = 1
                             )
                         }
                     }
@@ -2874,12 +2764,11 @@ fun ConversationDetailScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(
+                                OverflowTooltipText(
                                     text = pinnedMsg.body,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = palette.textPrimary,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
@@ -3726,13 +3615,12 @@ fun NewMessageDialog(
                                     }
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column {
-                                        Text(
+                                        OverflowTooltipText(
                                             text = item.name,
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = palette.textPrimary,
                                             fontWeight = FontWeight.Bold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            maxLines = 1
                                         )
                                         Text(
                                             text = item.address,
@@ -4372,12 +4260,11 @@ fun DeletedMessagesScreen(
                                             Spacer(modifier = Modifier.width(10.dp))
                                         }
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text(
+                                            OverflowTooltipText(
                                                 text = entry.thread.contactName,
                                                 style = MaterialTheme.typography.titleMedium,
                                                 color = palette.textPrimary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                                maxLines = 1
                                             )
                                             Text(
                                                 text = "${entry.thread.address} • ${strings.messagesCountLabel(entry.thread.messages.size)}",
@@ -4408,12 +4295,11 @@ fun DeletedMessagesScreen(
                                     Spacer(modifier = Modifier.height(8.dp))
 
                                     entry.thread.messages.takeLast(2).forEach { msg ->
-                                        Text(
+                                        OverflowTooltipText(
                                             text = "• ${msg.body}",
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = palette.textSecondary,
                                             maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.padding(vertical = 2.dp)
                                         )
                                     }
@@ -4554,9 +4440,9 @@ private fun formatTimestamp(millis: Long): String {
 }
 
 /**
- * Displays the 10 curated colorful presets OR the 10 monochrome Light/Dark + 1 accent presets,
- * each with a live miniature preview of its bespoke Txtura surface texture, plus an interactive
- * Texture Picker bar so the user can keep Auto (theme-matched) or select any texture pattern.
+ * Displays the interactive Txtura Texture Picker bar right at the top, followed by the
+ * theme category tabs (Colorful vs Monochrome + Accent) and a 1-column theme list so both
+ * full theme titles, descriptions, and live texture previews are clearly visible.
  */
 @Composable
 fun WallpaperPresetSelectorGrid(
@@ -4573,165 +4459,7 @@ fun WallpaperPresetSelectorGrid(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            val colorfulActive = selectedCategory == UiColorMode.COLORFUL
-            GlassCard(
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(14.dp),
-                elevated = colorfulActive,
-                accentHighlight = if (colorfulActive) palette.accentPrimary else null,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 9.dp),
-                onClick = {
-                    selectedCategory = UiColorMode.COLORFUL
-                    onSwitchColorMode(UiColorMode.COLORFUL)
-                }
-            ) {
-                Text(
-                    text = strings.wallpaperTabColorful,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (colorfulActive) palette.accentPrimary else palette.textSecondary,
-                    fontWeight = if (colorfulActive) FontWeight.Bold else FontWeight.Medium,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            }
-
-            val monoActive = selectedCategory == UiColorMode.MONOCHROME
-            GlassCard(
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(14.dp),
-                elevated = monoActive,
-                accentHighlight = if (monoActive) palette.accentPrimary else null,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 9.dp),
-                onClick = {
-                    selectedCategory = UiColorMode.MONOCHROME
-                    onSwitchColorMode(UiColorMode.MONOCHROME)
-                }
-            ) {
-                Text(
-                    text = strings.wallpaperTabMonochrome,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (monoActive) palette.accentPrimary else palette.textSecondary,
-                    fontWeight = if (monoActive) FontWeight.Bold else FontWeight.Medium,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            }
-        }
-
-        val presets = if (selectedCategory == UiColorMode.COLORFUL) {
-            WallpaperPreset.colorfulPresets
-        } else {
-            WallpaperPreset.monochromePresets
-        }
-
-        presets.chunked(2).forEach { rowPresets ->
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                rowPresets.forEach { preset ->
-                    val selected = !currentConfig.isCustomGalleryImage && currentConfig.preset == preset
-                    val label = wallpaperPresetTitle(preset, strings)
-                    val matchedTexture = if (currentConfig.texture == WallpaperTexture.AUTO_THEME) {
-                        preset.defaultTexture
-                    } else {
-                        currentConfig.texture
-                    }
-                    val textureLabel = wallpaperTextureTitle(preset.defaultTexture, strings)
-                    val compAccent = WallpaperHarmonyEngine.presetComplementaryAccent(preset, palette.isDark)
-                    val previewColors = if (preset.isMonochrome) {
-                        val monoBase = if (palette.isDark) Color(0xFF0A0E16) else Color(0xFFF1F5F9)
-                        val monoMid = if (palette.isDark) Color(0xFF1A2230) else Color(0xFFE2E8F0)
-                        listOf(monoBase, monoMid, compAccent.copy(alpha = 0.55f))
-                    } else {
-                        listOf(
-                            Color(preset.baseColorHex),
-                            Color(preset.primaryOrbHex),
-                            Color(preset.secondaryOrbHex)
-                        )
-                    }
-                    GlassCard(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(14.dp),
-                        elevated = selected,
-                        accentHighlight = if (selected) compAccent else null,
-                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp),
-                        onClick = { onSelectPreset(preset) }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Box(
-                                contentAlignment = Alignment.BottomEnd,
-                                modifier = Modifier
-                                    .size(width = 40.dp, height = 28.dp)
-                                    .clip(RoundedCornerShape(7.dp))
-                                    .background(Brush.linearGradient(colors = previewColors))
-                                    .drawWithCache {
-                                        val pCol = compAccent.copy(alpha = 0.65f)
-                                        val sCol = Color.White.copy(alpha = 0.35f)
-                                        onDrawBehind {
-                                            drawTxturaTexture(
-                                                texture = matchedTexture,
-                                                primaryColor = pCol,
-                                                secondaryColor = sCol,
-                                                accentColor = compAccent.copy(alpha = 0.85f),
-                                                isCompactPreview = true
-                                            )
-                                        }
-                                    }
-                                    .border(
-                                        1.dp,
-                                        if (selected) compAccent else Color.White.copy(alpha = 0.35f),
-                                        RoundedCornerShape(7.dp)
-                                    )
-                                    .padding(2.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(compAccent)
-                                        .border(1.dp, Color.Black.copy(alpha = 0.55f), CircleShape)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (selected) compAccent else palette.textPrimary,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = textureLabel,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                    color = if (selected) compAccent.copy(alpha = 0.85f) else palette.textSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
-                if (rowPresets.size == 1) {
-                    Spacer(modifier = Modifier.weight(1f))
-                }
-            }
-        }
-
-        // Interactive Txtura Texture Picker Bar (Auto theme texture or custom texture selection)
+        // 1. Interactive Txtura Texture Picker Bar at the top so textures are immediately visible and selectable
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -4745,7 +4473,7 @@ fun WallpaperPresetSelectorGrid(
                         color = palette.textPrimary,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
+                    OverflowTooltipText(
                         text = strings.textureSectionSub,
                         style = MaterialTheme.typography.labelSmall,
                         color = palette.textSecondary,
@@ -4768,6 +4496,9 @@ fun WallpaperPresetSelectorGrid(
                         tex
                     }
                     val texTitle = wallpaperTextureTitle(tex, strings)
+                    val pCol = palette.accentPrimary.copy(alpha = 0.78f)
+                    val sCol = palette.textSecondary.copy(alpha = 0.48f)
+                    val aCol = palette.accentPrimary
                     GlassCard(
                         shape = RoundedCornerShape(14.dp),
                         elevated = isSelected,
@@ -4778,37 +4509,184 @@ fun WallpaperPresetSelectorGrid(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(width = 28.dp, height = 20.dp)
-                                    .clip(RoundedCornerShape(5.dp))
+                                    .size(width = 32.dp, height = 22.dp)
+                                    .clip(RoundedCornerShape(6.dp))
                                     .background(
                                         if (palette.isDark) Color(0xFF0E1420) else Color(0xFFE2E8F0)
                                     )
-                                    .drawWithCache {
-                                        val pCol = palette.accentPrimary.copy(alpha = 0.70f)
-                                        val sCol = palette.textSecondary.copy(alpha = 0.40f)
-                                        onDrawBehind {
-                                            drawTxturaTexture(
-                                                texture = previewTex,
-                                                primaryColor = pCol,
-                                                secondaryColor = sCol,
-                                                accentColor = palette.accentPrimary,
-                                                isCompactPreview = true
-                                            )
-                                        }
+                                    .drawBehind {
+                                        drawTxturaTexture(
+                                            texture = previewTex,
+                                            primaryColor = pCol,
+                                            secondaryColor = sCol,
+                                            accentColor = aCol,
+                                            isCompactPreview = true
+                                        )
                                     }
                                     .border(
                                         1.dp,
                                         if (isSelected) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.35f),
-                                        RoundedCornerShape(5.dp)
+                                        RoundedCornerShape(6.dp)
                                     )
                             )
                             Spacer(modifier = Modifier.width(7.dp))
-                            Text(
+                            OverflowTooltipText(
                                 text = texTitle,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (isSelected) palette.accentPrimary else palette.textPrimary,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                 maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Theme Category Tabs (Colorful vs Monochrome + Accent)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            val colorfulActive = selectedCategory == UiColorMode.COLORFUL
+            GlassCard(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp),
+                elevated = colorfulActive,
+                accentHighlight = if (colorfulActive) palette.accentPrimary else null,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 9.dp),
+                onClick = {
+                    selectedCategory = UiColorMode.COLORFUL
+                    onSwitchColorMode(UiColorMode.COLORFUL)
+                }
+            ) {
+                OverflowTooltipText(
+                    text = strings.wallpaperTabColorful,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (colorfulActive) palette.accentPrimary else palette.textSecondary,
+                    fontWeight = if (colorfulActive) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+
+            val monoActive = selectedCategory == UiColorMode.MONOCHROME
+            GlassCard(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp),
+                elevated = monoActive,
+                accentHighlight = if (monoActive) palette.accentPrimary else null,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 9.dp),
+                onClick = {
+                    selectedCategory = UiColorMode.MONOCHROME
+                    onSwitchColorMode(UiColorMode.MONOCHROME)
+                }
+            ) {
+                OverflowTooltipText(
+                    text = strings.wallpaperTabMonochrome,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (monoActive) palette.accentPrimary else palette.textSecondary,
+                    fontWeight = if (monoActive) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+        }
+
+        val presets = if (selectedCategory == UiColorMode.COLORFUL) {
+            WallpaperPreset.colorfulPresets
+        } else {
+            WallpaperPreset.monochromePresets
+        }
+
+        // 3. Single-column theme list so full theme names and descriptions are clearly visible
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            presets.forEach { preset ->
+                val selected = !currentConfig.isCustomGalleryImage && currentConfig.preset == preset
+                val label = wallpaperPresetTitle(preset, strings)
+                val description = wallpaperPresetDescription(preset, strings)
+                val matchedTexture = if (currentConfig.texture == WallpaperTexture.AUTO_THEME) {
+                    preset.defaultTexture
+                } else {
+                    currentConfig.texture
+                }
+                val textureLabel = wallpaperTextureTitle(preset.defaultTexture, strings)
+                val compAccent = WallpaperHarmonyEngine.presetComplementaryAccent(preset, palette.isDark)
+                val previewColors = if (preset.isMonochrome) {
+                    val monoBase = if (palette.isDark) Color(0xFF0A0E16) else Color(0xFFF1F5F9)
+                    val monoMid = if (palette.isDark) Color(0xFF1A2230) else Color(0xFFE2E8F0)
+                    listOf(monoBase, monoMid, compAccent.copy(alpha = 0.55f))
+                } else {
+                    listOf(
+                        Color(preset.baseColorHex),
+                        Color(preset.primaryOrbHex),
+                        Color(preset.secondaryOrbHex)
+                    )
+                }
+                val pCol = compAccent.copy(alpha = 0.72f)
+                val sCol = Color.White.copy(alpha = 0.42f)
+                val aCol = compAccent.copy(alpha = 0.90f)
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    elevated = selected,
+                    accentHighlight = if (selected) compAccent else null,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    onClick = { onSelectPreset(preset) }
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.BottomEnd,
+                            modifier = Modifier
+                                .size(width = 52.dp, height = 38.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Brush.linearGradient(colors = previewColors))
+                                .drawBehind {
+                                    drawTxturaTexture(
+                                        texture = matchedTexture,
+                                        primaryColor = pCol,
+                                        secondaryColor = sCol,
+                                        accentColor = aCol,
+                                        isCompactPreview = true
+                                    )
+                                }
+                                .border(
+                                    1.2.dp,
+                                    if (selected) compAccent else Color.White.copy(alpha = 0.35f),
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .padding(3.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(9.dp)
+                                    .clip(CircleShape)
+                                    .background(compAccent)
+                                    .border(1.dp, Color.Black.copy(alpha = 0.55f), CircleShape)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            OverflowTooltipText(
+                                text = label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (selected) compAccent else palette.textPrimary,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                            OverflowTooltipText(
+                                text = "$description • $textureLabel",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (selected) compAccent.copy(alpha = 0.88f) else palette.textSecondary,
+                                maxLines = 2
                             )
                         }
                     }
@@ -4977,6 +4855,32 @@ private fun wallpaperPresetTitle(preset: WallpaperPreset, strings: AppStrings): 
         WallpaperPreset.MONO_NAVY -> strings.wpMonoNavy
         WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmoke
         WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspresso
+    }
+}
+
+private fun wallpaperPresetDescription(preset: WallpaperPreset, strings: AppStrings): String {
+    return when (preset) {
+        WallpaperPreset.DEFAULT -> strings.wpDefaultDesc
+        WallpaperPreset.AURORA_BOREALIS -> strings.wpAuroraDesc
+        WallpaperPreset.VELVET_PLUM -> strings.wpVelvetPlumDesc
+        WallpaperPreset.MIDNIGHT_OCEAN -> strings.wpMidnightOceanDesc
+        WallpaperPreset.SUNSET_HORIZON -> strings.wpSunsetHorizonDesc
+        WallpaperPreset.EMERALD_FOREST -> strings.wpEmeraldForestDesc
+        WallpaperPreset.ROYAL_AMETHYST -> strings.wpRoyalAmethystDesc
+        WallpaperPreset.STARLIGHT_GALAXY -> strings.wpStarlightGalaxyDesc
+        WallpaperPreset.CRIMSON_VELVET -> strings.wpCrimsonVelvetDesc
+        WallpaperPreset.ARCTIC_FROST -> strings.wpArcticFrostDesc
+        WallpaperPreset.OBSIDIAN_GOLD -> strings.wpObsidianGoldDesc
+        WallpaperPreset.MONO_SLATE -> strings.wpMonoSlateDesc
+        WallpaperPreset.MONO_SAPPHIRE -> strings.wpMonoSapphireDesc
+        WallpaperPreset.MONO_SAGE -> strings.wpMonoSageDesc
+        WallpaperPreset.MONO_CHAMPAGNE -> strings.wpMonoChampagneDesc
+        WallpaperPreset.MONO_PLUM -> strings.wpMonoPlumDesc
+        WallpaperPreset.MONO_GRAPHITE -> strings.wpMonoGraphiteDesc
+        WallpaperPreset.MONO_ROSE -> strings.wpMonoRoseDesc
+        WallpaperPreset.MONO_NAVY -> strings.wpMonoNavyDesc
+        WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmokeDesc
+        WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspressoDesc
     }
 }
 

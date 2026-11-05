@@ -64,7 +64,7 @@ data class GlassPalette(
     val safeColor: Color = EmeraldSafe,
     val cautionColor: Color = AmberCaution,
     val dangerColor: Color = RoseDanger,
-    val uiOpacity: Float = 1.0f,
+    val uiOpacity: Float = 0.50f,
     val uiColorMode: UiColorMode = UiColorMode.COLORFUL,
 ) {
     val popupContainerColor: Color
@@ -74,9 +74,9 @@ data class GlassPalette(
             val surfaceRgb = glassSurfaceElevated.copy(alpha = 1f)
             val baseTone = when {
                 !isDark -> lerp(
-                    lerp(backgroundBase.copy(alpha = 1f), orbRgb, 0.14f),
+                    lerp(Color(0xFFDCE5F2), orbRgb, 0.22f),
                     accentRgb,
-                    0.06f
+                    0.10f
                 )
                 isAmoled -> lerp(
                     lerp(Color(0xFF080B11), orbRgb, 0.28f),
@@ -89,7 +89,8 @@ data class GlassPalette(
                     0.18f
                 )
             }
-            val alpha = (0.80f + (uiOpacity.coerceIn(0f, 1f) * 0.16f)).coerceIn(0.80f, 0.96f)
+            val distFromCenter = kotlin.math.abs(uiOpacity.coerceIn(0f, 1f) - 0.5f) * 2f
+            val alpha = (0.84f + (distFromCenter * 0.12f)).coerceIn(0.84f, 0.96f)
             return baseTone.copy(alpha = alpha)
         }
 }
@@ -110,7 +111,7 @@ val LightGlassPalette = GlassPalette(
     accentSecondary = SapphireDeep,
     outgoingBubbleStart = Color(0xDD4338CA),
     outgoingBubbleEnd = Color(0xDD0284C7),
-    incomingBubbleSurface = Color(0xEEFFFFFF)
+    incomingBubbleSurface = Color(0xCCD5E0EE)
 )
 
 val DarkGlassPalette = GlassPalette(
@@ -284,28 +285,82 @@ object WallpaperHarmonyEngine {
         }
     }
 
+    /**
+     * Modulates glass surfaces around the 50% (0.50f) balanced midpoint so that moving the slider
+     * in either direction produces deep smoked/frosted glass (zamućivanje) rather than bleaching (izbeljivanje):
+     * - Left (0.50 -> 0.00): translucent smoked crystal frost with enhanced background blur
+     * - Right (0.50 -> 1.00): deep frosted obsidian/slate glass with rich smoked density and blur
+     */
     private fun applyOpacityMultiplier(palette: GlassPalette, uiOpacity: Float, uiColorMode: UiColorMode): GlassPalette {
         val clamped = uiOpacity.coerceIn(0.0f, 1.0f)
-        val factor = 0.15f + clamped * 0.85f
+        val frostDepthTone = when {
+            !palette.isDark -> lerp(Color(0xFFCBD5E1), palette.accentPrimary.copy(alpha = 1f), 0.18f)
+            palette.isAmoled -> lerp(Color(0xFF070A10), palette.orbPrimary.copy(alpha = 1f), 0.28f)
+            else -> lerp(Color(0xFF0C121D), palette.orbPrimary.copy(alpha = 1f), 0.30f)
+        }
+
+        val leftFrost = ((0.5f - clamped) / 0.5f).coerceIn(0f, 1f)
+        val rightFrost = ((clamped - 0.5f) / 0.5f).coerceIn(0f, 1f)
+        val bilateralFrost = kotlin.math.max(leftFrost, rightFrost)
+
+        val baseSurfRgb = lerp(palette.glassSurface.copy(alpha = 1f), frostDepthTone, 0.25f * bilateralFrost)
+        val baseElevRgb = lerp(palette.glassSurfaceElevated.copy(alpha = 1f), frostDepthTone, 0.22f * bilateralFrost)
+        val baseIncRgb = lerp(palette.incomingBubbleSurface.copy(alpha = 1f), frostDepthTone, 0.24f * bilateralFrost)
+
+        val surfAlpha = if (palette.isDark) {
+            when {
+                clamped < 0.5f -> lerpFloat(0.42f, 0.28f, leftFrost)
+                else -> lerpFloat(0.42f, 0.76f, rightFrost)
+            }
+        } else {
+            when {
+                clamped < 0.5f -> lerpFloat(0.68f, 0.50f, leftFrost)
+                else -> lerpFloat(0.68f, 0.86f, rightFrost)
+            }
+        }
+
+        val elevAlpha = if (palette.isDark) {
+            when {
+                clamped < 0.5f -> lerpFloat(0.54f, 0.38f, leftFrost)
+                else -> lerpFloat(0.54f, 0.84f, rightFrost)
+            }
+        } else {
+            when {
+                clamped < 0.5f -> lerpFloat(0.76f, 0.58f, leftFrost)
+                else -> lerpFloat(0.76f, 0.90f, rightFrost)
+            }
+        }
+
+        val incAlpha = if (palette.isDark) {
+            when {
+                clamped < 0.5f -> lerpFloat(0.44f, 0.30f, leftFrost)
+                else -> lerpFloat(0.44f, 0.78f, rightFrost)
+            }
+        } else {
+            when {
+                clamped < 0.5f -> lerpFloat(0.72f, 0.54f, leftFrost)
+                else -> lerpFloat(0.72f, 0.88f, rightFrost)
+            }
+        }
+
+        val bubbleAlphaFactor = when {
+            clamped < 0.5f -> lerpFloat(0.88f, 0.74f, leftFrost)
+            else -> lerpFloat(0.88f, 0.95f, rightFrost)
+        }
+
         return palette.copy(
-            glassSurface = palette.glassSurface.copy(
-                alpha = (palette.glassSurface.alpha * factor).coerceIn(0.04f, 0.98f)
-            ),
-            glassSurfaceElevated = palette.glassSurfaceElevated.copy(
-                alpha = (palette.glassSurfaceElevated.alpha * factor).coerceIn(0.06f, 0.99f)
-            ),
-            incomingBubbleSurface = palette.incomingBubbleSurface.copy(
-                alpha = (palette.incomingBubbleSurface.alpha * factor).coerceIn(0.06f, 0.98f)
-            ),
-            outgoingBubbleStart = palette.outgoingBubbleStart.copy(
-                alpha = (palette.outgoingBubbleStart.alpha * factor).coerceIn(0.14f, 0.98f)
-            ),
-            outgoingBubbleEnd = palette.outgoingBubbleEnd.copy(
-                alpha = (palette.outgoingBubbleEnd.alpha * factor).coerceIn(0.14f, 0.98f)
-            ),
+            glassSurface = baseSurfRgb.copy(alpha = surfAlpha),
+            glassSurfaceElevated = baseElevRgb.copy(alpha = elevAlpha),
+            incomingBubbleSurface = baseIncRgb.copy(alpha = incAlpha),
+            outgoingBubbleStart = palette.outgoingBubbleStart.copy(alpha = bubbleAlphaFactor),
+            outgoingBubbleEnd = palette.outgoingBubbleEnd.copy(alpha = bubbleAlphaFactor),
             uiOpacity = clamped,
             uiColorMode = uiColorMode
         )
+    }
+
+    private fun lerpFloat(start: Float, stop: Float, fraction: Float): Float {
+        return start + (stop - start) * fraction.coerceIn(0f, 1f)
     }
 
     /**
@@ -317,7 +372,7 @@ object WallpaperHarmonyEngine {
         isAmoled: Boolean,
         wallpaperConfig: WallpaperConfig,
         customDominantColor: Color? = getCachedCustomColor(wallpaperConfig.customImageUri),
-        uiOpacity: Float = 1.0f,
+        uiOpacity: Float = 0.50f,
         uiColorMode: UiColorMode = UiColorMode.COLORFUL
     ): GlassPalette {
         val canonicalBase = when {
@@ -358,17 +413,17 @@ object WallpaperHarmonyEngine {
             val tintedSurface = if (isDark) {
                 lerp(canonicalBase.glassSurface, customDominantColor.copy(alpha = canonicalBase.glassSurface.alpha), 0.22f)
             } else {
-                lerp(canonicalBase.glassSurface, customDominantColor.copy(alpha = canonicalBase.glassSurface.alpha), 0.12f)
+                lerp(canonicalBase.glassSurface, customDominantColor.copy(alpha = canonicalBase.glassSurface.alpha), 0.16f)
             }
             val tintedElevated = if (isDark) {
                 lerp(canonicalBase.glassSurfaceElevated, accentPrimary.copy(alpha = canonicalBase.glassSurfaceElevated.alpha), 0.18f)
             } else {
-                lerp(canonicalBase.glassSurfaceElevated, accentPrimary.copy(alpha = canonicalBase.glassSurfaceElevated.alpha), 0.10f)
+                lerp(canonicalBase.glassSurfaceElevated, accentPrimary.copy(alpha = canonicalBase.glassSurfaceElevated.alpha), 0.14f)
             }
             val tintedIncoming = if (isDark) {
                 lerp(canonicalBase.incomingBubbleSurface, customDominantColor.copy(alpha = 0.24f), 0.30f)
             } else {
-                lerp(canonicalBase.incomingBubbleSurface, customDominantColor.copy(alpha = 0.88f), 0.12f)
+                lerp(canonicalBase.incomingBubbleSurface, customDominantColor.copy(alpha = 0.76f), 0.16f)
             }
 
             val adapted = canonicalBase.copy(
@@ -398,7 +453,7 @@ object WallpaperHarmonyEngine {
 
             // Monochrome base strictly follows Light vs Dark/AMOLED mode
             val monoBgBase = when {
-                !isDark -> Color(0xFFF4F6F9)
+                !isDark -> Color(0xFFE4EBF3)
                 isAmoled -> Color(0xFF000000)
                 else -> Color(0xFF0B0E14)
             }
@@ -407,19 +462,19 @@ object WallpaperHarmonyEngine {
             val elevatedBaseAlpha = canonicalBase.glassSurfaceElevated.alpha
 
             val monoSurface = if (isDark) {
-                lerp(Color(0xFF181C24), singleAccent, 0.10f).copy(alpha = surfaceBaseAlpha)
+                lerp(Color(0xFF141821), singleAccent, 0.12f).copy(alpha = surfaceBaseAlpha)
             } else {
-                lerp(Color.White, singleAccent, 0.05f).copy(alpha = surfaceBaseAlpha)
+                lerp(Color(0xFFD5DFED), singleAccent, 0.14f).copy(alpha = surfaceBaseAlpha)
             }
             val monoElevated = if (isDark) {
-                lerp(Color(0xFF222731), singleAccent, 0.16f).copy(alpha = elevatedBaseAlpha)
+                lerp(Color(0xFF1C222E), singleAccent, 0.18f).copy(alpha = elevatedBaseAlpha)
             } else {
-                lerp(Color.White, singleAccent, 0.09f).copy(alpha = elevatedBaseAlpha)
+                lerp(Color(0xFFDCE6F4), singleAccent, 0.18f).copy(alpha = elevatedBaseAlpha)
             }
             val monoIncoming = if (isDark) {
-                lerp(Color(0xFF1A1F29), singleAccent, 0.12f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+                lerp(Color(0xFF161B25), singleAccent, 0.14f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
             } else {
-                lerp(Color.White, singleAccent, 0.06f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+                lerp(Color(0xFFD8E2F0), singleAccent, 0.14f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
             }
 
             val bubbleAlpha = if (isAmoled) 0.84f else 0.90f
@@ -431,8 +486,8 @@ object WallpaperHarmonyEngine {
 
             val adapted = canonicalBase.copy(
                 backgroundBase = monoBgBase,
-                orbPrimary = singleAccent.copy(alpha = if (isDark) 0.22f else 0.16f),
-                orbSecondary = singleAccent.copy(alpha = if (isDark) 0.14f else 0.10f),
+                orbPrimary = singleAccent.copy(alpha = if (isDark) 0.22f else 0.18f),
+                orbSecondary = singleAccent.copy(alpha = if (isDark) 0.14f else 0.12f),
                 glassSurface = monoSurface,
                 glassSurfaceElevated = monoElevated,
                 glassBorderTop = singleAccent.copy(alpha = if (isDark) 0.48f else 0.55f),
@@ -462,24 +517,25 @@ object WallpaperHarmonyEngine {
         val surfaceBaseAlpha = canonicalBase.glassSurface.alpha
         val elevatedBaseAlpha = canonicalBase.glassSurfaceElevated.alpha
 
+        // Smoked obsidian/slate in Dark mode and smoked quartz in Light mode (never bleached white)
         val tintedSurface = if (isDark) {
-            lerp(Color.White, bgPrimary, 0.25f).copy(alpha = surfaceBaseAlpha)
+            lerp(Color(0xFF101724), bgPrimary, 0.26f).copy(alpha = surfaceBaseAlpha)
         } else {
-            lerp(Color.White, bgPrimary, 0.10f).copy(alpha = surfaceBaseAlpha)
+            lerp(Color(0xFFD4DFEE), bgPrimary, 0.22f).copy(alpha = surfaceBaseAlpha)
         }
         val tintedElevated = if (isDark) {
-            lerp(Color.White, compPrimary, 0.20f).copy(alpha = elevatedBaseAlpha)
+            lerp(Color(0xFF172032), compPrimary, 0.22f).copy(alpha = elevatedBaseAlpha)
         } else {
-            lerp(Color.White, compPrimary, 0.08f).copy(alpha = elevatedBaseAlpha)
+            lerp(Color(0xFFDBE5F3), compPrimary, 0.18f).copy(alpha = elevatedBaseAlpha)
         }
         val tintedIncoming = if (isDark) {
-            lerp(Color.White, bgPrimary, 0.28f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+            lerp(Color(0xFF121A29), bgPrimary, 0.28f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
         } else {
-            lerp(Color.White, bgPrimary, 0.09f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+            lerp(Color(0xFFD6E1EF), bgPrimary, 0.18f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
         }
 
         val adapted = canonicalBase.copy(
-            backgroundBase = if (isDark) Color(preset.baseColorHex) else canonicalBase.backgroundBase,
+            backgroundBase = if (isDark) Color(preset.baseColorHex) else lerp(Color(0xFFE3EAF4), bgPrimary, 0.16f),
             orbPrimary = bgPrimary.copy(alpha = if (isDark) 0.30f else 0.24f),
             orbSecondary = bgSecondary.copy(alpha = if (isDark) 0.26f else 0.20f),
             glassSurface = tintedSurface,
@@ -548,7 +604,7 @@ object WallpaperHarmonyEngine {
 fun TxturaTheme(
     themeMode: TxturaThemeMode = TxturaThemeMode.AMOLED,
     wallpaperConfig: WallpaperConfig = WallpaperConfig(),
-    uiOpacity: Float = 1.0f,
+    uiOpacity: Float = 0.50f,
     uiColorMode: UiColorMode = UiColorMode.COLORFUL,
     content: @Composable () -> Unit
 ) {

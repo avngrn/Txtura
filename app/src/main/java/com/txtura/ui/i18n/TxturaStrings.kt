@@ -146,8 +146,8 @@ class AppStrings(val isSerbian: Boolean) {
     // Settings Screen Categories
     val appearanceSectionTitle: String = s("Appearance, Themes & Transparency", "Izgled, Teme i Providnost")
     val appearanceSectionDesc: String = s(
-        "Light/Dark/AMOLED mode, UI transparency slider, 10 monochrome & 10 colorful themes, wallpapers, icon shape & layout.",
-        "Tema, slajder za providnost UI, monohromatske teme sa 10 akcenatskih boja, pozadine, ikonica i prikaz.",
+        "Light/Dark/AMOLED mode, UI transparency & frosting slider, 10 monochrome & 10 colorful themes, wallpapers & layout.",
+        "Tema, slajder za providnost i zamućivanje UI, 10 monohromatskih i 10 višebojnih tema, teksture pozadine i prikaz.",
     )
     val uiTransparencyTitle: String = s("UI Glass Opacity & Transparency", "Providnost interfejsa (UI)")
     val uiTransparencySub: String = s(
@@ -158,7 +158,7 @@ class AppStrings(val isSerbian: Boolean) {
     val smsMmsContactsPermLabel: String = s("SMS, MMS & Contacts permissions", "SMS, MMS i Kontakti dozvole")
     val permGranted: String = s("Granted", "Odobreno")
     val permDemoNotGranted: String = s("Demo mode (Not granted)", "Demo režim (Nije odobreno)")
-    val defaultSmsRoleLabel: String = s("Default SMS app (ROLE_SMS)", "Podrazumevana SMS aplikacija (ROLE_SMS)")
+    val defaultSmsRoleLabel: String = s("Default SMS app", "Podrazumevana SMS aplikacija")
     val roleActive: String = s("Active", "Aktivna")
     val roleNotSet: String = s("Not set", "Nije postavljena")
     val openSystemAppSettingsButton: String = s(
@@ -167,7 +167,7 @@ class AppStrings(val isSerbian: Boolean) {
     )
     val rationalePermanentDenial: String = s(
         "Permissions were permanently denied. Open App Settings to enable SMS & MMS.",
-        "Dozvole su trajno odbijene. Otvorite Podešavanja aplikacije da biste omogućili SMS i MMS.",
+        "Dozvole su odbijene. Otvorite Podešavanja aplikacije da biste omogućili SMS i MMS.",
     )
     val rationaleRequired: String = s(
         "SMS permissions are required to read and send messages on your device.",
@@ -175,7 +175,7 @@ class AppStrings(val isSerbian: Boolean) {
     )
     val rationaleLocalOnly: String = s(
         "Txtura uses SMS, MMS and Contacts permissions strictly on-device.",
-        "Txtura koristi SMS, MMS i Kontakti dozvole isključivo lokalno na telefonu.",
+        "Txtura koristi dozvole za SMS, MMS i Kontakte isključivo lokalno na telefonu.",
     )
     val setDefaultSmsInSystemToast: String = s(
         "Set Txtura as your default SMS app in System Settings.",
@@ -199,8 +199,8 @@ class AppStrings(val isSerbian: Boolean) {
     )
     val secItem3Title: String = s("Zero-Permission Photo Picker for MMS", "Zero-Permission Photo Picker za MMS")
     val secItem3Sub: String = s(
-        "Attaching MMS images never requests full gallery access (READ_MEDIA_IMAGES), only the selected photo.",
-        "Prilaganje MMS slika ne traži pristup celoj galeriji (READ_MEDIA_IMAGES), već samo izabranoj fotografiji.",
+        "Attaching MMS images never requests full gallery access, only the selected photo.",
+        "Prilaganje MMS slika ne traži pristup celoj galeriji, već samo izabranoj fotografiji.",
     )
     val secItem4Title: String = s("Confidential 2FA/OTP Clipboard Copy", "Zaštićeno kopiranje 2FA/OTP kodova")
     val secItem4Sub: String = s(
@@ -212,8 +212,8 @@ class AppStrings(val isSerbian: Boolean) {
         "Zaštićeni sistemski prijemnici i SQL upiti",
     )
     val secItem5Sub: String = s(
-        "Receivers are locked with BROADCAST_SMS / BROADCAST_WAP_PUSH permissions and unencrypted cloud backup is disabled.",
-        "Prijemnici su zaključani BROADCAST_SMS / BROADCAST_WAP_PUSH dozvolama uz parametrizovane upite i isključen nešifrovani Cloud/ADB bekap.",
+        "Receivers are locked with permissions and unencrypted cloud backup is disabled.",
+        "Prijemnici su zaključani dozvolama uz parametrizovane upite i isključen nešifrovani bekap.",
     )
 
     // Security Analyzer
@@ -222,12 +222,12 @@ class AppStrings(val isSerbian: Boolean) {
         "Upozorenje: Detektovan fišing, malver ili prevara",
     )
     val reasonHttp: String = s(
-        "Unencrypted HTTP link (not protected by TLS)",
-        "Nešifrovan HTTP link (podaci nisu zaštićeni TLS-om)",
+        "Unencrypted link",
+        "Nešifrovan link",
     )
     val reasonIpUrl: String = s(
-        "Link points directly to a raw IP address or non-standard port",
-        "Link vodi direktno na sirovu IP adresu ili nestandardni port",
+        "Link points directly to an IP address or non-standard port",
+        "Link vodi direktno na IP adresu ili nestandardni port",
     )
     val reasonShortener: (String) -> String = { host ->
         if (isSerbian) "Skraćeni link skriva pravu destinaciju ($host)"
@@ -279,8 +279,8 @@ class AppStrings(val isSerbian: Boolean) {
     // Swipe Gestures & Trash / Deleted Messages
     val swipeSectionTitle: String = s("Messages, Categories & Swipe Actions", "Poruke, Kategorije i Svajp radnje")
     val swipeSectionDesc: String = s(
-        "Configure swipe gestures, category order, and deleted messages retention.",
-        "Podesite brze svajp radnje, redosled kategorija i obrisane poruke.",
+        "Configure swipe gestures and deleted messages retention.",
+        "Podesite radnje prevlačenjem i brisanje poruka.",
     )
     val swipeRightLabel: String = s("Swipe Right Action (→)", "Radnja za svajp udesno (→)")
     val swipeLeftLabel: String = s("Swipe Left Action (←)", "Radnja za svajp ulevo (←)")
@@ -298,7 +298,7 @@ class AppStrings(val isSerbian: Boolean) {
     val openDeletedMessagesButton: (Int) -> String = { count ->
         if (isSerbian) "Otvori obrisane poruke ($count)" else "Open Deleted Messages ($count)"
     }
-    val autoDeleteDaysTitle: String = s("Auto-delete deleted messages after", "Automatski izbriši obrisane poruke nakon")
+    val autoDeleteDaysTitle: String = s("Auto-delete deleted messages after", "Automatski ukloni obrisane poruke nakon")
     val daysCountLabel: (Int) -> String = { days ->
         if (isSerbian) "$days dana" else "$days days"
     }
@@ -382,15 +382,15 @@ class AppStrings(val isSerbian: Boolean) {
     )
     val useMainWallpaperDefault: String = s("Use Main Window Wallpaper", "Koristi pozadinu glavnog prozora")
     val wpDefault: String = s("Default Obsidian Glass", "Podrazumevana Obsidijan Glass podloga")
-    val wpAurora: String = s("Aurora Borealis", "Polarna svetlost (Aurora)")
-    val wpVelvetPlum: String = s("Velvet Plum", "Kraljevska šljiva (Velvet Plum)")
+    val wpAurora: String = s("Aurora Borealis", "Polarna svetlost")
+    val wpVelvetPlum: String = s("Velvet Plum", "Kraljevska šljiva")
     val wpMidnightOcean: String = s("Midnight Ocean", "Ponoćni okean")
-    val wpSunsetHorizon: String = s("Sunset Horizon", "Zalazak sunca (Horizon)")
+    val wpSunsetHorizon: String = s("Sunset Horizon", "Zalazak sunca")
     val wpEmeraldForest: String = s("Emerald Mist", "Smaragdna magla")
     val wpRoyalAmethyst: String = s("Royal Amethyst", "Kraljevski ametist")
     val wpStarlightGalaxy: String = s("Starlight Galaxy", "Zvezdana galaksija")
-    val wpCrimsonVelvet: String = s("Crimson Velvet", "Grimizni somot (Velvet)")
-    val wpArcticFrost: String = s("Arctic Frost", "Arktički led (Frost)")
+    val wpCrimsonVelvet: String = s("Crimson Velvet", "Grimizni somot")
+    val wpArcticFrost: String = s("Arctic Frost", "Arktički led")
     val wpObsidianGold: String = s("Obsidian & Gold", "Obsidijan i zlato")
     val wpMonoSlate: String = s("Monochrome + Slate Accent", "Monohrom + Titanijum akcenat")
     val wpMonoSapphire: String = s("Monochrome + Sapphire Accent", "Monohrom + Safirno plavi akcenat")
@@ -403,13 +403,98 @@ class AppStrings(val isSerbian: Boolean) {
     val wpMonoSmoke: String = s("Monochrome + Teal Accent", "Monohrom + Tirkizni akcenat")
     val wpMonoEspresso: String = s("Monochrome + Copper Accent", "Monohrom + Bakarni akcenat")
 
+    val wpDefaultDesc: String = s(
+        "Deep obsidian & royal sapphire glow with silk weave texture",
+        "Duboki obsidijan i kraljevski safir sa svilenim tkanjem",
+    )
+    val wpAuroraDesc: String = s(
+        "Northern emerald & violet shimmer with rose accent",
+        "Severni smaragdni i ljubičasti sjaj sa ružičastim akcentom",
+    )
+    val wpVelvetPlumDesc: String = s(
+        "Rich plum & royal purple depth with sky-blue accent",
+        "Bogata šljiva i kraljevska ljubičasta sa nebesko plavim akcentom",
+    )
+    val wpMidnightOceanDesc: String = s(
+        "Abyssal cobalt & ocean cyan waves with warm amber accent",
+        "Duboki kobalt i okeanski talasi sa toplim ćilibarskim akcentom",
+    )
+    val wpSunsetHorizonDesc: String = s(
+        "Crimson dusk & warm horizon glow with turquoise accent",
+        "Grimizni sumrak i topli horizont sa tirkiznim akcentom",
+    )
+    val wpEmeraldForestDesc: String = s(
+        "Lush forest emerald & jade mist with coral rose accent",
+        "Smaragdna šuma i žad magla sa koralno ružičastim akcentom",
+    )
+    val wpRoyalAmethystDesc: String = s(
+        "Crystalline amethyst & violet prism with golden accent",
+        "Kristalni ametist i ljubičasta prizma sa zlatnim akcentom",
+    )
+    val wpStarlightGalaxyDesc: String = s(
+        "Cosmic indigo & slate nebula with starlight blue accent",
+        "Kosmički indigo i zvezdana maglina sa svetloplavim akcentom",
+    )
+    val wpCrimsonVelvetDesc: String = s(
+        "Deep ruby & burgundy damask with emerald-teal accent",
+        "Duboki rubin i bordo brokat sa smaragdno-tirkiznim akcentom",
+    )
+    val wpArcticFrostDesc: String = s(
+        "Glacial ice & polar cyan crystals with soft rose accent",
+        "Glečerski led i polarni kristali sa nežnim ružičastim akcentom",
+    )
+    val wpObsidianGoldDesc: String = s(
+        "Volcanic obsidian & kintsugi gold veins with azure accent",
+        "Vulkanski obsidijan i zlatne žile mermera sa azurnim akcentom",
+    )
+    val wpMonoSlateDesc: String = s(
+        "Light/Dark monochrome base with brushed slate-titanium accent",
+        "Svetla/tamna monohromatska baza sa sivo-titanijumskim akcentom",
+    )
+    val wpMonoSapphireDesc: String = s(
+        "Light/Dark monochrome base with crisp sapphire blue accent",
+        "Svetla/tamna monohromatska baza sa čistim safirno plavim akcentom",
+    )
+    val wpMonoSageDesc: String = s(
+        "Light/Dark monochrome base with calm sage-emerald accent",
+        "Svetla/tamna monohromatska baza sa smirenim smaragdnim akcentom",
+    )
+    val wpMonoChampagneDesc: String = s(
+        "Light/Dark monochrome base with warm champagne gold accent",
+        "Svetla/tamna monohromatska baza sa toplim šampanj-zlatnim akcentom",
+    )
+    val wpMonoPlumDesc: String = s(
+        "Light/Dark monochrome base with soft amethyst purple accent",
+        "Svetla/tamna monohromatska baza sa nežnim ametist ljubičastim akcentom",
+    )
+    val wpMonoGraphiteDesc: String = s(
+        "Light/Dark monochrome base with pure graphite & silver accent",
+        "Svetla/tamna monohromatska baza sa grafitno-srebrnim akcentom",
+    )
+    val wpMonoRoseDesc: String = s(
+        "Light/Dark monochrome base with velvet rose-crimson accent",
+        "Svetla/tamna monohromatska baza sa baršunasto ružičastim akcentom",
+    )
+    val wpMonoNavyDesc: String = s(
+        "Light/Dark monochrome base with deep royal indigo accent",
+        "Svetla/tamna monohromatska baza sa kraljevskim indigo-teget akcentom",
+    )
+    val wpMonoSmokeDesc: String = s(
+        "Light/Dark monochrome base with modern ocean-teal accent",
+        "Svetla/tamna monohromatska baza sa modernim tirkiznim akcentom",
+    )
+    val wpMonoEspressoDesc: String = s(
+        "Light/Dark monochrome base with warm roasted copper accent",
+        "Svetla/tamna monohromatska baza sa toplim bakarno-narandžastim akcentom",
+    )
+
     // Txtura Tactile Background Textures
     val textureSectionTitle: String = s("Txtura Background Texture", "Tekstura pozadine (Txtura)")
     val textureSectionSub: String = s(
         "Each theme has a matching signature texture, or choose any texture pattern below",
         "Svaka tema ima prilagođenu teksturu, a možete izabrati i bilo koju teksturu po želji",
     )
-    val texAutoTheme: String = s("Auto (Theme Texture)", "Automatska (prema temi)")
+    val texAutoTheme: String = s("Auto (Theme Texture)", "Automatska")
     val texSilkWeave: String = s("Silk Weave", "Svileno tkanje")
     val texAuroraRibbons: String = s("Aurora Silk Waves", "Svileni talasi")
     val texVelvetNap: String = s("Crushed Velvet", "Kraljevski somot")
@@ -431,28 +516,11 @@ class AppStrings(val isSerbian: Boolean) {
     val texHerringboneTwill: String = s("Herringbone Weave", "Riblja kost")
     val texTopographicContour: String = s("Topographic Relief", "Topografski reljef")
     val texPebbledLeather: String = s("Pebbled Leather", "Zrnasta koža")
-    val texNone: String = s("No Texture (Smooth)", "Bez teksture (Glatko)")
+    val texNone: String = s("No Texture (Smooth)", "Bez teksture")
 
     // UI Color Mode
-    val uiColorModeColorfulTitle: String = s("Colorful (10)", "Višebojne (10)")
-    val uiColorModeMonochromeTitle: String = s("Monochrome (10)", "Monohrom (10)")
-    val uiColorModeMonochromeDesc: String = s(
-        "Follows Light or Dark mode with your choice of 10 single accent colors",
-        "Prilagođene svetlom ili tamnom režimu sa 10 akcenatskih boja",
-    )
-    val wallpaperTabColorful: String = s("Colorful (10)", "Višebojne (10)")
-    val wallpaperTabMonochrome: String = s("Monochrome (10)", "Monohrom (10)")
-
-    // Launcher Icon Shape Style
-    val launcherIconShapeSectionTitle: String = s("Launcher Icon Style", "Stil ikonice aplikacije")
-    val launcherIconShapeCircle: String = s("Circle", "Krug")
-    val launcherIconShapeSquircle: String = s("Squircle", "Zaobljeni kvadrat")
-    val launcherIconShapeRoundedSquare: String = s("Rounded Box", "Zaobljena kutija")
-    val launcherIconShapeTeardrop: String = s("Teardrop", "Kapljica")
-    val launcherIconShapePebble: String = s("Pebble", "Kamenčić")
-    val launcherIconShapeSavedToast: (String) -> String = { shape ->
-        if (isSerbian) "Stil ikonice postavljen na: $shape" else "Launcher icon style set to $shape"
-    }
+    val wallpaperTabColorful: String = s("Colorful Themes", "Višebojne teme (11)")
+    val wallpaperTabMonochrome: String = s("Monochrome + Accent", "Monohrom + Akcenat")
 
     // Backup & Restore
     val backupSectionTitle: String = s("Backup & Restore", "Bekap i vraćanje podataka")
@@ -465,7 +533,7 @@ class AppStrings(val isSerbian: Boolean) {
     val shareBackupButton: String = s("Share / Export Backup File", "Podeli / Pošalji fajl kopije")
 
     // Sub-item titles for Settings
-    val subSettingThemeModeTitle: String = s("Theme Mode (AMOLED / Light / Dark / Auto)", "Režim teme (AMOLED / Svetla / Tamna / Auto)")
+    val subSettingThemeModeTitle: String = s("Theme Mode", "Režim teme")
 
     // Chat Top-Right 3-Dots Menu & Block Contact Confirmation
     val moreOptionsTooltip: String = s("More options", "Više opcija")

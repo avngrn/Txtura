@@ -69,14 +69,6 @@ enum class UiColorMode {
     MONOCHROME
 }
 
-enum class LauncherIconShape {
-    CIRCLE,
-    SQUIRCLE,
-    ROUNDED_SQUARE,
-    TEARDROP,
-    PEBBLE
-}
-
 /**
  * Display density / layout mode for the main conversation list window.
  */
@@ -324,8 +316,7 @@ data class AppSettingsSnapshot(
     val deletedGroupingMode: DeletedGroupingMode,
     val bubbleZoomScale: Float,
     val uiColorMode: UiColorMode = UiColorMode.COLORFUL,
-    val launcherIconShape: LauncherIconShape = LauncherIconShape.ROUNDED_SQUARE,
-    val uiOpacity: Float = 1.0f,
+    val uiOpacity: Float = 0.50f,
     val categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder
 )
 
@@ -414,7 +405,6 @@ object BackupManager {
         settingsObj.put("deletedGroupingMode", settings.deletedGroupingMode.name)
         settingsObj.put("bubbleZoomScale", settings.bubbleZoomScale.toDouble())
         settingsObj.put("uiColorMode", settings.uiColorMode.name)
-        settingsObj.put("launcherIconShape", settings.launcherIconShape.name)
         settingsObj.put("uiOpacity", settings.uiOpacity.toDouble())
         settingsObj.put("categoryOrder", ConversationFilter.serializeOrder(settings.categoryOrder))
 
@@ -534,9 +524,7 @@ object BackupManager {
         val bubbleZoom = settingsObj.optDouble("bubbleZoomScale", 1.0).toFloat().coerceIn(0.75f, 1.65f)
         val uiColorModeStr = settingsObj.optString("uiColorMode", UiColorMode.COLORFUL.name)
         val uiColorMode = UiColorMode.entries.find { it.name == uiColorModeStr } ?: UiColorMode.COLORFUL
-        val iconShapeStr = settingsObj.optString("launcherIconShape", LauncherIconShape.ROUNDED_SQUARE.name)
-        val launcherIconShape = LauncherIconShape.entries.find { it.name == iconShapeStr } ?: LauncherIconShape.ROUNDED_SQUARE
-        val uiOpacity = settingsObj.optDouble("uiOpacity", 1.0).toFloat().coerceIn(0.0f, 1.0f)
+        val uiOpacity = settingsObj.optDouble("uiOpacity", 0.50).toFloat().coerceIn(0.0f, 1.0f)
         val categoryOrder = ConversationFilter.deserializeOrder(settingsObj.optString("categoryOrder", ""))
 
         val contactWpMap = mutableMapOf<String, WallpaperConfig>()
@@ -562,7 +550,6 @@ object BackupManager {
             deletedGroupingMode = groupingMode,
             bubbleZoomScale = bubbleZoom,
             uiColorMode = uiColorMode,
-            launcherIconShape = launcherIconShape,
             uiOpacity = uiOpacity,
             categoryOrder = categoryOrder
         )

@@ -1,15 +1,22 @@
 package com.txtura.ui.components
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -26,13 +33,18 @@ import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -46,11 +58,17 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import com.txtura.data.UiColorMode
@@ -64,6 +82,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -152,9 +171,39 @@ fun GlassBackground(
         customBitmap != null -> palette.backgroundBase
         isMono -> palette.backgroundBase
         preset == WallpaperPreset.DEFAULT -> palette.backgroundBase
-        !palette.isDark -> Color(preset.primaryOrbHex).copy(alpha = 0.14f)
+        !palette.isDark -> lerp(Color(0xFFE2EAF4), Color(preset.primaryOrbHex), 0.18f)
         isAmoled -> Color.Black
         else -> Color(preset.baseColorHex)
+    }
+
+    // Bilateral frosted blur (zamućivanje) when moving the slider in either direction from the 50% midpoint
+    val distFromMid = abs(uiOpacity.coerceIn(0f, 1f) - 0.5f) * 2f
+    val frostBlurRadius = (2f + distFromMid * 18f).dp
+    val frostVeilColor = when {
+        !palette.isDark -> lerp(Color(0xFF94A3B8), palette.accentPrimary.copy(alpha = 1f), 0.22f)
+        palette.isAmoled -> lerp(Color(0xFF06090F), palette.orbPrimary.copy(alpha = 1f), 0.28f)
+        else -> lerp(Color(0xFF0A101B), palette.orbPrimary.copy(alpha = 1f), 0.30f)
+    }
+    val frostVeilAlpha = (0.04f + distFromMid * 0.24f).coerceIn(0.04f, 0.28f)
+
+    val texPrimary = when {
+        customBitmap != null -> palette.accentPrimary.copy(alpha = 0.28f)
+        isMono -> palette.accentPrimary.copy(alpha = if (palette.isDark) 0.36f else 0.30f)
+        else -> Color(preset.accentOrbHex).copy(alpha = if (palette.isDark) 0.38f else 0.32f)
+    }
+    val texSecondary = when {
+        customBitmap != null -> Color.White.copy(alpha = 0.16f)
+        isMono -> (if (palette.isDark) Color.White else Color.Black).copy(
+            alpha = if (palette.isDark) 0.18f else 0.14f,
+        )
+        else -> Color(preset.primaryOrbHex).copy(alpha = if (palette.isDark) 0.32f else 0.26f)
+    }
+    val texAccent = palette.accentPrimary.copy(alpha = if (palette.isDark) 0.46f else 0.38f)
+    val shouldDrawTexture = if (customBitmap != null) {
+        wallpaperConfig.texture != WallpaperTexture.AUTO_THEME &&
+            wallpaperConfig.texture != WallpaperTexture.NONE
+    } else {
+        activeTexture != WallpaperTexture.NONE
     }
 
     CompositionLocalProvider(LocalGlassPalette provides palette) {
@@ -167,136 +216,111 @@ fun GlassBackground(
                     .fillMaxSize()
                     .background(bgBase),
             ) {
-                if (customBitmap != null) {
-                    Image(
-                        bitmap = customBitmap.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    // Subtle readability scrim so glass cards and text remain crisp over any photo
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                if (palette.isDark) Color.Black.copy(alpha = 0.45f)
-                                else Color.White.copy(alpha = 0.35f),
-                            ),
-                    )
-                    if (wallpaperConfig.texture != WallpaperTexture.AUTO_THEME &&
-                        wallpaperConfig.texture != WallpaperTexture.NONE
-                    ) {
+                // 1. Softly blurred ambient backdrop (gallery image or glowing theme orbs)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(
+                            radius = frostBlurRadius,
+                            edgeTreatment = BlurredEdgeTreatment.Unbounded,
+                        ),
+                ) {
+                    if (customBitmap != null) {
+                        Image(
+                            bitmap = customBitmap.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        // Subtle smoked readability scrim (never bleached white)
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .drawWithCache {
-                                    val primaryTint = palette.accentPrimary.copy(alpha = 0.14f)
-                                    val secondaryTint = Color.White.copy(alpha = 0.08f)
-                                    onDrawBehind {
-                                        drawTxturaTexture(
-                                            texture = wallpaperConfig.texture,
-                                            primaryColor = primaryTint,
-                                            secondaryColor = secondaryTint,
-                                            accentColor = palette.accentPrimary.copy(alpha = 0.22f),
-                                            isCompactPreview = false
-                                        )
-                                    }
-                                }
+                                .background(
+                                    if (palette.isDark) Color.Black.copy(alpha = 0.45f)
+                                    else Color(0xFFCBD5E1).copy(alpha = 0.32f),
+                                ),
+                        )
+                    } else {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val w = size.width
+                            val h = size.height
+
+                            if (preset == WallpaperPreset.DEFAULT || isMono) {
+                                val topCenter = Offset(w * 0.85f, h * 0.12f)
+                                val topRadius = (w * 0.72f).coerceAtLeast(1f)
+                                val topBrush = Brush.radialGradient(
+                                    colors = listOf(palette.orbPrimary, Color.Transparent),
+                                    center = topCenter,
+                                    radius = topRadius,
+                                )
+                                val bottomCenter = Offset(w * 0.15f, h * 0.78f)
+                                val bottomRadius = (w * 0.68f).coerceAtLeast(1f)
+                                val bottomBrush = Brush.radialGradient(
+                                    colors = listOf(palette.orbSecondary, Color.Transparent),
+                                    center = bottomCenter,
+                                    radius = bottomRadius,
+                                )
+                                drawCircle(brush = topBrush, radius = topRadius, center = topCenter)
+                                drawCircle(brush = bottomBrush, radius = bottomRadius, center = bottomCenter)
+                            } else {
+                                val c1 = Color(preset.primaryOrbHex).copy(alpha = if (palette.isDark) 0.38f else 0.28f)
+                                val c2 = Color(preset.secondaryOrbHex).copy(alpha = if (palette.isDark) 0.34f else 0.24f)
+                                val c3 = Color(preset.accentOrbHex).copy(alpha = if (palette.isDark) 0.28f else 0.20f)
+
+                                val center1 = Offset(w * 0.82f, h * 0.14f)
+                                val radius1 = (w * 0.85f).coerceAtLeast(1f)
+                                val brush1 = Brush.radialGradient(
+                                    colors = listOf(c1, Color.Transparent),
+                                    center = center1,
+                                    radius = radius1,
+                                )
+
+                                val center2 = Offset(w * 0.15f, h * 0.48f)
+                                val radius2 = (w * 0.78f).coerceAtLeast(1f)
+                                val brush2 = Brush.radialGradient(
+                                    colors = listOf(c2, Color.Transparent),
+                                    center = center2,
+                                    radius = radius2,
+                                )
+
+                                val center3 = Offset(w * 0.75f, h * 0.86f)
+                                val radius3 = (w * 0.75f).coerceAtLeast(1f)
+                                val brush3 = Brush.radialGradient(
+                                    colors = listOf(c3, Color.Transparent),
+                                    center = center3,
+                                    radius = radius3,
+                                )
+
+                                drawCircle(brush = brush1, radius = radius1, center = center1)
+                                drawCircle(brush = brush2, radius = radius2, center = center2)
+                                drawCircle(brush = brush3, radius = radius3, center = center3)
+                            }
+                        }
+                    }
+                }
+
+                // 2. Smoked frosted veil that deepens smoothly in both directions without bleaching
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(frostVeilColor.copy(alpha = frostVeilAlpha)),
+                )
+
+                // 3. Crisp Txtura tactile surface texture layer rendered ABOVE the blur filter so
+                // fine weaves, crystals, ribbons, and facets stay sharp and always update live
+                if (shouldDrawTexture) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        drawTxturaTexture(
+                            texture = activeTexture,
+                            primaryColor = texPrimary,
+                            secondaryColor = texSecondary,
+                            accentColor = texAccent,
+                            isCompactPreview = false,
                         )
                     }
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .drawWithCache {
-                                val w = size.width
-                                val h = size.height
-
-                                val texPrimary = if (isMono) {
-                                    palette.accentPrimary.copy(alpha = if (palette.isDark) 0.22f else 0.19f)
-                                } else {
-                                    Color(preset.accentOrbHex).copy(alpha = if (palette.isDark) 0.24f else 0.20f)
-                                }
-                                val texSecondary = if (isMono) {
-                                    (if (palette.isDark) Color.White else Color.Black).copy(
-                                        alpha = if (palette.isDark) 0.10f else 0.08f
-                                    )
-                                } else {
-                                    Color(preset.primaryOrbHex).copy(alpha = if (palette.isDark) 0.20f else 0.16f)
-                                }
-                                val texAccent = palette.accentPrimary.copy(alpha = if (palette.isDark) 0.30f else 0.25f)
-
-                                if (preset == WallpaperPreset.DEFAULT || isMono) {
-                                    val topCenter = Offset(w * 0.85f, h * 0.12f)
-                                    val topRadius = (w * 0.72f).coerceAtLeast(1f)
-                                    val topBrush = Brush.radialGradient(
-                                        colors = listOf(palette.orbPrimary, Color.Transparent),
-                                        center = topCenter,
-                                        radius = topRadius,
-                                    )
-                                    val bottomCenter = Offset(w * 0.15f, h * 0.78f)
-                                    val bottomRadius = (w * 0.68f).coerceAtLeast(1f)
-                                    val bottomBrush = Brush.radialGradient(
-                                        colors = listOf(palette.orbSecondary, Color.Transparent),
-                                        center = bottomCenter,
-                                        radius = bottomRadius,
-                                    )
-                                    onDrawBehind {
-                                        drawCircle(brush = topBrush, radius = topRadius, center = topCenter)
-                                        drawCircle(brush = bottomBrush, radius = bottomRadius, center = bottomCenter)
-                                        drawTxturaTexture(
-                                            texture = activeTexture,
-                                            primaryColor = texPrimary,
-                                            secondaryColor = texSecondary,
-                                            accentColor = texAccent,
-                                            isCompactPreview = false
-                                        )
-                                    }
-                                } else {
-                                    val c1 = Color(preset.primaryOrbHex).copy(alpha = if (palette.isDark) 0.34f else 0.26f)
-                                    val c2 = Color(preset.secondaryOrbHex).copy(alpha = if (palette.isDark) 0.30f else 0.22f)
-                                    val c3 = Color(preset.accentOrbHex).copy(alpha = if (palette.isDark) 0.24f else 0.18f)
-
-                                    val center1 = Offset(w * 0.82f, h * 0.14f)
-                                    val radius1 = (w * 0.85f).coerceAtLeast(1f)
-                                    val brush1 = Brush.radialGradient(
-                                        colors = listOf(c1, Color.Transparent),
-                                        center = center1,
-                                        radius = radius1,
-                                    )
-
-                                    val center2 = Offset(w * 0.15f, h * 0.48f)
-                                    val radius2 = (w * 0.78f).coerceAtLeast(1f)
-                                    val brush2 = Brush.radialGradient(
-                                        colors = listOf(c2, Color.Transparent),
-                                        center = center2,
-                                        radius = radius2,
-                                    )
-
-                                    val center3 = Offset(w * 0.75f, h * 0.86f)
-                                    val radius3 = (w * 0.75f).coerceAtLeast(1f)
-                                    val brush3 = Brush.radialGradient(
-                                        colors = listOf(c3, Color.Transparent),
-                                        center = center3,
-                                        radius = radius3,
-                                    )
-
-                                    onDrawBehind {
-                                        drawCircle(brush = brush1, radius = radius1, center = center1)
-                                        drawCircle(brush = brush2, radius = radius2, center = center2)
-                                        drawCircle(brush = brush3, radius = radius3, center = center3)
-                                        drawTxturaTexture(
-                                            texture = activeTexture,
-                                            primaryColor = texPrimary,
-                                            secondaryColor = texSecondary,
-                                            accentColor = texAccent,
-                                            isCompactPreview = false
-                                        )
-                                    }
-                                }
-                            },
-                    )
                 }
+
                 content()
             }
         }
@@ -312,13 +336,13 @@ fun DrawScope.drawTxturaTexture(
     primaryColor: Color,
     secondaryColor: Color,
     accentColor: Color,
-    isCompactPreview: Boolean = false
+    isCompactPreview: Boolean = false,
 ) {
     val w = size.width
     val h = size.height
-    if (w <= 1f || h <= 1f) return
+    if ((w <= 1f) || (h <= 1f)) return
 
-    val strokeBase = if (isCompactPreview) 1.15f else 1.8f
+    val strokeBase = if (isCompactPreview) 1.35f else 2.15f
     val stepScale = if (isCompactPreview) 0.22f else 1f
 
     when (texture) {
@@ -1002,6 +1026,166 @@ fun GlassIconButton(
 }
 
 /**
+ * Subtle, modern glassmorphic slider with a slim capsule groove, soft gradient fill,
+ * subtle micro-tick dots, and a refined circular glass-ring thumb that follows the active Txtura palette.
+ */
+@Composable
+fun GlassModernSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    tickFractions: List<Float> = listOf(0f, 0.25f, 0.5f, 0.75f, 1f),
+) {
+    val palette = LocalGlassPalette.current
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0.0001f)
+    val normalized = ((value - valueRange.start) / span).coerceIn(0f, 1f)
+
+    var isDragging by remember { mutableStateOf(false) }
+    val thumbScale by animateFloatAsState(
+        targetValue = if (isDragging) 1.18f else 1f,
+        animationSpec = tween(durationMillis = 150),
+        label = "glassSliderThumbScale",
+    )
+
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(28.dp)
+            .pointerInput(valueRange) {
+                detectTapGestures { offset ->
+                    val pad = 10.dp.toPx()
+                    val usable = (size.width - pad * 2f).coerceAtLeast(1f)
+                    val frac = ((offset.x - pad) / usable).coerceIn(0f, 1f)
+                    currentOnValueChange(valueRange.start + frac * span)
+                }
+            }
+            .pointerInput(valueRange) {
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        isDragging = true
+                        val pad = 10.dp.toPx()
+                        val usable = (size.width - pad * 2f).coerceAtLeast(1f)
+                        val frac = ((offset.x - pad) / usable).coerceIn(0f, 1f)
+                        currentOnValueChange(valueRange.start + frac * span)
+                    },
+                    onDragEnd = { isDragging = false },
+                    onDragCancel = { isDragging = false },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        val pad = 10.dp.toPx()
+                        val usable = (size.width - pad * 2f).coerceAtLeast(1f)
+                        val frac = ((change.position.x - pad) / usable).coerceIn(0f, 1f)
+                        currentOnValueChange(valueRange.start + frac * span)
+                    },
+                )
+            },
+    ) {
+        val trackStart = 10.dp.toPx()
+        val trackEnd = (size.width - trackStart).coerceAtLeast(trackStart + 1f)
+        val trackWidth = trackEnd - trackStart
+        val centerY = size.height * 0.5f
+        val trackHeight = 5.dp.toPx()
+        val trackRadius = CornerRadius(trackHeight * 0.5f, trackHeight * 0.5f)
+        val thumbX = trackStart + trackWidth * normalized
+
+        // 1. Subtle recessed glass groove (inactive track)
+        val grooveColor = if (palette.isDark) {
+            palette.backgroundBase.copy(alpha = 0.58f)
+        } else {
+            Color(0xFF94A3B8).copy(alpha = 0.28f)
+        }
+        drawRoundRect(
+            color = grooveColor,
+            topLeft = Offset(trackStart, centerY - trackHeight * 0.5f),
+            size = Size(trackWidth, trackHeight),
+            cornerRadius = trackRadius,
+        )
+        drawRoundRect(
+            color = palette.glassBorderBottom.copy(alpha = 0.45f),
+            topLeft = Offset(trackStart, centerY - trackHeight * 0.5f),
+            size = Size(trackWidth, trackHeight),
+            cornerRadius = trackRadius,
+            style = Stroke(width = 0.8.dp.toPx()),
+        )
+
+        // 2. Active gradient fill + soft ambient halo
+        val activeWidth = (thumbX - trackStart).coerceAtLeast(trackHeight)
+        val haloHeight = 9.dp.toPx()
+        drawRoundRect(
+            color = palette.accentPrimary.copy(alpha = if (isDragging) 0.22f else 0.13f),
+            topLeft = Offset(trackStart, centerY - haloHeight * 0.5f),
+            size = Size(activeWidth, haloHeight),
+            cornerRadius = CornerRadius(haloHeight * 0.5f, haloHeight * 0.5f),
+        )
+        drawRoundRect(
+            brush = Brush.horizontalGradient(
+                colors = listOf(
+                    palette.accentSecondary.copy(alpha = 0.65f),
+                    palette.accentPrimary.copy(alpha = 0.95f),
+                ),
+                startX = trackStart,
+                endX = thumbX.coerceAtLeast(trackStart + 1f),
+            ),
+            topLeft = Offset(trackStart, centerY - trackHeight * 0.5f),
+            size = Size(activeWidth, trackHeight),
+            cornerRadius = trackRadius,
+        )
+
+        // 3. Subtle micro-tick markers
+        val dotRadius = 1.3.dp.toPx()
+        tickFractions.forEach { tick ->
+            val tx = trackStart + trackWidth * tick.coerceIn(0f, 1f)
+            val isCovered = tx <= thumbX
+            drawCircle(
+                color = if (isCovered) {
+                    Color.White.copy(alpha = 0.70f)
+                } else {
+                    palette.textSecondary.copy(alpha = 0.35f)
+                },
+                radius = dotRadius,
+                center = Offset(tx, centerY),
+            )
+        }
+
+        // 4. Sleek glass-ring thumb
+        val thumbRadius = 7.5.dp.toPx() * thumbScale
+        val thumbCenter = Offset(thumbX, centerY)
+
+        // Outer soft glow
+        drawCircle(
+            color = palette.accentPrimary.copy(alpha = if (isDragging) 0.30f else 0.18f),
+            radius = thumbRadius * 1.48f,
+            center = thumbCenter,
+        )
+        // Frosted inner core
+        drawCircle(
+            color = palette.popupContainerColor,
+            radius = thumbRadius,
+            center = thumbCenter,
+        )
+        // Specular accent ring
+        drawCircle(
+            brush = Brush.linearGradient(
+                colors = listOf(palette.accentPrimary, palette.accentSecondary),
+                start = Offset(thumbX - thumbRadius, centerY - thumbRadius),
+                end = Offset(thumbX + thumbRadius, centerY + thumbRadius),
+            ),
+            radius = thumbRadius,
+            center = thumbCenter,
+            style = Stroke(width = 1.8.dp.toPx()),
+        )
+        // Luminous center point
+        drawCircle(
+            color = palette.accentPrimary,
+            radius = 2.2.dp.toPx() * thumbScale,
+            center = thumbCenter,
+        )
+    }
+}
+
+/**
  * Theme-aware glassmorphic popup AlertDialog that automatically adapts its surface,
  * specular border, and typography colors to the active [LocalGlassPalette].
  */
@@ -1129,6 +1313,77 @@ fun GlassTooltipIconButton(
                     .align(Alignment.Center),
             )
         }
+    }
+}
+
+/**
+ * Text component that automatically detects if its content did not fit in the available space
+ * (`hasVisualOverflow`) and displays the full text in a themed glass popup when the user holds
+ * their touch (long-presses) on the truncated text.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun OverflowTooltipText(
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    fontSize: TextUnit = TextUnit.Unspecified,
+    fontWeight: FontWeight? = null,
+    style: TextStyle = MaterialTheme.typography.bodyMedium,
+    maxLines: Int = 1,
+    softWrap: Boolean = true,
+    overflow: TextOverflow = TextOverflow.Ellipsis,
+) {
+    val palette = LocalGlassPalette.current
+    var isOverflowing by remember(text) { mutableStateOf(value = false) }
+    val tooltipState = rememberTooltipState()
+
+    @Suppress("DEPRECATION")
+    val positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider()
+
+    TooltipBox(
+        positionProvider = positionProvider,
+        enableUserInput = isOverflowing,
+        tooltip = {
+            if (isOverflowing) {
+                val tooltipShape = RoundedCornerShape(14.dp)
+                PlainTooltip(
+                    containerColor = palette.popupContainerColor,
+                    contentColor = palette.textPrimary,
+                    shape = tooltipShape,
+                    modifier = Modifier.border(
+                        width = 1.dp,
+                        brush = Brush.linearGradient(
+                            listOf(palette.glassBorderTop, palette.glassBorderBottom)
+                        ),
+                        shape = tooltipShape,
+                    ),
+                ) {
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textPrimary,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        },
+        state = tooltipState,
+        modifier = modifier,
+    ) {
+        Text(
+            text = text,
+            color = color,
+            fontSize = fontSize,
+            fontWeight = fontWeight,
+            style = style,
+            maxLines = maxLines,
+            softWrap = softWrap,
+            overflow = overflow,
+            onTextLayout = { layoutResult ->
+                isOverflowing = layoutResult.hasVisualOverflow
+            },
+        )
     }
 }
 
