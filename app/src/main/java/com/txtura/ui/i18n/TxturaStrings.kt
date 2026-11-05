@@ -355,11 +355,6 @@ class AppStrings(val isSerbian: Boolean) {
         "Manage blocked phone numbers and senders whose messages will be blocked.",
         "Dodajte ili uklonite blokirane pošiljaoce i brojeve telefona od kojih ne želite da primate poruke.",
     )
-    val addBlockedSenderPlaceholder: String = s(
-        "Enter phone number or sender ID...",
-        "Unesite broj telefona ili naziv pošiljaoca...",
-    )
-    val blockSenderButton: String = s("Block", "Blokiraj")
     val unblockSenderButton: String = s("Unblock", "Odblokiraj")
     val blockedSendersEmpty: String = s("No blocked senders.", "Trenutno nema blokiranih pošiljalaca.")
     val senderBlockedToast: (String) -> String = { addr ->
@@ -402,6 +397,8 @@ class AppStrings(val isSerbian: Boolean) {
     val wpMonoNavy: String = s("With Indigo Accent", "Sa indigo akcentom")
     val wpMonoSmoke: String = s("With Teal Accent", "Sa tirkiznim akcentom")
     val wpMonoEspresso: String = s("With Copper Accent", "Sa bakarnim akcentom")
+    val wpAllBlack: String = s("All Black", "All Black")
+    val wpAllWhite: String = s("All White", "All White")
 
     val wpDefaultDesc: String = s(
         "Obsidian & royal sapphire",
@@ -487,6 +484,14 @@ class AppStrings(val isSerbian: Boolean) {
         "Warm roasted copper & bronze",
         "Topli ton bakra i bronze",
     )
+    val wpAllBlackDesc: String = s(
+        "True AMOLED pitch-black with white text",
+        "Prava AMOLED crna sa belim tekstom",
+    )
+    val wpAllWhiteDesc: String = s(
+        "Pure clean white with black text",
+        "Čista bela podloga sa crnim tekstom",
+    )
 
     // Txtura Tactile Background Textures
     val textureSectionTitle: String = s("Txtura Background Texture", "Tekstura pozadine (Txtura)")
@@ -519,8 +524,9 @@ class AppStrings(val isSerbian: Boolean) {
     val texNone: String = s("No Texture (Smooth)", "Bez teksture")
 
     // UI Color Mode
-    val wallpaperTabColorful: String = s("Colorful Themes", "Višebojne teme (11)")
-    val wallpaperTabMonochrome: String = s("Monochrome + Accent", "Monohrom + Akcenat")
+    val wallpaperTabColorful: String = s("Colorful", "Višebojne (11)")
+    val wallpaperTabMonochrome: String = s("Monochrome", "Monohrom (10)")
+    val wallpaperTabMinimalist: String = s("Minimalist", "Minimalističke (2)")
 
     // Backup & Restore
     val backupSectionTitle: String = s("Backup & Restore", "Bekap i vraćanje podataka")
@@ -537,6 +543,11 @@ class AppStrings(val isSerbian: Boolean) {
 
     // Chat Top-Right 3-Dots Menu & Block Contact Confirmation
     val moreOptionsTooltip: String = s("More options", "Više opcija")
+    val toggleSenderCategoryOption: String = s("Change Sender Category", "Promeni kategoriju pošiljaoca")
+    val currentCategoryPeopleSub: String = s("Currently: People → Move to Services", "Trenutno: Osobe → Prebaci u Servisne poruke")
+    val currentCategoryServiceSub: String = s("Currently: Services → Move to People", "Trenutno: Servisne poruke → Prebaci u Osobe")
+    val senderMovedToServicesToast: String = s("Conversation moved to Service messages", "Razgovor prebačen u Servisne poruke")
+    val senderMovedToPeopleToast: String = s("Conversation moved to People", "Razgovor prebačen u Osobe")
     val blockContactOption: String = s("Block messages from this contact", "Blokiraj poruke od ovog kontakta")
     val confirmBlockContactTitle: String = s("Block this contact?", "Blokiraj kontakt?")
     val confirmBlockContactMessage: (String, String) -> String = { name, addr ->

@@ -4,7 +4,7 @@
     <selectionStates>
       <SelectionState runConfigName="Txtura">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2026-11-05T18:27:27.014674800Z">
+        <DropdownSelection timestamp="2026-11-05T19:38:00.016608600Z">
           <Target type="DEFAULT_BOOT">
             <handle>
               <DeviceId pluginId="LocalEmulator" identifier="path=C:\Users\arpiv\.android\avd\Pixel_10_Pro.avd" />

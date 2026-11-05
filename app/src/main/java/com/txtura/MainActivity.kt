@@ -50,6 +50,7 @@ import com.txtura.data.SwipeAction
 import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
+import com.txtura.data.WallpaperTexture
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.ui.i18n.TxturaStrings
 import com.txtura.ui.screens.ConfirmMoveToTrashDialog
@@ -412,15 +413,6 @@ class MainActivity : ComponentActivity() {
                                 saveUiOpacity(uiOpacity)
                             },
                             blockedSenders = blockedSenders,
-                            onBlockSender = { address ->
-                                SmsMmsRepository.blockSender(this@MainActivity, address)
-                                val locStrings = TxturaStrings.forLocale()
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    locStrings.senderBlockedToast(address),
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            },
                             onUnblockSender = { address ->
                                 SmsMmsRepository.unblockSender(this@MainActivity, address)
                                 val locStrings = TxturaStrings.forLocale()
@@ -454,29 +446,57 @@ class MainActivity : ComponentActivity() {
                             onSelectUiColorMode = { mode ->
                                 uiColorMode = mode
                                 saveUiColorMode(mode)
-                                if ((mode == UiColorMode.MONOCHROME) && !mainWallpaper.preset.isMonochrome) {
-                                    val cfg = WallpaperConfig(
-                                        preset = WallpaperPreset.MONO_SLATE,
-                                        customImageUri = null,
-                                        texture = mainWallpaper.texture
-                                    )
-                                    mainWallpaper = cfg
-                                    saveMainWallpaper(cfg)
-                                } else if ((mode == UiColorMode.COLORFUL) && mainWallpaper.preset.isMonochrome) {
-                                    val cfg = WallpaperConfig(
-                                        preset = WallpaperPreset.DEFAULT,
-                                        customImageUri = null,
-                                        texture = mainWallpaper.texture
-                                    )
-                                    mainWallpaper = cfg
-                                    saveMainWallpaper(cfg)
+                                when (mode) {
+                                    UiColorMode.MONOCHROME -> {
+                                        if (!mainWallpaper.preset.isMonochrome || mainWallpaper.preset.isMinimalist) {
+                                            val cfg = WallpaperConfig(
+                                                preset = WallpaperPreset.MONO_SLATE,
+                                                customImageUri = null,
+                                                texture = mainWallpaper.texture
+                                            )
+                                            mainWallpaper = cfg
+                                            saveMainWallpaper(cfg)
+                                        }
+                                    }
+                                    UiColorMode.COLORFUL -> {
+                                        if (mainWallpaper.preset.isMonochrome || mainWallpaper.preset.isMinimalist) {
+                                            val cfg = WallpaperConfig(
+                                                preset = WallpaperPreset.DEFAULT,
+                                                customImageUri = null,
+                                                texture = mainWallpaper.texture
+                                            )
+                                            mainWallpaper = cfg
+                                            saveMainWallpaper(cfg)
+                                        }
+                                    }
+                                    UiColorMode.MINIMALIST -> {
+                                        if (!mainWallpaper.preset.isMinimalist) {
+                                            val isDark = themeMode != TxturaThemeMode.LIGHT
+                                            val cfg = WallpaperConfig(
+                                                preset = if (isDark) WallpaperPreset.ALL_BLACK else WallpaperPreset.ALL_WHITE,
+                                                customImageUri = null,
+                                                texture = WallpaperTexture.NONE
+                                            )
+                                            mainWallpaper = cfg
+                                            saveMainWallpaper(cfg)
+                                        }
+                                    }
                                 }
                             },
                             onSelectMainWallpaperPreset = { preset ->
+                                val targetMode = when {
+                                    preset.isMinimalist -> UiColorMode.MINIMALIST
+                                    preset.isMonochrome -> UiColorMode.MONOCHROME
+                                    else -> UiColorMode.COLORFUL
+                                }
+                                if (uiColorMode != targetMode) {
+                                    uiColorMode = targetMode
+                                    saveUiColorMode(targetMode)
+                                }
                                 val cfg = WallpaperConfig(
                                     preset = preset,
                                     customImageUri = null,
-                                    texture = mainWallpaper.texture
+                                    texture = if (preset.isMinimalist && mainWallpaper.texture == WallpaperTexture.AUTO_THEME) WallpaperTexture.NONE else mainWallpaper.texture
                                 )
                                 mainWallpaper = cfg
                                 saveMainWallpaper(cfg)
@@ -615,6 +635,16 @@ class MainActivity : ComponentActivity() {
                                 ).show()
                                 activeThreadId = null
                                 pendingMmsUri = null
+                            },
+                            onToggleSenderCategory = {
+                                val newIsService = SmsMmsRepository.toggleSenderCategory(this@MainActivity, selectedThread.id)
+                                val locStrings = TxturaStrings.forLocale()
+                                val toastMsg = if (newIsService) {
+                                    locStrings.senderMovedToServicesToast
+                                } else {
+                                    locStrings.senderMovedToPeopleToast
+                                }
+                                Toast.makeText(this@MainActivity, toastMsg, Toast.LENGTH_SHORT).show()
                             },
                             onPickMmsPhoto = {
                                 photoPickerLauncher.launch(

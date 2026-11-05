@@ -72,6 +72,8 @@ object SmsMmsRepository {
     private const val KEY_HIGHLIGHTED_MSGS = "highlighted_message_ids"
     private const val KEY_BLOCKED_ADDRS = "blocked_sender_addresses"
     private const val KEY_DELETED_THREADS = "deleted_threads_meta"
+    private const val KEY_FORCED_SERVICE_ADDRS = "forced_service_addresses"
+    private const val KEY_FORCED_PERSON_ADDRS = "forced_person_addresses"
 
     // Keeps track of pinned contact addresses, pinned message IDs, highlighted message IDs, and blocked senders
     private val pinnedAddresses: MutableSet<String> =
@@ -81,6 +83,10 @@ object SmsMmsRepository {
     private val highlightedMessageIds: MutableSet<Long> =
         Collections.synchronizedSet(mutableSetOf())
     private val blockedAddresses: MutableSet<String> =
+        Collections.synchronizedSet(mutableSetOf())
+    private val forcedServiceAddresses: MutableSet<String> =
+        Collections.synchronizedSet(mutableSetOf("BANK-OTP", "DEXPRESS"))
+    private val forcedPersonAddresses: MutableSet<String> =
         Collections.synchronizedSet(mutableSetOf())
 
     // Cached threads that were hidden because their sender was blocked (so unblocking can restore them in demo/memory mode)
@@ -195,6 +201,14 @@ object SmsMmsRepository {
             blockedAddresses.addAll(saved)
             _blockedSenders.value = blockedAddresses.sorted()
         }
+        prefs.getStringSet(KEY_FORCED_SERVICE_ADDRS, null)?.let { saved ->
+            forcedServiceAddresses.clear()
+            forcedServiceAddresses.addAll(saved)
+        }
+        prefs.getStringSet(KEY_FORCED_PERSON_ADDRS, null)?.let { saved ->
+            forcedPersonAddresses.clear()
+            forcedPersonAddresses.addAll(saved)
+        }
         prefs.getStringSet(KEY_DELETED_THREADS, null)?.let { saved ->
             deletedThreadTimestamps.clear()
             saved.forEach { entry ->
@@ -223,6 +237,8 @@ object SmsMmsRepository {
             putStringSet(KEY_PINNED_MSGS, synchronized(pinnedMessageIds) { pinnedMessageIds.asSequence().map { it.toString() }.toSet() })
             putStringSet(KEY_HIGHLIGHTED_MSGS, synchronized(highlightedMessageIds) { highlightedMessageIds.asSequence().map { it.toString() }.toSet() })
             putStringSet(KEY_BLOCKED_ADDRS, synchronized(blockedAddresses) { blockedAddresses.toSet() })
+            putStringSet(KEY_FORCED_SERVICE_ADDRS, synchronized(forcedServiceAddresses) { forcedServiceAddresses.toSet() })
+            putStringSet(KEY_FORCED_PERSON_ADDRS, synchronized(forcedPersonAddresses) { forcedPersonAddresses.toSet() })
             putStringSet(KEY_DELETED_THREADS, serializedDeleted)
         }
     }
@@ -241,6 +257,67 @@ object SmsMmsRepository {
                     arePhoneNumbersEqual(blocked, clean)
             }
         }
+    }
+
+    /**
+     * Determines whether an address should be categorized as a Service message.
+     * Takes manual user overrides into account first, followed by standard heuristics.
+     */
+    fun isAddressService(address: String, messages: List<ChatMessage> = emptyList()): Boolean {
+        val clean = address.trim()
+        val norm = normalizeAddressKey(clean)
+        val isForcedPerson = synchronized(forcedPersonAddresses) {
+            clean in forcedPersonAddresses || (norm.isNotEmpty() && norm in forcedPersonAddresses)
+        }
+        if (isForcedPerson) return false
+
+        val isForcedService = synchronized(forcedServiceAddresses) {
+            clean in forcedServiceAddresses || (norm.isNotEmpty() && norm in forcedServiceAddresses)
+        }
+        if (isForcedService) return true
+
+        // Default heuristic:
+        val cleanDigits = clean.filter { it.isDigit() }
+        if (clean.any { it.isLetter() }) return true
+        if ((cleanDigits.length in 3..7) && !clean.startsWith("+")) return true
+        return messages.any { it.securityAnalysis.extractedOtpCode != null }
+    }
+
+    /**
+     * Toggles whether the sender of [threadId] is categorized as "Osobe" or "Servisna poruka".
+     * Returns true if now Service, false if now Person.
+     */
+    fun toggleSenderCategory(context: Context, threadId: Long): Boolean {
+        var newIsService = false
+        _threads.update { currentList ->
+            currentList.map { thread ->
+                if (thread.id == threadId) {
+                    newIsService = !thread.isService
+                    val clean = thread.address.trim()
+                    val norm = normalizeAddressKey(clean)
+                    synchronized(forcedServiceAddresses) {
+                        synchronized(forcedPersonAddresses) {
+                            if (newIsService) {
+                                forcedPersonAddresses.remove(clean)
+                                if (norm.isNotEmpty()) forcedPersonAddresses.remove(norm)
+                                forcedServiceAddresses.add(clean)
+                                if (norm.isNotEmpty()) forcedServiceAddresses.add(norm)
+                            } else {
+                                forcedServiceAddresses.remove(clean)
+                                if (norm.isNotEmpty()) forcedServiceAddresses.remove(norm)
+                                forcedPersonAddresses.add(clean)
+                                if (norm.isNotEmpty()) forcedPersonAddresses.add(norm)
+                            }
+                        }
+                    }
+                    thread.copy(isService = newIsService)
+                } else {
+                    thread
+                }
+            }
+        }
+        savePersistedPins(context)
+        return newIsService
     }
 
     /**
@@ -460,7 +537,8 @@ object SmsMmsRepository {
                     contactPhotoUri = resolvedPhotoUri,
                     messages = sortedMsgs,
                     unreadCount = unread,
-                    isPinned = isContactPinned
+                    isPinned = isContactPinned,
+                    isService = isAddressService(primaryAddress, sortedMsgs)
                 )
             }
 
@@ -881,7 +959,8 @@ object SmsMmsRepository {
             contactPhotoUri = resolvedPhotoUri,
             messages = emptyList(),
             unreadCount = 0,
-            isPinned = isAddressPinned(cleanAddress)
+            isPinned = isAddressPinned(cleanAddress),
+            isService = isAddressService(cleanAddress)
         )
 
         _threads.update { current ->
@@ -1027,7 +1106,8 @@ object SmsMmsRepository {
                     contactPhotoUri = resolvedPhotoUri,
                     messages = listOf(newMessage),
                     unreadCount = 0,
-                    isPinned = isAddressPinned(cleanAddress)
+                    isPinned = isAddressPinned(cleanAddress),
+                    isService = isAddressService(cleanAddress, listOf(newMessage))
                 )
                 listOf(newThread) + current
             }
@@ -1180,7 +1260,8 @@ object SmsMmsRepository {
                     contactPhotoUri = resolvedPhotoUri,
                     messages = listOf(incomingMessage),
                     unreadCount = 1,
-                    isPinned = isAddressPinned(cleanAddress)
+                    isPinned = isAddressPinned(cleanAddress),
+                    isService = isAddressService(cleanAddress, listOf(incomingMessage))
                 )
                 listOf(created) + current
             }
@@ -1880,6 +1961,7 @@ object SmsMmsRepository {
                 avatarInitials = "2FA",
                 avatarAccentColorHex = 0xFF10B981,
                 isPinned = true,
+                isService = true,
                 unreadCount = 1,
                 messages = listOf(
                     ChatMessage(
@@ -1901,6 +1983,7 @@ object SmsMmsRepository {
                 address = "DEXPRESS",
                 avatarInitials = "EC",
                 avatarAccentColorHex = 0xFF6366F1,
+                isService = true,
                 unreadCount = 0,
                 messages = listOf(
                     ChatMessage(

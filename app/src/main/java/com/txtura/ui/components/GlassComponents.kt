@@ -164,9 +164,11 @@ fun GlassBackground(
     }
 
     val preset = wallpaperConfig.preset
-    val isMono = preset.isMonochrome || (uiColorMode == UiColorMode.MONOCHROME)
+    val isMinimalist = preset.isMinimalist || uiColorMode == UiColorMode.MINIMALIST
+    val isMono = (preset.isMonochrome || (uiColorMode == UiColorMode.MONOCHROME)) && !isMinimalist
     val activeTexture = wallpaperConfig.resolvedTexture
     val bgBase = when {
+        isMinimalist -> palette.backgroundBase
         customBitmap != null -> palette.backgroundBase
         isMono -> palette.backgroundBase
         preset == WallpaperPreset.DEFAULT -> palette.backgroundBase
@@ -244,6 +246,7 @@ fun GlassBackground(
                         )
                     } else {
                         Canvas(modifier = Modifier.fillMaxSize()) {
+                            if (isMinimalist) return@Canvas
                             val w = size.width
                             val h = size.height
 

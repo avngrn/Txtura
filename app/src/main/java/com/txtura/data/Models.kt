@@ -64,7 +64,8 @@ enum class ConversationFilter {
 
 enum class UiColorMode {
     COLORFUL,
-    MONOCHROME
+    MONOCHROME,
+    MINIMALIST
 }
 
 /**
@@ -138,6 +139,7 @@ enum class WallpaperPreset(
     val accentOrbHex: Long,
     val isMonochrome: Boolean = false,
     val defaultTexture: WallpaperTexture = WallpaperTexture.SILK_WEAVE,
+    val isMinimalist: Boolean = false,
 ) {
     // 10 Curated Colorful Presets + Default (with bespoke matching textures)
     DEFAULT(0xFF070A12, 0xFF1D4ED8, 0xFF4338CA, 0xFF38BDF8, false, WallpaperTexture.SILK_WEAVE),
@@ -162,14 +164,21 @@ enum class WallpaperPreset(
     MONO_ROSE(0xFF15080C, 0xFF831843, 0xFF9D174D, 0xFFBE185D, true, WallpaperTexture.COTTON_PAPER),
     MONO_NAVY(0xFF040915, 0xFF172554, 0xFF1E3A8A, 0xFF1E40AF, true, WallpaperTexture.HERRINGBONE_TWILL),
     MONO_SMOKE(0xFF0F0E0E, 0xFF0D9488, 0xFF0F766E, 0xFF14B8A6, true, WallpaperTexture.TOPOGRAPHIC_CONTOUR),
-    MONO_ESPRESSO(0xFF110A06, 0xFF9A3412, 0xFFC2410C, 0xFFEA580C, true, WallpaperTexture.PEBBLED_LEATHER);
+    MONO_ESPRESSO(0xFF110A06, 0xFF9A3412, 0xFFC2410C, 0xFFEA580C, true, WallpaperTexture.PEBBLED_LEATHER),
+
+    // 2 Minimalist Themes (True AMOLED pitch-black & Pure clean white, zero decorative accent colors)
+    ALL_BLACK(0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, isMonochrome = true, defaultTexture = WallpaperTexture.NONE, isMinimalist = true),
+    ALL_WHITE(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, isMonochrome = true, defaultTexture = WallpaperTexture.NONE, isMinimalist = true);
 
     companion object {
         val colorfulPresets: List<WallpaperPreset>
-            get() = entries.filter { !it.isMonochrome }
+            get() = entries.filter { !it.isMonochrome && !it.isMinimalist }
 
         val monochromePresets: List<WallpaperPreset>
-            get() = entries.filter { it.isMonochrome }
+            get() = entries.filter { it.isMonochrome && !it.isMinimalist }
+
+        val minimalistPresets: List<WallpaperPreset>
+            get() = entries.filter { it.isMinimalist }
     }
 }
 
@@ -269,7 +278,8 @@ data class ConversationThread(
     val contactPhotoUri: Uri? = null,
     val messages: List<ChatMessage>,
     val unreadCount: Int = 0,
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+    val isService: Boolean = false
 ) {
     val lastMessage: ChatMessage? = messages.maxByOrNull(ChatMessage::timestampMillis)
 
@@ -478,6 +488,7 @@ object BackupManager {
         obj.put("avatarAccentColorHex", thread.avatarAccentColorHex)
         obj.put("unreadCount", thread.unreadCount)
         obj.put("isPinned", thread.isPinned)
+        obj.put("isService", thread.isService)
 
         val msgsArray = JSONArray()
         thread.messages.forEach { msg ->
@@ -661,6 +672,7 @@ object BackupManager {
         val colorHex = obj.optLong("avatarAccentColorHex", 0xFF00E5FF)
         val unreadCount = obj.optInt("unreadCount", 0)
         val isPinned = obj.optBoolean("isPinned", false)
+        val isService = obj.optBoolean("isService", false)
 
         val messages = mutableListOf<ChatMessage>()
         obj.optJSONArray("messages")?.let { mArr ->
@@ -720,7 +732,8 @@ object BackupManager {
             contactPhotoUri = null,
             messages = messages,
             unreadCount = unreadCount,
-            isPinned = isPinned
+            isPinned = isPinned,
+            isService = isService
         )
     }
 

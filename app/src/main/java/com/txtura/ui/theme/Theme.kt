@@ -64,6 +64,7 @@ data class GlassPalette(
     val safeColor: Color = EmeraldSafe,
     val cautionColor: Color = AmberCaution,
     val dangerColor: Color = RoseDanger,
+    val sendButtonColor: Color = accentPrimary,
     val uiOpacity: Float = 0.50f,
     val uiColorMode: UiColorMode = UiColorMode.COLORFUL,
 ) {
@@ -89,9 +90,9 @@ data class GlassPalette(
                     0.18f,
                 )
             }
-            val distFromCenter = kotlin.math.abs(uiOpacity.coerceIn(0f, 1f) - 0.5f) * 2f
-            val alpha = (0.84f + (distFromCenter * 0.12f)).coerceIn(0.84f, 0.96f)
-            return baseTone.copy(alpha = alpha)
+            // Rich frosted glass smokiness with high opacity (0.93f) so it looks like frosted glass,
+            // while strongly diffusing and muting text behind it without being a flat 100% solid slab
+            return baseTone.copy(alpha = 0.93f)
         }
 }
 
@@ -260,6 +261,8 @@ object WallpaperHarmonyEngine {
             WallpaperPreset.MONO_NAVY -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
             WallpaperPreset.MONO_SMOKE -> if (isDark) Color(0xFF2DD4BF) else Color(0xFF0D9488)
             WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFFB923C) else Color(0xFFEA580C)
+            WallpaperPreset.ALL_BLACK -> Color.White
+            WallpaperPreset.ALL_WHITE -> Color.Black
         }
     }
 
@@ -294,6 +297,8 @@ object WallpaperHarmonyEngine {
     private fun applyOpacityMultiplier(palette: GlassPalette, uiOpacity: Float, uiColorMode: UiColorMode): GlassPalette {
         val clamped = uiOpacity.coerceIn(0.0f, 1.0f)
         val frostDepthTone = when {
+            palette.uiColorMode == UiColorMode.MINIMALIST && !palette.isDark -> Color(0xFFF4F4F5)
+            palette.uiColorMode == UiColorMode.MINIMALIST && palette.isDark -> Color(0xFF000000)
             !palette.isDark -> lerp(Color(0xFFCBD5E1), palette.accentPrimary.copy(alpha = 1f), 0.18f)
             palette.isAmoled -> lerp(Color(0xFF070A10), palette.orbPrimary.copy(alpha = 1f), 0.28f)
             else -> lerp(Color(0xFF0C121D), palette.orbPrimary.copy(alpha = 1f), 0.30f)
@@ -422,6 +427,62 @@ object WallpaperHarmonyEngine {
 
         // 2. Built-in Wallpaper Preset
         val preset = wallpaperConfig.preset
+
+        // Minimalist Themes (Pure pitch-black AMOLED & Pure clean white)
+        if (preset == WallpaperPreset.ALL_BLACK || (preset.isMinimalist && isDark)) {
+            val adapted = canonicalBase.copy(
+                isDark = true,
+                isAmoled = true,
+                backgroundBase = Color.Black,
+                orbPrimary = Color.Transparent,
+                orbSecondary = Color.Transparent,
+                glassSurface = Color(0xFF0D0D0E),
+                glassSurfaceElevated = Color(0xFF17171A),
+                glassBorderTop = Color.White.copy(alpha = 0.22f),
+                glassBorderBottom = Color.White.copy(alpha = 0.08f),
+                textPrimary = Color.White,
+                textSecondary = Color(0xFFA1A1AA),
+                accentPrimary = Color.White,
+                accentSecondary = Color(0xFFD4D4D8),
+                dangerColor = RoseDanger,
+                safeColor = EmeraldSafe,
+                sendButtonColor = SapphireAccent,
+                outgoingBubbleStart = Color(0xFF27272A),
+                outgoingBubbleEnd = Color(0xFF18181B),
+                incomingBubbleSurface = Color(0xFF121214),
+                uiOpacity = uiOpacity,
+                uiColorMode = UiColorMode.MINIMALIST
+            )
+            return applyOpacityMultiplier(adapted, uiOpacity, UiColorMode.MINIMALIST)
+        }
+
+        if (preset == WallpaperPreset.ALL_WHITE || preset.isMinimalist) {
+            val adapted = canonicalBase.copy(
+                isDark = false,
+                isAmoled = false,
+                backgroundBase = Color.White,
+                orbPrimary = Color.Transparent,
+                orbSecondary = Color.Transparent,
+                glassSurface = Color(0xFFF4F4F5),
+                glassSurfaceElevated = Color(0xFFE4E4E7),
+                glassBorderTop = Color.Black.copy(alpha = 0.16f),
+                glassBorderBottom = Color.Black.copy(alpha = 0.06f),
+                textPrimary = Color.Black,
+                textSecondary = Color(0xFF71717A),
+                accentPrimary = Color.Black,
+                accentSecondary = Color(0xFF3F3F46),
+                dangerColor = RoseDanger,
+                safeColor = EmeraldSafe,
+                sendButtonColor = IndigoRoyal,
+                outgoingBubbleStart = Color(0xFFE4E4E7),
+                outgoingBubbleEnd = Color(0xFFD4D4D8),
+                incomingBubbleSurface = Color(0xFFF4F4F5),
+                uiOpacity = uiOpacity,
+                uiColorMode = UiColorMode.MINIMALIST
+            )
+            return applyOpacityMultiplier(adapted, uiOpacity, UiColorMode.MINIMALIST)
+        }
+
         val isMonochromeTheme = preset.isMonochrome || uiColorMode == UiColorMode.MONOCHROME
 
         if (isMonochromeTheme) {

@@ -15,6 +15,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -89,6 +90,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -194,27 +196,28 @@ fun ConversationsListScreen(
         selectedThreadIds = emptySet()
     }
 
-    val serviceThreadById = remember(threads) {
-        threads.associateBy(
-            keySelector = ConversationThread::id,
-            valueTransform = ::isServiceThread,
-        )
-    }
-
-    val filteredThreads = remember(threads, searchQuery, selectedFilter, serviceThreadById) {
-        threads.filter { thread ->
+    val filteredThreads = remember(threads, searchQuery, selectedFilter) {
+        val list = threads.filter { thread ->
             val matchesSearch = searchQuery.isBlank() ||
                 thread.contactName.contains(searchQuery, ignoreCase = true) ||
                 thread.address.contains(searchQuery, ignoreCase = true) ||
                 thread.messages.any { it.body.contains(searchQuery, ignoreCase = true) }
 
             val matchesFilter = when (selectedFilter) {
-                ConversationFilter.PEOPLE -> isStandardPersonThread(thread, serviceThreadById[thread.id] == true)
-                ConversationFilter.SERVICES -> serviceThreadById[thread.id] == true
+                ConversationFilter.PEOPLE -> !thread.isService
+                ConversationFilter.SERVICES -> thread.isService
                 ConversationFilter.UNREAD -> thread.unreadCount > 0
                 ConversationFilter.ALL -> true
             }
             matchesSearch && matchesFilter
+        }
+        if (selectedFilter == ConversationFilter.PEOPLE) {
+            list.sortedWith(
+                compareByDescending<ConversationThread> { it.isPinned }
+                    .thenByDescending { it.lastMessage?.timestampMillis ?: 0L }
+            )
+        } else {
+            list
         }
     }
 
@@ -811,30 +814,6 @@ private fun DraggableCategoryBar(
     }
 }
 
-/**
- * Checks whether a thread belongs to "Osobe" (standard-length phone numbers from real people, not services).
- */
-private fun isStandardPersonThread(thread: ConversationThread, isService: Boolean): Boolean {
-    if (isService) return false
-    val address = thread.address.trim()
-    if (address.any { it.isLetter() }) return false
-    val digitCount = address.count { it.isDigit() }
-    // Standard phone numbers (local or international E.164) have 8 to 15 digits
-    return (digitCount in 8..15)
-}
-
-private fun isServiceThread(thread: ConversationThread): Boolean {
-    val address = thread.address.trim()
-    val cleanDigits = address.filter { it.isDigit() }
-
-    // 1. Alphanumeric sender ID (e.g. "BANK-OTP", "INFO", "YETTEL", "GOOGLE", "DEXPRESS")
-    if (address.any { it.isLetter() }) return true
-
-    // 2. Shortcode (typically 3 to 7 digits, e.g. 1999, 9800, 2222) or 3. Extracted OTP / 2FA verification codes
-    return ((cleanDigits.length in 3..7) && !address.startsWith("+")) ||
-        thread.messages.any { it.securityAnalysis.extractedOtpCode != null }
-}
-
 fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
     return when (filter) {
         ConversationFilter.PEOPLE -> strings.filterPeople
@@ -885,7 +864,6 @@ fun SettingsScreen(
     onSelectAutoDeleteDays: (Int) -> Unit,
     onSelectDeletedGroupingMode: (DeletedGroupingMode) -> Unit,
     onOpenDeletedMessages: () -> Unit,
-    onBlockSender: (String) -> Unit = {},
     onUnblockSender: (String) -> Unit = {},
     onCreateLocalBackup: () -> Unit = {},
     onRestoreLocalBackup: () -> Unit = {},
@@ -909,7 +887,6 @@ fun SettingsScreen(
     var showWallpaperGrid by remember { mutableStateOf(value = false) }
 
     var showSecurityMeasuresDialog by remember { mutableStateOf(value = false) }
-    var newBlockedSenderInput by remember { mutableStateOf("") }
 
     GlassBackground(wallpaperConfig = mainWallpaper) {
         val palette = LocalGlassPalette.current
@@ -1498,56 +1475,6 @@ fun SettingsScreen(
                     }
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        GlassCard(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Box(modifier = Modifier.weight(1f)) {
-                                    if (newBlockedSenderInput.isEmpty()) {
-                                        Text(
-                                            text = strings.addBlockedSenderPlaceholder,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = palette.textSecondary
-                                        )
-                                    }
-                                    BasicTextField(
-                                        value = newBlockedSenderInput,
-                                        onValueChange = { newBlockedSenderInput = it },
-                                        singleLine = true,
-                                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = palette.textPrimary),
-                                        cursorBrush = SolidColor(palette.accentPrimary),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                GlassCard(
-                                    shape = RoundedCornerShape(50),
-                                    elevated = true,
-                                    accentHighlight = palette.dangerColor,
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp),
-                                    onClick = {
-                                        val clean = newBlockedSenderInput.trim()
-                                        if (clean.isNotEmpty()) {
-                                            onBlockSender(clean)
-                                            newBlockedSenderInput = ""
-                                        }
-                                    }
-                                ) {
-                                    Text(
-                                        text = strings.blockSenderButton,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = palette.dangerColor,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        }
-
                         if (blockedSenders.isEmpty()) {
                             Text(
                                 text = strings.blockedSendersEmpty,
@@ -2253,7 +2180,7 @@ private fun ConversationThreadCard(
 
                     Spacer(modifier = Modifier.height(if (isCompact) 2.dp else 4.dp))
 
-                    // Bottom Row: Message preview across available width
+                    // Bottom Row: Message preview across available width (strictly 1 line)
                     Text(
                         text = lastMsg?.body ?: "",
                         style = if (isCompact) {
@@ -2263,7 +2190,7 @@ private fun ConversationThreadCard(
                         },
                         color = if (thread.unreadCount > 0) palette.textPrimary else palette.textSecondary,
                         fontWeight = if (thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = if (isCompact) 1 else 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2276,12 +2203,38 @@ private fun ConversationThreadCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.End
                 ) {
-                    Text(
-                        text = lastMsg?.timestampMillis?.let { formatTimestamp(it) } ?: "",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (thread.unreadCount > 0) palette.accentPrimary else palette.textSecondary,
-                        fontWeight = if (thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal
-                    )
+                    val formatted = lastMsg?.timestampMillis?.let { formatThreadTimestamp(it) }
+                    if (formatted != null) {
+                        if (formatted.second == null) {
+                            Text(
+                                text = formatted.first,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (thread.unreadCount > 0) palette.accentPrimary else palette.textSecondary,
+                                fontWeight = if (thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                                textAlign = TextAlign.Center
+                            )
+                        } else {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = formatted.first,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (thread.unreadCount > 0) palette.accentPrimary else palette.textSecondary,
+                                    fontWeight = if (thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                                    textAlign = TextAlign.Center
+                                )
+                                Text(
+                                    text = formatted.second!!,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                    color = palette.textSecondary.copy(alpha = 0.85f),
+                                    fontWeight = FontWeight.Normal,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
 
                     if (thread.unreadCount > 0) {
                         Spacer(modifier = Modifier.width(6.dp))
@@ -2387,6 +2340,7 @@ fun ConversationDetailScreen(
     onCallSender: () -> Unit,
     onOpenContact: () -> Unit,
     onBlockContact: () -> Unit = {},
+    onToggleSenderCategory: () -> Unit = {},
     onPickMmsPhoto: () -> Unit,
     onClearAttachment: () -> Unit,
     onSendMessage: (String, Uri?) -> Unit,
@@ -2758,10 +2712,10 @@ fun ConversationDetailScreen(
                             shape = menuShape,
                             containerColor = palette.popupContainerColor,
                             tonalElevation = 0.dp,
-                            modifier = Modifier.border(
+                            shadowElevation = 8.dp,
+                            border = BorderStroke(
                                 width = 1.dp,
-                                brush = Brush.linearGradient(listOf(palette.glassBorderTop, palette.glassBorderBottom)),
-                                shape = menuShape
+                                brush = Brush.linearGradient(listOf(palette.glassBorderTop, palette.glassBorderBottom))
                             )
                         ) {
                             DropdownMenuItem(
@@ -2803,6 +2757,34 @@ fun ConversationDetailScreen(
                                 onClick = {
                                     showMoreMenu = false
                                     onTogglePinThread()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(
+                                            text = strings.toggleSenderCategoryOption,
+                                            color = palette.textPrimary
+                                        )
+                                        Text(
+                                            text = if (thread.isService) strings.currentCategoryServiceSub else strings.currentCategoryPeopleSub,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = palette.textSecondary
+                                        )
+                                    }
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (thread.isService) TxturaIcons.ContactPerson else TxturaIcons.ShieldCheck,
+                                        contentDescription = null,
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onToggleSenderCategory()
                                 }
                             )
 
@@ -3157,7 +3139,7 @@ fun ConversationDetailScreen(
                             GlassIconButton(
                                 icon = TxturaIcons.Send,
                                 contentDescription = strings.send,
-                                tint = if (canSend) palette.accentPrimary else palette.textSecondary,
+                                tint = if (canSend) palette.sendButtonColor else palette.textSecondary,
                                 onClick = {
                                     if (canSend) {
                                         // Flush any already-counting message before starting the new 6s timer
@@ -5134,19 +5116,28 @@ private val shortTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
     override fun initialValue(): SimpleDateFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 }
 
-private val dateAndTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
-    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("dd.MM. HH:mm", Locale.getDefault())
+private val shortDateFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("dd.MM.", Locale.getDefault())
+}
+
+private val fullDateAndTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("dd.MM.yyyy. HH:mm", Locale.getDefault())
 }
 
 private fun formatTimestamp(millis: Long): String {
+    return fullDateAndTimeFormatter.get()?.format(Date(millis)).orEmpty()
+}
+
+private fun formatThreadTimestamp(millis: Long): Pair<String, String?> {
     val now = System.currentTimeMillis()
     val diff = now - millis
-    val formatter = if (diff < 86_400_000L) {
-        shortTimeFormatter.get()
+    val timeStr = shortTimeFormatter.get()?.format(Date(millis)).orEmpty()
+    return if (diff < 86_400_000L) {
+        Pair(timeStr, null)
     } else {
-        dateAndTimeFormatter.get()
+        val dateStr = shortDateFormatter.get()?.format(Date(millis)).orEmpty()
+        Pair(timeStr, dateStr)
     }
-    return formatter?.format(Date(millis)).orEmpty()
 }
 
 /**
@@ -5157,7 +5148,11 @@ private fun formatTimestamp(millis: Long): String {
 @Composable
 fun WallpaperPresetSelectorGrid(
     currentConfig: WallpaperConfig,
-    uiColorMode: UiColorMode = if (currentConfig.preset.isMonochrome) UiColorMode.MONOCHROME else UiColorMode.COLORFUL,
+    uiColorMode: UiColorMode = when {
+        currentConfig.preset.isMinimalist -> UiColorMode.MINIMALIST
+        currentConfig.preset.isMonochrome -> UiColorMode.MONOCHROME
+        else -> UiColorMode.COLORFUL
+    },
     strings: AppStrings,
     onSelectPreset: (WallpaperPreset) -> Unit,
     onSelectTexture: (WallpaperTexture) -> Unit = {},
@@ -5253,9 +5248,9 @@ fun WallpaperPresetSelectorGrid(
             }
         }
 
-        // 2. Theme Category Tabs (Colorful vs Monochrome + Accent)
+        // 2. Theme Category Tabs (Colorful vs Monochrome vs Minimalist)
         Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             val colorfulActive = selectedCategory == UiColorMode.COLORFUL
@@ -5264,7 +5259,7 @@ fun WallpaperPresetSelectorGrid(
                 shape = RoundedCornerShape(14.dp),
                 elevated = colorfulActive,
                 accentHighlight = if (colorfulActive) palette.accentPrimary else null,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 9.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 9.dp),
                 onClick = {
                     selectedCategory = UiColorMode.COLORFUL
                     onSwitchColorMode(UiColorMode.COLORFUL)
@@ -5272,7 +5267,7 @@ fun WallpaperPresetSelectorGrid(
             ) {
                 OverflowTooltipText(
                     text = strings.wallpaperTabColorful,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     color = if (colorfulActive) palette.accentPrimary else palette.textSecondary,
                     fontWeight = if (colorfulActive) FontWeight.Bold else FontWeight.Medium,
                     maxLines = 1,
@@ -5287,7 +5282,7 @@ fun WallpaperPresetSelectorGrid(
                 shape = RoundedCornerShape(14.dp),
                 elevated = monoActive,
                 accentHighlight = if (monoActive) palette.accentPrimary else null,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 9.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 9.dp),
                 onClick = {
                     selectedCategory = UiColorMode.MONOCHROME
                     onSwitchColorMode(UiColorMode.MONOCHROME)
@@ -5295,7 +5290,7 @@ fun WallpaperPresetSelectorGrid(
             ) {
                 OverflowTooltipText(
                     text = strings.wallpaperTabMonochrome,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     color = if (monoActive) palette.accentPrimary else palette.textSecondary,
                     fontWeight = if (monoActive) FontWeight.Bold else FontWeight.Medium,
                     maxLines = 1,
@@ -5303,12 +5298,35 @@ fun WallpaperPresetSelectorGrid(
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
+
+            val miniActive = selectedCategory == UiColorMode.MINIMALIST
+            GlassCard(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp),
+                elevated = miniActive,
+                accentHighlight = if (miniActive) palette.accentPrimary else null,
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 9.dp),
+                onClick = {
+                    selectedCategory = UiColorMode.MINIMALIST
+                    onSwitchColorMode(UiColorMode.MINIMALIST)
+                }
+            ) {
+                OverflowTooltipText(
+                    text = strings.wallpaperTabMinimalist,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (miniActive) palette.accentPrimary else palette.textSecondary,
+                    fontWeight = if (miniActive) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
         }
 
-        val presets = if (selectedCategory == UiColorMode.COLORFUL) {
-            WallpaperPreset.colorfulPresets
-        } else {
-            WallpaperPreset.monochromePresets
+        val presets = when (selectedCategory) {
+            UiColorMode.COLORFUL -> WallpaperPreset.colorfulPresets
+            UiColorMode.MONOCHROME -> WallpaperPreset.monochromePresets
+            UiColorMode.MINIMALIST -> WallpaperPreset.minimalistPresets
         }
 
         // 3. Single-column theme list so full theme names and descriptions are clearly visible
@@ -5326,13 +5344,24 @@ fun WallpaperPresetSelectorGrid(
                     currentConfig.texture
                 }
                 val textureLabel = wallpaperTextureTitle(preset.defaultTexture, strings)
-                val compAccent = WallpaperHarmonyEngine.presetComplementaryAccent(preset, palette.isDark)
-                val previewColors = if (preset.isMonochrome) {
-                    val monoBase = if (palette.isDark) Color(0xFF0A0E16) else Color(0xFFF1F5F9)
-                    val monoMid = if (palette.isDark) Color(0xFF1A2230) else Color(0xFFE2E8F0)
-                    listOf(monoBase, monoMid, compAccent.copy(alpha = 0.55f))
-                } else {
-                    listOf(
+                val compAccent = when {
+                    preset == WallpaperPreset.ALL_BLACK -> Color.White
+                    preset == WallpaperPreset.ALL_WHITE -> Color.Black
+                    else -> WallpaperHarmonyEngine.presetComplementaryAccent(preset, palette.isDark)
+                }
+                val accentDotColor = when {
+                    preset.isMinimalist -> palette.sendButtonColor
+                    else -> compAccent
+                }
+                val previewColors = when {
+                    preset == WallpaperPreset.ALL_BLACK -> listOf(Color.Black, Color(0xFF141416), Color(0xFF27272A))
+                    preset == WallpaperPreset.ALL_WHITE -> listOf(Color.White, Color(0xFFF4F4F5), Color(0xFFE4E4E7))
+                    preset.isMonochrome -> {
+                        val monoBase = if (palette.isDark) Color(0xFF0A0E16) else Color(0xFFF1F5F9)
+                        val monoMid = if (palette.isDark) Color(0xFF1A2230) else Color(0xFFE2E8F0)
+                        listOf(monoBase, monoMid, compAccent.copy(alpha = 0.55f))
+                    }
+                    else -> listOf(
                         Color(preset.baseColorHex),
                         Color(preset.primaryOrbHex),
                         Color(preset.secondaryOrbHex)
@@ -5379,7 +5408,7 @@ fun WallpaperPresetSelectorGrid(
                                 modifier = Modifier
                                     .size(9.dp)
                                     .clip(CircleShape)
-                                    .background(compAccent)
+                                    .background(accentDotColor)
                                     .border(1.dp, Color.Black.copy(alpha = 0.55f), CircleShape)
                             )
                         }
@@ -5565,6 +5594,8 @@ private fun wallpaperPresetTitle(preset: WallpaperPreset, strings: AppStrings): 
         WallpaperPreset.MONO_NAVY -> strings.wpMonoNavy
         WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmoke
         WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspresso
+        WallpaperPreset.ALL_BLACK -> strings.wpAllBlack
+        WallpaperPreset.ALL_WHITE -> strings.wpAllWhite
     }
 }
 
@@ -5591,6 +5622,8 @@ private fun wallpaperPresetDescription(preset: WallpaperPreset, strings: AppStri
         WallpaperPreset.MONO_NAVY -> strings.wpMonoNavyDesc
         WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmokeDesc
         WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspressoDesc
+        WallpaperPreset.ALL_BLACK -> strings.wpAllBlackDesc
+        WallpaperPreset.ALL_WHITE -> strings.wpAllWhiteDesc
     }
 }
 
