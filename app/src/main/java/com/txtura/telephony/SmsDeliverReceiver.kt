@@ -33,7 +33,7 @@ class SmsDeliverReceiver : BroadcastReceiver() {
                         context = context.applicationContext,
                         senderAddress = sender,
                         rawBody = fullBody,
-                        isMms = false
+                        isMms = false,
                     )
                 }
             }

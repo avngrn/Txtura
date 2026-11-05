@@ -2,6 +2,7 @@ package com.txtura.ui.theme
 
 import android.app.Activity
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -11,18 +12,25 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.graphics.get
 import androidx.core.graphics.scale
+import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
 import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -57,8 +65,34 @@ data class GlassPalette(
     val cautionColor: Color = AmberCaution,
     val dangerColor: Color = RoseDanger,
     val uiOpacity: Float = 1.0f,
-    val uiColorMode: UiColorMode = UiColorMode.COLORFUL
-)
+    val uiColorMode: UiColorMode = UiColorMode.COLORFUL,
+) {
+    val popupContainerColor: Color
+        get() {
+            val orbRgb = orbPrimary.copy(alpha = 1f)
+            val accentRgb = accentPrimary.copy(alpha = 1f)
+            val surfaceRgb = glassSurfaceElevated.copy(alpha = 1f)
+            val baseTone = when {
+                !isDark -> lerp(
+                    lerp(backgroundBase.copy(alpha = 1f), orbRgb, 0.14f),
+                    accentRgb,
+                    0.06f
+                )
+                isAmoled -> lerp(
+                    lerp(Color(0xFF080B11), orbRgb, 0.28f),
+                    accentRgb,
+                    0.12f
+                )
+                else -> lerp(
+                    lerp(backgroundBase.copy(alpha = 1f), orbRgb, 0.30f),
+                    surfaceRgb,
+                    0.18f
+                )
+            }
+            val alpha = (0.80f + (uiOpacity.coerceIn(0f, 1f) * 0.16f)).coerceIn(0.80f, 0.96f)
+            return baseTone.copy(alpha = alpha)
+        }
+}
 
 val LightGlassPalette = GlassPalette(
     isDark = false,
@@ -251,24 +285,25 @@ object WallpaperHarmonyEngine {
     }
 
     private fun applyOpacityMultiplier(palette: GlassPalette, uiOpacity: Float, uiColorMode: UiColorMode): GlassPalette {
-        val factor = uiOpacity.coerceIn(0.20f, 1.35f)
+        val clamped = uiOpacity.coerceIn(0.0f, 1.0f)
+        val factor = 0.15f + clamped * 0.85f
         return palette.copy(
             glassSurface = palette.glassSurface.copy(
-                alpha = (palette.glassSurface.alpha * factor).coerceIn(0.06f, 0.98f)
+                alpha = (palette.glassSurface.alpha * factor).coerceIn(0.04f, 0.98f)
             ),
             glassSurfaceElevated = palette.glassSurfaceElevated.copy(
-                alpha = (palette.glassSurfaceElevated.alpha * factor).coerceIn(0.08f, 0.99f)
+                alpha = (palette.glassSurfaceElevated.alpha * factor).coerceIn(0.06f, 0.99f)
             ),
             incomingBubbleSurface = palette.incomingBubbleSurface.copy(
-                alpha = (palette.incomingBubbleSurface.alpha * factor).coerceIn(0.08f, 0.98f)
+                alpha = (palette.incomingBubbleSurface.alpha * factor).coerceIn(0.06f, 0.98f)
             ),
             outgoingBubbleStart = palette.outgoingBubbleStart.copy(
-                alpha = (palette.outgoingBubbleStart.alpha * factor).coerceIn(0.18f, 0.98f)
+                alpha = (palette.outgoingBubbleStart.alpha * factor).coerceIn(0.14f, 0.98f)
             ),
             outgoingBubbleEnd = palette.outgoingBubbleEnd.copy(
-                alpha = (palette.outgoingBubbleEnd.alpha * factor).coerceIn(0.18f, 0.98f)
+                alpha = (palette.outgoingBubbleEnd.alpha * factor).coerceIn(0.14f, 0.98f)
             ),
-            uiOpacity = factor,
+            uiOpacity = clamped,
             uiColorMode = uiColorMode
         )
     }
@@ -461,13 +496,18 @@ object WallpaperHarmonyEngine {
     }
 
     fun colorSchemeForPalette(palette: GlassPalette): ColorScheme {
+        val popupSurface = palette.popupContainerColor
         return when {
             palette.isAmoled -> darkColorScheme(
                 primary = palette.accentPrimary,
                 secondary = palette.accentSecondary,
                 tertiary = WisteriaGlass,
                 background = palette.backgroundBase,
-                surface = palette.backgroundBase,
+                surface = popupSurface,
+                surfaceVariant = popupSurface,
+                surfaceContainer = popupSurface,
+                surfaceContainerHigh = popupSurface,
+                surfaceContainerHighest = popupSurface,
                 onPrimary = Color.Black,
                 onBackground = palette.textPrimary,
                 onSurface = palette.textPrimary
@@ -477,7 +517,11 @@ object WallpaperHarmonyEngine {
                 secondary = palette.accentSecondary,
                 tertiary = WisteriaGlass,
                 background = palette.backgroundBase,
-                surface = Color(0xFF111827),
+                surface = popupSurface,
+                surfaceVariant = popupSurface,
+                surfaceContainer = popupSurface,
+                surfaceContainerHigh = popupSurface,
+                surfaceContainerHighest = popupSurface,
                 onPrimary = Color.Black,
                 onBackground = palette.textPrimary,
                 onSurface = palette.textPrimary
@@ -487,7 +531,11 @@ object WallpaperHarmonyEngine {
                 secondary = palette.accentSecondary,
                 tertiary = WisteriaGlass,
                 background = palette.backgroundBase,
-                surface = Color.White,
+                surface = popupSurface,
+                surfaceVariant = popupSurface,
+                surfaceContainer = popupSurface,
+                surfaceContainerHigh = popupSurface,
+                surfaceContainerHighest = popupSurface,
                 onPrimary = Color.White,
                 onBackground = palette.textPrimary,
                 onSurface = palette.textPrimary
@@ -505,6 +553,7 @@ fun TxturaTheme(
     content: @Composable () -> Unit
 ) {
     val systemDark = isSystemInDarkTheme()
+    val context = LocalContext.current
     val basePalette = when (themeMode) {
         TxturaThemeMode.LIGHT -> LightGlassPalette
         TxturaThemeMode.DARK -> DarkGlassPalette
@@ -512,11 +561,48 @@ fun TxturaTheme(
         TxturaThemeMode.SYSTEM -> if (systemDark) AmoledGlassPalette else LightGlassPalette
     }
 
-    val adaptedPalette = remember(basePalette, wallpaperConfig, uiOpacity, uiColorMode) {
+    val customPath = wallpaperConfig.customImageUri
+    val customDominantColor by produceState(
+        initialValue = WallpaperHarmonyEngine.getCachedCustomColor(customPath),
+        key1 = customPath
+    ) {
+        if (customPath.isNullOrBlank()) {
+            value = null
+        } else {
+            val cached = WallpaperHarmonyEngine.getCachedCustomColor(customPath)
+            if (cached != null) {
+                value = cached
+            } else {
+                value = withContext(Dispatchers.IO) {
+                    try {
+                        val file = File(customPath)
+                        val decoded = if (file.exists()) {
+                            val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+                            BitmapFactory.decodeFile(file.absolutePath, opts)
+                        } else {
+                            val uri = customPath.toUri()
+                            context.contentResolver.openInputStream(uri)?.use { stream ->
+                                val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+                                BitmapFactory.decodeStream(stream, null, opts)
+                            }
+                        }
+                        decoded?.let { bmp ->
+                            WallpaperHarmonyEngine.extractAndCacheDominantColor(customPath, bmp)
+                        }
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }
+        }
+    }
+
+    val adaptedPalette = remember(basePalette, wallpaperConfig, customDominantColor, uiOpacity, uiColorMode) {
         WallpaperHarmonyEngine.adaptPalette(
             isDark = basePalette.isDark,
             isAmoled = basePalette.isAmoled,
             wallpaperConfig = wallpaperConfig,
+            customDominantColor = customDominantColor,
             uiOpacity = uiOpacity,
             uiColorMode = uiColorMode
         )

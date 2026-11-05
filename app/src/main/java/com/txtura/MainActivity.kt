@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_CONTACT_WALLPAPERS = "contact_chat_wallpapers_v1"
         private const val KEY_UI_COLOR_MODE = "ui_color_mode"
         private const val KEY_LAUNCHER_ICON_SHAPE = "launcher_icon_shape"
-        private const val KEY_UI_OPACITY = "ui_opacity_scale"
+        private const val KEY_UI_OPACITY = "ui_opacity_v2"
         private const val KEY_CATEGORY_ORDER = "category_order_v1"
         private const val GALLERY_TARGET_MAIN = "__MAIN__"
     }
@@ -109,8 +109,6 @@ class MainActivity : ComponentActivity() {
 
     private var lastBackupTimestamp by mutableLongStateOf(0L)
     private var pendingRestorePayload by mutableStateOf<BackupRestorePayload?>(null)
-    private var connectedGoogleAccount by mutableStateOf<String?>(null)
-    private var isGoogleDriveInstalled by mutableStateOf(value = false)
 
     private var activeThreadId by mutableStateOf<Long?>(null)
     private var showSettingsScreen by mutableStateOf(value = false)
@@ -228,7 +226,7 @@ class MainActivity : ComponentActivity() {
                     contactUri,
                     arrayOf(
                         ContactsContract.CommonDataKinds.Phone.NUMBER,
-                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
                     ),
                     null,
                     null,
@@ -283,7 +281,8 @@ class MainActivity : ComponentActivity() {
                         BackupManager.createInternalBackupFile(this@MainActivity, json)
                         lastBackupTimestamp = System.currentTimeMillis()
                         val locStrings = TxturaStrings.forLocale()
-                        val totalMsgs = currentThreads.sumOf { it.messages.size } + currentDeleted.sumOf { it.thread.messages.size }
+                        val totalMsgs = currentThreads.sumOf { thread -> thread.messages.size } +
+                            currentDeleted.sumOf { (thread, _) -> thread.messages.size }
                         Toast.makeText(
                             this@MainActivity,
                             locStrings.backupCreatedSuccess(currentThreads.size + currentDeleted.size, totalMsgs),
@@ -322,8 +321,6 @@ class MainActivity : ComponentActivity() {
         loadSavedAppPreferences()
         SmsMmsRepository.initializePersistedState(this)
         lastBackupTimestamp = BackupManager.getLastBackupTimestamp(this)
-        connectedGoogleAccount = BackupManager.getConnectedGoogleAccount(this)
-        isGoogleDriveInstalled = BackupManager.isGoogleDriveInstalled(this)
         handleIncomingSmsIntentSafely(intent)
         checkFirstStartupPermissionsAndRole()
 
@@ -393,11 +390,10 @@ class MainActivity : ComponentActivity() {
                             },
                             onPermanentlyDeleteThread = { threadId ->
                                 SmsMmsRepository.permanentlyDeleteThread(this@MainActivity, threadId)
-                            },
-                            onEmptyTrash = {
-                                SmsMmsRepository.emptyTrash(this@MainActivity)
                             }
-                        )
+                        ) {
+                            SmsMmsRepository.emptyTrash(this@MainActivity)
+                        }
                     }
 
                     showSettingsScreen -> {
@@ -413,13 +409,8 @@ class MainActivity : ComponentActivity() {
                             launcherIconShape = launcherIconShape,
                             uiOpacity = uiOpacity,
                             onUpdateUiOpacity = { newOpacity ->
-                                uiOpacity = newOpacity.coerceIn(0.25f, 1.0f)
+                                uiOpacity = newOpacity.coerceIn(0.0f, 1.0f)
                                 saveUiOpacity(uiOpacity)
-                            },
-                            categoryOrder = categoryOrder,
-                            onUpdateCategoryOrder = { newOrder ->
-                                categoryOrder = newOrder
-                                saveCategoryOrder(newOrder)
                             },
                             blockedSenders = blockedSenders,
                             onBlockSender = { address ->
@@ -464,12 +455,20 @@ class MainActivity : ComponentActivity() {
                             onSelectUiColorMode = { mode ->
                                 uiColorMode = mode
                                 saveUiColorMode(mode)
-                                if (mode == UiColorMode.MONOCHROME && !mainWallpaper.preset.isMonochrome) {
-                                    val cfg = WallpaperConfig(preset = WallpaperPreset.MONO_SLATE, customImageUri = null)
+                                if ((mode == UiColorMode.MONOCHROME) && !mainWallpaper.preset.isMonochrome) {
+                                    val cfg = WallpaperConfig(
+                                        preset = WallpaperPreset.MONO_SLATE,
+                                        customImageUri = null,
+                                        texture = mainWallpaper.texture
+                                    )
                                     mainWallpaper = cfg
                                     saveMainWallpaper(cfg)
-                                } else if (mode == UiColorMode.COLORFUL && mainWallpaper.preset.isMonochrome) {
-                                    val cfg = WallpaperConfig(preset = WallpaperPreset.DEFAULT, customImageUri = null)
+                                } else if ((mode == UiColorMode.COLORFUL) && mainWallpaper.preset.isMonochrome) {
+                                    val cfg = WallpaperConfig(
+                                        preset = WallpaperPreset.DEFAULT,
+                                        customImageUri = null,
+                                        texture = mainWallpaper.texture
+                                    )
                                     mainWallpaper = cfg
                                     saveMainWallpaper(cfg)
                                 }
@@ -492,7 +491,16 @@ class MainActivity : ComponentActivity() {
                                 ).show()
                             },
                             onSelectMainWallpaperPreset = { preset ->
-                                val cfg = WallpaperConfig(preset = preset, customImageUri = null)
+                                val cfg = WallpaperConfig(
+                                    preset = preset,
+                                    customImageUri = null,
+                                    texture = mainWallpaper.texture
+                                )
+                                mainWallpaper = cfg
+                                saveMainWallpaper(cfg)
+                            },
+                            onSelectMainWallpaperTexture = { selectedTex ->
+                                val cfg = mainWallpaper.copy(texture = selectedTex)
                                 mainWallpaper = cfg
                                 saveMainWallpaper(cfg)
                             },
@@ -523,14 +531,9 @@ class MainActivity : ComponentActivity() {
                                 showDeletedMessagesScreen = true
                             },
                             lastBackupTimestamp = lastBackupTimestamp,
-                            connectedGoogleAccount = connectedGoogleAccount,
-                            isGoogleDriveInstalled = isGoogleDriveInstalled,
                             onCreateLocalBackup = ::handleCreateLocalBackup,
                             onRestoreLocalBackup = ::handleRestoreLocalBackup,
                             onShareBackupFile = ::handleShareBackupFile,
-                            onSaveToGoogleDrive = ::handleSaveToGoogleDrive,
-                            onRestoreFromGoogleDrive = ::handleRestoreFromGoogleDrive,
-                            onOpenSystemBackupSettings = ::handleOpenSystemBackupSettings,
                             onRequestSmsPermissions = ::requestSmsPermissionsSafely,
                             onRequestDefaultSmsRole = ::requestDefaultSmsRoleSafely,
                             onOpenSystemAppSettings = ::openAppDetailsSettings
@@ -581,16 +584,24 @@ class MainActivity : ComponentActivity() {
                             onCopyMessageText = { text ->
                                 copyMessageTextToClipboard(text)
                             },
-                            onForwardMessage = { recipientAddress, body ->
+                            onForwardMessage = { msgToForward, recipientAddress, recipientName ->
+                                if (!recipientName.isNullOrBlank()) {
+                                    SmsMmsRepository.getOrCreateConversationWithRecipient(
+                                        context = this@MainActivity,
+                                        recipientAddress = recipientAddress,
+                                        preferredName = recipientName
+                                    )
+                                }
                                 val targetThreadId = SmsMmsRepository.sendMessage(
                                     context = this@MainActivity,
                                     recipientAddress = recipientAddress,
-                                    rawBody = body
+                                    rawBody = msgToForward.body,
+                                    attachmentUri = msgToForward.attachment?.uri
                                 )
                                 val locStrings = TxturaStrings.forLocale()
                                 Toast.makeText(
                                     this@MainActivity,
-                                    locStrings.messageForwardedToast(recipientAddress),
+                                    locStrings.messageForwardedToast(recipientName ?: recipientAddress),
                                     Toast.LENGTH_SHORT
                                 ).show()
                                 activeThreadId = targetThreadId
@@ -606,6 +617,18 @@ class MainActivity : ComponentActivity() {
                                     phoneNumber = selectedThread.address,
                                     displayName = selectedThread.contactName
                                 )
+                            },
+                            onBlockContact = {
+                                val blockedAddr = selectedThread.address
+                                SmsMmsRepository.blockSender(this@MainActivity, blockedAddr)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.senderBlockedToast(blockedAddr),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                activeThreadId = null
+                                pendingMmsUri = null
                             },
                             onPickMmsPhoto = {
                                 photoPickerLauncher.launch(
@@ -676,15 +699,6 @@ class MainActivity : ComponentActivity() {
                                     Toast.LENGTH_SHORT
                                 ).show()
                             },
-                            onBlockSelectedSenders = { addresses ->
-                                SmsMmsRepository.blockSenders(this@MainActivity, addresses)
-                                val locStrings = TxturaStrings.forLocale()
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    locStrings.sendersBlockedToast(addresses.size),
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            },
                             onCallSender = ::dialPhoneNumberSafely,
                             onOpenContact = ::openOrInsertContactSafely,
                             onCopyOtp = ::copyOtpConfidentially,
@@ -720,7 +734,19 @@ class MainActivity : ComponentActivity() {
                         currentConfig = currentChatWp,
                         showResetToMainButton = hasCustomContactWp,
                         onSelectPreset = { preset ->
-                            val cfg = WallpaperConfig(preset = preset, customImageUri = null)
+                            val cfg = WallpaperConfig(
+                                preset = preset,
+                                customImageUri = null,
+                                texture = currentChatWp.texture
+                            )
+                            val updated = contactWallpapers.toMutableMap().apply {
+                                put(contactKey, cfg)
+                            }
+                            contactWallpapers = updated
+                            saveContactWallpapers(updated)
+                        },
+                        onSelectTexture = { selectedTex ->
+                            val cfg = currentChatWp.copy(texture = selectedTex)
                             val updated = contactWallpapers.toMutableMap().apply {
                                 put(contactKey, cfg)
                             }
@@ -748,8 +774,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Confirmation dialog before moving a message/conversation to Deleted Messages (Trash)
-                val pendingDelete = threadPendingDeleteConfirmation
-                if (pendingDelete != null) {
+                threadPendingDeleteConfirmation?.let { pendingDelete ->
                     ConfirmMoveToTrashDialog(
                         contactName = pendingDelete.contactName,
                         retentionDays = autoDeleteDays,
@@ -888,7 +913,7 @@ class MainActivity : ComponentActivity() {
         val savedIconShape = prefs.getString(KEY_LAUNCHER_ICON_SHAPE, LauncherIconShape.ROUNDED_SQUARE.name)
         launcherIconShape = LauncherIconShape.entries.find { it.name == savedIconShape } ?: LauncherIconShape.ROUNDED_SQUARE
 
-        uiOpacity = prefs.getFloat(KEY_UI_OPACITY, 1.0f).coerceIn(0.25f, 1.0f)
+        uiOpacity = prefs.getFloat(KEY_UI_OPACITY, 1.0f).coerceIn(0.0f, 1.0f)
         categoryOrder = ConversationFilter.deserializeOrder(prefs.getString(KEY_CATEGORY_ORDER, null))
     }
 
@@ -1001,7 +1026,7 @@ class MainActivity : ComponentActivity() {
 
     private fun saveUiOpacity(opacity: Float) {
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
-            putFloat(KEY_UI_OPACITY, opacity.coerceIn(0.25f, 1.0f))
+            putFloat(KEY_UI_OPACITY, opacity.coerceIn(0.0f, 1.0f))
         }
     }
 
@@ -1039,59 +1064,6 @@ class MainActivity : ComponentActivity() {
         restoreBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
     }
 
-    private fun handleSaveToGoogleDrive() {
-        lifecycleScope.launch {
-            val settings = buildAppSettingsSnapshot()
-            val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
-            val highlightedMsgs = SmsMmsRepository.getHighlightedMessageIdsSnapshot()
-            val blockedAddrs = SmsMmsRepository.getBlockedAddressesSnapshot()
-            val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
-            val currentThreads = SmsMmsRepository.threads.value
-            val currentDeleted = SmsMmsRepository.deletedThreads.value
-
-            val json = BackupManager.generateBackupJson(
-                settings = settings,
-                threads = currentThreads,
-                deletedThreads = currentDeleted,
-                pinnedAddresses = pinnedAddrs,
-                pinnedMessageIds = pinnedMsgs,
-                highlightedMessageIds = highlightedMsgs,
-                blockedAddresses = blockedAddrs,
-                deletedThreadsMeta = deletedMeta
-            )
-            val file = BackupManager.createInternalBackupFile(this@MainActivity, json)
-            lastBackupTimestamp = System.currentTimeMillis()
-
-            if (BackupManager.isGoogleDriveInstalled(this@MainActivity)) {
-                try {
-                    val intent = BackupManager.createShareOrDriveIntent(
-                        this@MainActivity,
-                        file,
-                        targetGoogleDriveOnly = true
-                    )
-                    startActivity(intent)
-                } catch (_: Exception) {
-                    val chooser = Intent.createChooser(
-                        BackupManager.createShareOrDriveIntent(
-                            this@MainActivity,
-                            file,
-                            targetGoogleDriveOnly = false
-                        ),
-                        TxturaStrings.forLocale().saveToGoogleDriveButton
-                    )
-                    startActivity(chooser)
-                }
-            } else {
-                val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
-                createBackupLauncher.launch("txtura_backup_$dateStr.json")
-            }
-        }
-    }
-
-    private fun handleRestoreFromGoogleDrive() {
-        restoreBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
-    }
-
     private fun handleShareBackupFile() {
         lifecycleScope.launch {
             val settings = buildAppSettingsSnapshot()
@@ -1124,14 +1096,6 @@ class MainActivity : ComponentActivity() {
                 TxturaStrings.forLocale().shareBackupButton
             )
             startActivity(chooser)
-        }
-    }
-
-    private fun handleOpenSystemBackupSettings() {
-        try {
-            startActivity(BackupManager.createSystemBackupSettingsIntent())
-        } catch (_: Exception) {
-            openAppDetailsSettings()
         }
     }
 

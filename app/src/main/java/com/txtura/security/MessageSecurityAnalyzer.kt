@@ -17,7 +17,7 @@ enum class SecurityRiskLevel {
 data class SecurityAnalysisResult(
     val riskLevel: SecurityRiskLevel,
     val reasons: List<String>,
-    val extractedOtpCode: String?
+    val extractedOtpCode: String?,
 )
 
 /**
@@ -177,13 +177,13 @@ object MessageSecurityAnalyzer {
         for (url in parsedUrls) {
             val isTrustedDomain = (url.registeredDomain in trustedGlobalDomains) && !url.hasEmbeddedAtSymbol
 
-            // 1. Check for '@' credential redirection trick (e.g., https://google.com@evil.com)
+            // 1. Check for '@' credential redirection trick
             if (url.hasEmbeddedAtSymbol) {
                 threatScore += 4
                 reasons.add(strings.reasonEmbeddedCredentialsUrl)
             }
 
-            // 2. Check for raw IP address URLs (e.g., http://185.220.101.4/login)
+            // 2. Check for raw IP address URLs
             if (ipv4HostRegex.matches(url.host)) {
                 threatScore += 4
                 reasons.add(strings.reasonIpUrl)
@@ -195,7 +195,7 @@ object MessageSecurityAnalyzer {
                     url.pathAndQuery.contains("$ext?") ||
                     url.pathAndQuery.contains("$ext&")
             }
-            if (matchedMalwareExt != null && !isTrustedDomain) {
+            if ((matchedMalwareExt != null) && !isTrustedDomain) {
                 threatScore += 5
                 reasons.add(strings.reasonMalwareFile(matchedMalwareExt))
             }
@@ -214,14 +214,14 @@ object MessageSecurityAnalyzer {
             }
 
             // 6. Check for URL Shorteners (hides true destination)
-            if (url.registeredDomain in urlShorteners || url.host in urlShorteners) {
+            if ((url.registeredDomain in urlShorteners) || (url.host in urlShorteners)) {
                 // Shortener alone is CAUTION (+2); combined with any other indicator becomes SUSPICIOUS (>=3)
                 threatScore += 2
                 reasons.add(strings.reasonShortener(url.host))
             }
 
             // 7. Check for High-Risk Abused TLDs strictly on the host TLD (never substring in path!)
-            if (!isTrustedDomain && url.tld in highRiskTlds) {
+            if (!isTrustedDomain && (url.tld in highRiskTlds)) {
                 threatScore += 3
                 reasons.add(strings.reasonHighRiskTld(url.tld))
             }
@@ -236,7 +236,7 @@ object MessageSecurityAnalyzer {
             }
 
             // 9. Suspicious non-standard ports (e.g. :8080, :4444) or excessive hyphen/subdomain obfuscation
-            if (url.nonStandardPort != null && url.nonStandardPort !in listOf(80, 443)) {
+            if ((url.nonStandardPort != null) && (url.nonStandardPort !in listOf(80, 443))) {
                 threatScore += 3
                 reasons.add(strings.reasonIpUrl)
             }
@@ -246,8 +246,8 @@ object MessageSecurityAnalyzer {
         val hasPhishingKeywords = phishingSocialEngineeringPatterns.any { lowerBody.contains(it) }
         if (hasPhishingKeywords) {
             if (parsedUrls.isNotEmpty()) {
-                val allUrlsTrusted = parsedUrls.all {
-                    it.registeredDomain in trustedGlobalDomains && !it.hasEmbeddedAtSymbol && it.scheme != "http"
+                val allUrlsTrusted = parsedUrls.all { urlItem ->
+                    (urlItem.registeredDomain in trustedGlobalDomains) && !urlItem.hasEmbeddedAtSymbol && (urlItem.scheme != "http")
                 }
                 if (!allUrlsTrusted) {
                     threatScore += 3
@@ -415,6 +415,13 @@ object MessageSecurityAnalyzer {
 
     fun validateIncomingSmsIntent(context: Context, incomingIntent: Intent?): ValidatedSmsIntent? {
         if (incomingIntent == null) return null
+        val action = incomingIntent.action
+        if (action != Intent.ACTION_SENDTO &&
+            action != Intent.ACTION_VIEW &&
+            action != Intent.ACTION_SEND
+        ) {
+            return null
+        }
 
         val forbiddenUriFlags = Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
             Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or

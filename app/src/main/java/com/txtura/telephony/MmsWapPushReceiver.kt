@@ -22,7 +22,7 @@ class MmsWapPushReceiver : BroadcastReceiver() {
                 context = context.applicationContext,
                 senderAddress = "MMS",
                 rawBody = "Received new MMS multimedia message",
-                isMms = true
+                isMms = true,
             )
         } catch (e: Exception) {
             Log.e("MmsWapPushReceiver", "Error handling MMS WAP push", e)

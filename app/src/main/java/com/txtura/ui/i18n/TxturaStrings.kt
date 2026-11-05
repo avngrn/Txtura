@@ -5,833 +5,508 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.platform.LocalConfiguration
 import java.util.Locale
 
-data class AppStrings(
-    val isSerbian: Boolean,
-    val appSubtitle: String,
-    val settingsTooltip: String,
-    val settingsSubtitle: String,
-    val searchPlaceholder: String,
-    val clearSearch: String,
-    val filterPeople: String,
-    val filterServices: String,
-    val filterUnread: String,
-    val filterPinned: String,
-    val filterAll: String,
-    val filterMms: String,
-    val newMessage: String,
-    val markAllReadTooltip: String,
-    val confirmMarkAllReadTitle: String,
-    val confirmMarkAllReadMessage: String,
-    val confirmMarkAllReadButton: String,
-    val pinContactThread: String,
-    val unpinContactThread: String,
-    val pinMessage: String,
-    val unpinMessage: String,
-    val pinnedMessagesTitle: String,
-    val highlightedMessagesTitle: String,
-    val deleteThread: String,
-    val callSender: String,
-    val viewContactDetails: String,
-    val pickFromContacts: String,
-    val copyCodePrefix: String,
-    val copyVerificationCodePrefix: String,
-    val codeCopiedToast: (String) -> String,
-    val shieldSuspiciousBlocked: String,
-    val back: String,
-    val protectedChannelSuffix: String,
-    val mmsAttachedTitle: String,
-    val mmsZeroPermissionSub: String,
-    val removeMmsAttachment: String,
-    val attachMmsImage: String,
-    val addMmsCaptionPlaceholder: String,
-    val writeSmsPlaceholder: String,
-    val mmsModeIndicator: String,
-    val send: String,
-    val cancel: String,
-    val confirm: String,
-    val newSmsMmsDialogTitle: String,
-    val selectSenderSubtitle: String,
-    val searchOrEnterNumberPlaceholder: String,
-    val openChatWithNumberButton: (String) -> String,
-    val existingChatBadge: String,
-    val newChatBadge: String,
-    val recipientLabel: String,
-    val messageBodyLabel: String,
-    val hdrMmsPhoto: String,
+class AppStrings(val isSerbian: Boolean) {
+    private fun s(en: String, sr: String): String = if (isSerbian) sr else en
+
+    val settingsTooltip: String = s("Settings", "Podešavanja")
+    val settingsSubtitle: String = s(
+        "Appearance, messages, blocked senders, backup & permissions",
+        "Izgled, poruke, blokirani pošiljaoci, bekap i dozvole",
+    )
+    val searchPlaceholder: String = s(
+        "Search messages, contacts or 2FA codes...",
+        "Pretraži poruke, kontakte ili 2FA kodove...",
+    )
+    val clearSearch: String = s("Clear search", "Obriši pretragu")
+    val filterPeople: String = s("People", "Osobe")
+    val filterServices: String = s("Service Messages", "Servisne poruke")
+    val filterUnread: String = s("Unread", "Nepročitano")
+    val filterPinned: String = s("Pinned", "Zakačeno")
+    val filterAll: String = s("All Messages", "Sve poruke")
+    val newMessage: String = s("New Message", "Nova poruka")
+    val markAllReadTooltip: String = s("Mark all as read", "Označi sve kao pročitano")
+    val confirmMarkAllReadTitle: String = s("Mark all messages as read?", "Označi sve kao pročitano?")
+    val confirmMarkAllReadMessage: String = s(
+        "Are you sure you want to mark all conversations and messages as read?",
+        "Da li želite da označite sve poruke kao pročitane?",
+    )
+    val confirmMarkAllReadButton: String = s("Mark as read", "Označi kao pročitano")
+    val pinContactThread: String = s("Pin conversation", "Prikači kontakt")
+    val unpinContactThread: String = s("Unpin conversation", "Otkači kontakt")
+    val pinMessage: String = s("Pin message", "Prikači poruku")
+    val unpinMessage: String = s("Unpin message", "Otkači poruku")
+    val pinnedMessagesTitle: String = s("Pinned messages", "Prikačene poruke")
+    val highlightedMessagesTitle: String = s("Highlighted", "Hajlajtovano")
+    val deleteThread: String = s("Delete conversation", "Obriši razgovor")
+    val callSender: String = s("Call sender", "Pozovi pošiljaoca")
+    val viewContactDetails: String = s("Contact details", "Podaci o kontaktu")
+    val pickFromContacts: String = s("Pick contact", "Izaberi iz kontakata")
+    val copyCodePrefix: String = s("Copy code: ", "Kopiraj kod: ")
+    val copyVerificationCodePrefix: String = s("Copy verification code: ", "Kopiraj verifikacioni kod: ")
+    val codeCopiedToast: (String) -> String = { code ->
+        if (isSerbian) "Kod $code bezbedno kopiran" else "Code $code copied securely"
+    }
+    val shieldSuspiciousBlocked: String = s(
+        "Shield: Suspicious phishing link flagged",
+        "Štit: Sumnjiv phishing link blokiran",
+    )
+    val back: String = s("Back", "Nazad")
+    val protectedChannelSuffix: String = s("Protected SMS/MMS channel", "Zaštićeni SMS/MMS kanal")
+    val mmsAttachedTitle: String = s("MMS Photo attached", "MMS Fotografija priložena")
+    val mmsZeroPermissionSub: String = s(
+        "Zero-Permission Photo Picker (scoped access only)",
+        "Zero-Permission Photo Picker (bez pristupa celoj galeriji)",
+    )
+    val removeMmsAttachment: String = s("Remove MMS attachment", "Ukloni MMS prilog")
+    val attachMmsImage: String = s("Attach MMS image", "Dodaj MMS sliku")
+    val addMmsCaptionPlaceholder: String = s("Add MMS caption...", "Dodaj opis uz MMS...")
+    val writeSmsPlaceholder: String = s("Write an SMS message...", "Napiši SMS poruku...")
+    val mmsModeIndicator: String = s("MMS Mode • Multimedia message", "MMS režim • Multimedijalna poruka")
+    val send: String = s("Send", "Pošalji")
+    val cancel: String = s("Cancel", "Otkaži")
+    val confirm: String = s("Confirm", "Potvrdi")
+    val newSmsMmsDialogTitle: String = s("Choose Recipient", "Izaberi primaoca / pošiljaoca")
+    val selectSenderSubtitle: String = s(
+        "Select a contact or enter a number to open or start a conversation",
+        "Izaberite osobu da biste nastavili prethodni čet ili započeli novu konverzaciju",
+    )
+    val searchOrEnterNumberPlaceholder: String = s(
+        "Search contact or type phone number...",
+        "Pretraži kontakt ili unesi broj telefona...",
+    )
+    val openChatWithNumberButton: (String) -> String = { num ->
+        if (isSerbian) "Otvori čet sa: $num" else "Open conversation with $num"
+    }
+    val existingChatBadge: String = s("Continue chat", "Nastavi čet")
+    val newChatBadge: String = s("New chat", "Nova konverzacija")
+    val recipientLabel: String = s("Recipient (phone number)", "Primalac (broj telefona)")
+    val hdrMmsPhoto: String = s("HDR MMS Photo", "HDR MMS Fotografija")
+
     // Chat Message Long-Press Options
-    val messageOptionsTitle: String,
-    val forwardMessageOption: String,
-    val deleteMessageOption: String,
-    val copyMessageOption: String,
-    val highlightMessageOption: String,
-    val unhighlightMessageOption: String,
-    val confirmDeleteSingleMessageTitle: String,
-    val confirmDeleteSingleMessageBody: String,
-    val forwardMessageDialogTitle: String,
-    val messageCopiedToast: String,
-    val messageDeletedToast: String,
-    val messageForwardedToast: (String) -> String,
-    // Main Screen Selection Mode & Bottom Bar
-    val selectedThreadsCountLabel: (Int) -> String,
-    val bottomBarDeleteTooltip: String,
-    val bottomBarMarkReadTooltip: String,
-    val bottomBarBlockSenderTooltip: String,
-    val bottomBarSelectAllTooltip: String,
-    val confirmBatchDeleteTitle: String,
-    val confirmBatchDeleteMessage: (Int, Int) -> String,
-    val confirmBatchMarkReadTitle: String,
-    val confirmBatchMarkReadMessage: (Int) -> String,
-    val confirmBatchBlockTitle: String,
-    val confirmBatchBlockMessage: (Int) -> String,
-    val confirmSelectAllTitle: String,
-    val confirmSelectAllMessage: (Int) -> String,
-    // Category Reordering
-    val reorderCategoriesTitle: String,
-    val reorderCategoriesSub: String,
-    val reorderCategoriesHint: String,
-    val resetCategoriesOrderButton: String,
-    // Settings Screen Categories
-    val appearanceSectionTitle: String,
-    val appearanceSectionDesc: String,
-    val uiTransparencyTitle: String,
-    val uiTransparencySub: String,
-    val themeAmoledTitle: String,
-    val themeAmoledSub: String,
-    val themeLightTitle: String,
-    val themeLightSub: String,
-    val themeDarkTitle: String,
-    val themeDarkSub: String,
-    val themeAutoTitle: String,
-    val themeAutoSub: String,
-    val activePrefix: String,
-    val permissionsSectionTitle: String,
-    val smsMmsContactsPermLabel: String,
-    val permGranted: String,
-    val permDemoNotGranted: String,
-    val defaultSmsRoleLabel: String,
-    val roleActive: String,
-    val roleNotSet: String,
-    val grantSmsMmsPermButton: String,
-    val setDefaultSmsRoleButton: String,
-    val openSystemAppSettingsButton: String,
-    val rationalePermanentDenial: String,
-    val rationaleRequired: String,
-    val rationaleLocalOnly: String,
-    val setDefaultSmsInSystemToast: String,
-    val dialerErrorToast: String,
-    val contactsErrorToast: String,
-    val securitySectionTitle: String,
-    val secItem1Title: String,
-    val secItem1Sub: String,
-    val secItem2Title: String,
-    val secItem2Sub: String,
-    val secItem3Title: String,
-    val secItem3Sub: String,
-    val secItem4Title: String,
-    val secItem4Sub: String,
-    val secItem5Title: String,
-    val secItem5Sub: String,
-    // Security Analyzer
-    val riskSafe: String,
-    val riskCaution: String,
-    val riskSuspicious: String,
-    val reasonHttp: String,
-    val reasonIpUrl: String,
-    val reasonShortener: (String) -> String,
-    val reasonHighRiskTld: (String) -> String,
-    val reasonSocialEngineering: String,
-    val reasonMalwareFile: (String) -> String,
-    val reasonHomographOrBrandSpoof: (String) -> String,
-    val reasonAiOrCryptoScam: String,
-    val reasonEmbeddedCredentialsUrl: String,
-    val defaultSmsPromptTitle: String,
-    val defaultSmsPromptMessage: String,
-    val defaultSmsPromptConfirm: String,
-    val defaultSmsPromptLater: String,
-    val showContactPhotosTitle: String,
-    val showContactPhotosSub: String,
-    val mainLayoutModeTitle: String,
-    val mainLayoutModeSub: String,
-    val layoutModeDefault: String,
-    val layoutModeCompact: String,
-    val bubbleZoomHint: String,
-    // Swipe Gestures & Trash / Deleted Messages
-    val swipeSectionTitle: String,
-    val swipeSectionDesc: String,
-    val swipeRightLabel: String,
-    val swipeLeftLabel: String,
-    val swipeActionPin: String,
-    val swipeActionDelete: String,
-    val swipeActionCall: String,
-    val swipeActionMarkRead: String,
-    val swipeActionContact: String,
-    val swipeActionNone: String,
-    val trashSectionTitle: String,
-    val trashSectionDesc: String,
-    val deletedMessagesTitle: String,
-    val deletedMessagesSubtitle: (Int, Int) -> String,
-    val openDeletedMessagesButton: (Int) -> String,
-    val autoDeleteDaysTitle: String,
-    val autoDeleteDaysSub: String,
-    val daysCountLabel: (Int) -> String,
-    val groupingModeTitle: String,
-    val groupingModeSub: String,
-    val groupByDateLabel: String,
-    val groupByContactLabel: String,
-    val confirmDeleteTitle: String,
-    val confirmDeleteMessage: (String, Int) -> String,
-    val confirmMoveToTrashButton: String,
-    val confirmPermanentDeleteTitle: String,
-    val confirmPermanentDeleteMessage: (String) -> String,
-    val confirmPermanentDeleteButton: String,
-    val restoreButton: String,
-    val deletePermanentlyButton: String,
-    val emptyTrashButton: String,
-    val emptyTrashMessage: String,
-    val daysRemainingBadge: (Int) -> String,
-    val deletedOnPrefix: String,
-    val messagesCountLabel: (Int) -> String,
-    val restoredToast: (String) -> String,
-    val movedToTrashToast: (String) -> String,
-    // Blocked Senders Section
-    val blockedSendersSectionTitle: String,
-    val blockedSendersSectionDesc: String,
-    val addBlockedSenderPlaceholder: String,
-    val blockSenderButton: String,
-    val unblockSenderButton: String,
-    val blockedSendersEmpty: String,
-    val senderBlockedToast: (String) -> String,
-    val senderUnblockedToast: (String) -> String,
-    // Wallpapers & Backgrounds
-    val wallpaperSectionTitle: String,
-    val wallpaperSectionDesc: String,
-    val mainWallpaperButton: String,
-    val chatWallpaperTooltip: String,
-    val mainWallpaperDialogTitle: String,
-    val chatWallpaperDialogTitle: (String) -> String,
-    val pickWallpaperFromGallery: String,
-    val customGalleryWallpaperActive: String,
-    val useMainWallpaperDefault: String,
-    val wpDefault: String,
-    val wpAurora: String,
-    val wpVelvetPlum: String,
-    val wpMidnightOcean: String,
-    val wpSunsetHorizon: String,
-    val wpEmeraldForest: String,
-    val wpRoyalAmethyst: String,
-    val wpStarlightGalaxy: String,
-    val wpCrimsonVelvet: String,
-    val wpArcticFrost: String,
-    val wpObsidianGold: String,
-    val wpMonoSlate: String,
-    val wpMonoSapphire: String,
-    val wpMonoSage: String,
-    val wpMonoChampagne: String,
-    val wpMonoPlum: String,
-    val wpMonoGraphite: String,
-    val wpMonoRose: String,
-    val wpMonoNavy: String,
-    val wpMonoSmoke: String,
-    val wpMonoEspresso: String,
-    // UI Color Mode
-    val uiColorModeSectionTitle: String,
-    val uiColorModeSectionDesc: String,
-    val uiColorModeColorfulTitle: String,
-    val uiColorModeColorfulDesc: String,
-    val uiColorModeMonochromeTitle: String,
-    val uiColorModeMonochromeDesc: String,
-    val wallpaperTabColorful: String,
-    val wallpaperTabMonochrome: String,
-    // Launcher Icon Shape Style
-    val launcherIconShapeSectionTitle: String,
-    val launcherIconShapeSectionDesc: String,
-    val launcherIconShapeCircle: String,
-    val launcherIconShapeSquircle: String,
-    val launcherIconShapeRoundedSquare: String,
-    val launcherIconShapeTeardrop: String,
-    val launcherIconShapePebble: String,
-    val launcherIconShapeSavedToast: (String) -> String,
-    // Backup & Restore
-    val backupSectionTitle: String,
-    val backupSectionDesc: String,
-    val localBackupTitle: String,
-    val localBackupSub: String,
-    val createLocalBackupButton: String,
-    val restoreLocalBackupButton: String,
-    val shareBackupButton: String,
-    val googleAccountBackupTitle: String,
-    val googleAccountBackupSub: String,
-    val saveToGoogleDriveButton: String,
-    val restoreFromGoogleDriveButton: String,
-    val googleSystemBackupSettingsButton: String,
-    val googleAccountConnected: (String) -> String,
-    val googleAccountDefaultLabel: String,
-    val googleDriveNotInstalled: String,
-    val backupCreatedSuccess: (Int, Int) -> String,
-    val backupRestoreSuccess: (Int, Int) -> String,
-    val backupErrorInvalid: String,
-    val lastBackupLabel: (String) -> String,
-    val noPreviousBackup: String,
-    val confirmRestoreTitle: String,
-    val confirmRestoreMessage: (String, Int, Int) -> String,
-    val confirmRestoreButton: String
-)
+    val messageOptionsTitle: String = s("Message Options", "Opcije poruke")
+    val forwardMessageOption: String = s("Forward message", "Prosledi poruku")
+    val deleteMessageOption: String = s("Delete message", "Izbriši poruku")
+    val copyMessageOption: String = s("Copy message", "Kopiraj poruku")
+    val highlightMessageOption: String = s("Highlight message", "Hajlajtuj poruku")
+    val unhighlightMessageOption: String = s("Remove highlight", "Ukloni hajlajt")
+    val confirmDeleteSingleMessageTitle: String = s("Delete message?", "Izbriši poruku?")
+    val confirmDeleteSingleMessageBody: String = s(
+        "Do you want to delete this message from the conversation?",
+        "Da li želite da izbrišete ovu poruku iz konverzacije?",
+    )
+    val forwardMessageDialogTitle: String = s("Forward message to...", "Prosledi poruku osobi...")
+    val messageCopiedToast: String = s("Message copied to clipboard", "Poruka je kopirana")
+    val messageDeletedToast: String = s("Message deleted", "Poruka je izbrisana")
+    val messageForwardedToast: (String) -> String = { name ->
+        if (isSerbian) "Poruka prosleđena za: $name" else "Message forwarded to $name"
+    }
 
-private val EnglishStrings = AppStrings(
-    isSerbian = false,
-    appSubtitle = "Messages & Multimedia",
-    settingsTooltip = "Settings",
-    settingsSubtitle = "Appearance, messages, blocked senders, backup & permissions",
-    searchPlaceholder = "Search messages, contacts or 2FA codes...",
-    clearSearch = "Clear search",
-    filterPeople = "People",
-    filterServices = "Service Messages",
-    filterUnread = "Unread",
-    filterPinned = "Pinned",
-    filterAll = "All Messages",
-    filterMms = "MMS Media",
-    newMessage = "New Message",
-    markAllReadTooltip = "Mark all as read",
-    confirmMarkAllReadTitle = "Mark all messages as read?",
-    confirmMarkAllReadMessage = "Are you sure you want to mark all conversations and messages as read?",
-    confirmMarkAllReadButton = "Mark as read",
-    pinContactThread = "Pin conversation",
-    unpinContactThread = "Unpin conversation",
-    pinMessage = "Pin message",
-    unpinMessage = "Unpin message",
-    pinnedMessagesTitle = "Pinned messages",
-    highlightedMessagesTitle = "Highlighted",
-    deleteThread = "Delete conversation",
-    callSender = "Call sender",
-    viewContactDetails = "Contact details",
-    pickFromContacts = "Pick contact",
-    copyCodePrefix = "Copy code: ",
-    copyVerificationCodePrefix = "Copy verification code: ",
-    codeCopiedToast = { code -> "Code $code copied securely" },
-    shieldSuspiciousBlocked = "Shield: Suspicious phishing link flagged",
-    back = "Back",
-    protectedChannelSuffix = "Protected SMS/MMS channel",
-    mmsAttachedTitle = "MMS Photo attached",
-    mmsZeroPermissionSub = "Zero-Permission Photo Picker (scoped access only)",
-    removeMmsAttachment = "Remove MMS attachment",
-    attachMmsImage = "Attach MMS image",
-    addMmsCaptionPlaceholder = "Add MMS caption...",
-    writeSmsPlaceholder = "Write an SMS message...",
-    mmsModeIndicator = "MMS Mode • Multimedia message",
-    send = "Send",
-    cancel = "Cancel",
-    confirm = "Confirm",
-    newSmsMmsDialogTitle = "Choose Recipient",
-    selectSenderSubtitle = "Select a contact or enter a number to open or start a conversation",
-    searchOrEnterNumberPlaceholder = "Search contact or type phone number...",
-    openChatWithNumberButton = { num -> "Open conversation with $num" },
-    existingChatBadge = "Continue chat",
-    newChatBadge = "New chat",
-    recipientLabel = "Recipient (phone number)",
-    messageBodyLabel = "Message text",
-    hdrMmsPhoto = "HDR MMS Photo",
-    messageOptionsTitle = "Message Options",
-    forwardMessageOption = "Forward message",
-    deleteMessageOption = "Delete message",
-    copyMessageOption = "Copy message",
-    highlightMessageOption = "Highlight message",
-    unhighlightMessageOption = "Remove highlight",
-    confirmDeleteSingleMessageTitle = "Delete message?",
-    confirmDeleteSingleMessageBody = "Do you want to delete this message from the conversation?",
-    forwardMessageDialogTitle = "Forward message to...",
-    messageCopiedToast = "Message copied to clipboard",
-    messageDeletedToast = "Message deleted",
-    messageForwardedToast = { name -> "Message forwarded to $name" },
-    selectedThreadsCountLabel = { count -> "$count selected" },
-    bottomBarDeleteTooltip = "Delete",
-    bottomBarMarkReadTooltip = "Mark as read",
-    bottomBarBlockSenderTooltip = "Block sender",
-    bottomBarSelectAllTooltip = "Select all",
-    confirmBatchDeleteTitle = "Delete selected messages?",
-    confirmBatchDeleteMessage = { count, days ->
-        "Do you want to move $count selected conversation(s) to Trash? They will be permanently deleted after $days days."
-    },
-    confirmBatchMarkReadTitle = "Mark selected as read?",
-    confirmBatchMarkReadMessage = { count ->
-        "Do you want to mark all messages in the $count selected conversation(s) as read?"
-    },
-    confirmBatchBlockTitle = "Block selected sender(s)?",
-    confirmBatchBlockMessage = { count ->
-        "Do you want to block messages from the $count selected sender(s)?"
-    },
-    confirmSelectAllTitle = "Select all messages?",
-    confirmSelectAllMessage = { count ->
-        "Do you want to select all $count displayed conversations?"
-    },
-    reorderCategoriesTitle = "Message Categories Order",
-    reorderCategoriesSub = "Long-press any category on the main screen or use arrows below to customize order",
-    reorderCategoriesHint = "Hold & reorder categories",
-    resetCategoriesOrderButton = "Reset default order",
-    appearanceSectionTitle = "Appearance, Themes & Transparency",
-    appearanceSectionDesc = "Light/Dark/AMOLED mode, UI transparency slider, 10 monochrome & 10 colorful themes, wallpapers, icon shape & layout.",
-    uiTransparencyTitle = "UI Glass Opacity & Transparency",
-    uiTransparencySub = "Adjust how translucent or solid the glass cards, bars, and bubbles appear",
-    themeAmoledTitle = "True AMOLED Glass (#000000)",
-    themeAmoledSub = "Pure pitch-black background for OLED screens and maximum battery savings",
-    themeLightTitle = "Light Glass",
-    themeLightSub = "Airy light theme with frosted translucent glass cards",
-    themeDarkTitle = "Dark Glass",
-    themeDarkSub = "Deep slate-navy background with subtle specular highlights",
-    themeAutoTitle = "Auto (System theme)",
-    themeAutoSub = "Automatically follows your phone's day/night mode (Light / AMOLED)",
-    activePrefix = "Active • ",
-    permissionsSectionTitle = "Permissions & Default App",
-    smsMmsContactsPermLabel = "SMS, MMS & Contacts permissions",
-    permGranted = "Granted",
-    permDemoNotGranted = "Demo mode (Not granted)",
-    defaultSmsRoleLabel = "Default SMS app (ROLE_SMS)",
-    roleActive = "Active",
-    roleNotSet = "Not set",
-    grantSmsMmsPermButton = "Grant SMS & MMS permissions",
-    setDefaultSmsRoleButton = "Set Txtura as Default SMS App",
-    openSystemAppSettingsButton = "Open system app settings",
-    rationalePermanentDenial = "Permissions were permanently denied. Open App Settings to enable SMS & MMS.",
-    rationaleRequired = "SMS permissions are required to read and send messages on your device.",
-    rationaleLocalOnly = "Txtura uses SMS, MMS and Contacts permissions strictly on-device.",
-    setDefaultSmsInSystemToast = "Set Txtura as your default SMS app in System Settings.",
-    dialerErrorToast = "Unable to open phone dialer app.",
-    contactsErrorToast = "Unable to open contacts app.",
-    securitySectionTitle = "Active Security Measures",
-    secItem1Title = "Global Anti-Phishing, Malware & AI Scam Engine",
-    secItem1Sub = "Multi-layer URL & threat analyzer: detects IDN homograph/brand spoofing, APK/EXE malware links, high-risk TLDs, and AI/crypto scams without flagging safe HTTPS links.",
-    secItem2Title = "IntentSanitizer & Redirection Guard",
-    secItem2Sub = "All incoming SEND/SENDTO intents undergo strict scheme validation and forbidden URI flag stripping.",
-    secItem3Title = "Zero-Permission Photo Picker for MMS",
-    secItem3Sub = "Attaching MMS images never requests full gallery access (READ_MEDIA_IMAGES), only the selected photo.",
-    secItem4Title = "Confidential 2FA/OTP Clipboard Copy",
-    secItem4Sub = "Uses EXTRA_IS_SENSITIVE flag on Android 13+ to hide verification codes from clipboard previews.",
-    secItem5Title = "Protected System Receivers & Parameterized Queries",
-    secItem5Sub = "Receivers are locked with BROADCAST_SMS / BROADCAST_WAP_PUSH permissions and unencrypted cloud backup is disabled.",
-    riskSafe = "Safe message",
-    riskCaution = "Caution: obfuscated or unencrypted link",
-    riskSuspicious = "Warning: Malicious link, Phishing or Scam detected",
-    reasonHttp = "Unencrypted HTTP link (not protected by TLS)",
-    reasonIpUrl = "Link points directly to a raw IP address or non-standard port",
-    reasonShortener = { host -> "Shortened link hides true destination ($host)" },
-    reasonHighRiskTld = { tld -> "High-risk domain extension ($tld) frequently abused in phishing & malware" },
-    reasonSocialEngineering = "Urgent social engineering lure combined with an untrusted link",
-    reasonMalwareFile = { ext -> "Dangerous executable/malware file link detected ($ext)" },
-    reasonHomographOrBrandSpoof = { target -> "Brand impersonation or IDN homograph spoofing detected ($target)" },
-    reasonAiOrCryptoScam = "AI investment, crypto fraud, fake task or family impersonation scam pattern",
-    reasonEmbeddedCredentialsUrl = "URL uses '@' redirection trick to disguise real destination",
-    defaultSmsPromptTitle = "Default SMS & MMS App",
-    defaultSmsPromptMessage = "Would you like to set Txtura as your default application for receiving SMS and MMS messages?",
-    defaultSmsPromptConfirm = "Set as Default",
-    defaultSmsPromptLater = "Not now",
-    showContactPhotosTitle = "Show contact photos",
-    showContactPhotosSub = "Display contact photos and avatars in the message list and conversation header",
-    mainLayoutModeTitle = "Main window display mode",
-    mainLayoutModeSub = "Choose between Default or Compact view for the main messages window",
-    layoutModeDefault = "Default view",
-    layoutModeCompact = "Compact view",
-    bubbleZoomHint = "Pinch in/out with two fingers to resize message bubbles",
-    swipeSectionTitle = "Messages, Categories & Swipe Actions",
-    swipeSectionDesc = "Configure swipe gestures, category order, and deleted messages retention.",
-    swipeRightLabel = "Swipe Right Action (→)",
-    swipeLeftLabel = "Swipe Left Action (←)",
-    swipeActionPin = "Pin / Unpin",
-    swipeActionDelete = "Delete (Trash)",
-    swipeActionCall = "Call sender",
-    swipeActionMarkRead = "Mark read",
-    swipeActionContact = "Contact card",
-    swipeActionNone = "Disabled",
-    trashSectionTitle = "Deleted Messages & Retention",
-    trashSectionDesc = "Deleted messages are moved to Trash and can be restored before auto-deletion.",
-    deletedMessagesTitle = "Deleted Messages",
-    deletedMessagesSubtitle = { count, days -> "$count in Trash • Auto-delete after $days days" },
-    openDeletedMessagesButton = { count -> "Open Deleted Messages ($count)" },
-    autoDeleteDaysTitle = "Auto-delete deleted messages after",
-    autoDeleteDaysSub = "Messages in Trash older than this period are permanently removed",
-    daysCountLabel = { days -> "$days days" },
-    groupingModeTitle = "Sort & group deleted messages by",
-    groupingModeSub = "Choose how messages are organized inside the Deleted Messages folder",
-    groupByDateLabel = "By Deletion Date",
-    groupByContactLabel = "By Contact",
-    confirmDeleteTitle = "Move to Deleted Messages?",
-    confirmDeleteMessage = { name, days ->
-        "Are you sure you want to delete the conversation with \"$name\"? It will be moved to Deleted Messages and automatically permanently deleted after $days days."
-    },
-    confirmMoveToTrashButton = "Move to Trash",
-    confirmPermanentDeleteTitle = "Delete Permanently?",
-    confirmPermanentDeleteMessage = { name ->
-        "Permanently delete the conversation with \"$name\"? This action cannot be undone."
-    },
-    confirmPermanentDeleteButton = "Delete Forever",
-    restoreButton = "Restore",
-    deletePermanentlyButton = "Delete forever",
-    emptyTrashButton = "Empty Trash",
-    emptyTrashMessage = "No deleted messages in Trash.",
-    daysRemainingBadge = { days -> "${days}d left" },
-    deletedOnPrefix = "Deleted: ",
-    messagesCountLabel = { count -> if (count == 1) "1 message" else "$count messages" },
-    restoredToast = { name -> "Restored messages from $name" },
-    movedToTrashToast = { name -> "Moved $name to Deleted Messages" },
-    blockedSendersSectionTitle = "Blocked Senders",
-    blockedSendersSectionDesc = "Manage blocked phone numbers and senders whose messages will be blocked.",
-    addBlockedSenderPlaceholder = "Enter phone number or sender ID...",
-    blockSenderButton = "Block",
-    unblockSenderButton = "Unblock",
-    blockedSendersEmpty = "No blocked senders.",
-    senderBlockedToast = { addr -> "Blocked sender: $addr" },
-    senderUnblockedToast = { addr -> "Unblocked sender: $addr" },
-    wallpaperSectionTitle = "Backgrounds & Themes",
-    wallpaperSectionDesc = "Choose from 10 colorful backgrounds, 10 monochrome accent themes, or pick your own photo from Gallery.",
-    mainWallpaperButton = "Main Window Wallpaper & Accents",
-    chatWallpaperTooltip = "Chat wallpaper for this contact",
-    mainWallpaperDialogTitle = "Main Window Wallpaper",
-    chatWallpaperDialogTitle = { name -> "Wallpaper: $name" },
-    pickWallpaperFromGallery = "Add Photo from Gallery",
-    customGalleryWallpaperActive = "Custom Gallery Photo Active",
-    useMainWallpaperDefault = "Use Main Window Wallpaper",
-    wpDefault = "Default Obsidian Glass",
-    wpAurora = "Aurora Borealis",
-    wpVelvetPlum = "Velvet Plum",
-    wpMidnightOcean = "Midnight Ocean",
-    wpSunsetHorizon = "Sunset Horizon",
-    wpEmeraldForest = "Emerald Mist",
-    wpRoyalAmethyst = "Royal Amethyst",
-    wpStarlightGalaxy = "Starlight Galaxy",
-    wpCrimsonVelvet = "Crimson Velvet",
-    wpArcticFrost = "Arctic Frost",
-    wpObsidianGold = "Obsidian & Gold",
-    wpMonoSlate = "Monochrome + Slate Accent",
-    wpMonoSapphire = "Monochrome + Sapphire Accent",
-    wpMonoSage = "Monochrome + Emerald Accent",
-    wpMonoChampagne = "Monochrome + Gold Accent",
-    wpMonoPlum = "Monochrome + Amethyst Accent",
-    wpMonoGraphite = "Monochrome + Silver/Onyx Accent",
-    wpMonoRose = "Monochrome + Rose Accent",
-    wpMonoNavy = "Monochrome + Indigo Accent",
-    wpMonoSmoke = "Monochrome + Teal Accent",
-    wpMonoEspresso = "Monochrome + Copper Accent",
-    uiColorModeSectionTitle = "Color Palette Mode",
-    uiColorModeSectionDesc = "Switch between 10 vibrant multi-tone themes or 10 Light/Dark monochrome themes with 1 accent color",
-    uiColorModeColorfulTitle = "Colorful UI (10)",
-    uiColorModeColorfulDesc = "Rich, elegant multi-tone palettes with matching complementary accents",
-    uiColorModeMonochromeTitle = "Monochrome + 1 Accent (10)",
-    uiColorModeMonochromeDesc = "Follows Light or Dark mode with your choice of 10 single accent colors",
-    wallpaperTabColorful = "Colorful (10)",
-    wallpaperTabMonochrome = "Monochrome + Accent (10)",
-    launcherIconShapeSectionTitle = "Launcher Icon Style",
-    launcherIconShapeSectionDesc = "Choose your preferred adaptive icon shape mask preview",
-    launcherIconShapeCircle = "Circle",
-    launcherIconShapeSquircle = "Squircle",
-    launcherIconShapeRoundedSquare = "Rounded Box",
-    launcherIconShapeTeardrop = "Teardrop",
-    launcherIconShapePebble = "Pebble",
-    launcherIconShapeSavedToast = { shape -> "Launcher icon style set to $shape" },
-    backupSectionTitle = "Backup & Restore",
-    backupSectionDesc = "Create local backups or export your conversations and settings.",
-    localBackupTitle = "Local Device Backup",
-    localBackupSub = "Export all messages, wallpapers and settings to a JSON file on your device",
-    createLocalBackupButton = "Create Local Backup",
-    restoreLocalBackupButton = "Restore from Local File",
-    shareBackupButton = "Share / Export Backup File",
-    googleAccountBackupTitle = "Google Account & Google Drive",
-    googleAccountBackupSub = "Save backups to Google Drive or manage automated sync with your connected Google Account",
-    saveToGoogleDriveButton = "Save to Google Drive",
-    restoreFromGoogleDriveButton = "Restore from Google Drive",
-    googleSystemBackupSettingsButton = "Google Account Backup Settings",
-    googleAccountConnected = { email -> "Connected Google Account: $email" },
-    googleAccountDefaultLabel = "Connected with device Google services",
-    googleDriveNotInstalled = "Google Drive app is not installed, opening file picker.",
-    backupCreatedSuccess = { count, msgs -> "Backup created: $count conversations, $msgs messages" },
-    backupRestoreSuccess = { count, msgs -> "Restored $count conversations and $msgs messages successfully" },
-    backupErrorInvalid = "Invalid or corrupted backup file.",
-    lastBackupLabel = { date -> "Last backup: $date" },
-    noPreviousBackup = "No backup created yet",
-    confirmRestoreTitle = "Restore from Backup?",
-    confirmRestoreMessage = { date, count, msgs ->
-        "Do you want to restore data from backup ($date) containing $count conversations and $msgs messages? Existing settings and messages will be updated."
-    },
-    confirmRestoreButton = "Restore Data"
-)
-
-private val SerbianStrings = AppStrings(
-    isSerbian = true,
-    appSubtitle = "Poruke i multimedija",
-    settingsTooltip = "Podešavanja",
-    settingsSubtitle = "Izgled, poruke, blokirani pošiljaoci, bekap i dozvole",
-    searchPlaceholder = "Pretraži poruke, kontakte ili 2FA kodove...",
-    clearSearch = "Obriši pretragu",
-    filterPeople = "Osobe",
-    filterServices = "Servisne poruke",
-    filterUnread = "Nepročitano",
-    filterPinned = "Zakačeno",
-    filterAll = "Sve poruke",
-    filterMms = "MMS Mediji",
-    newMessage = "Nova poruka",
-    markAllReadTooltip = "Označi sve kao pročitano",
-    confirmMarkAllReadTitle = "Označi sve kao pročitano?",
-    confirmMarkAllReadMessage = "Da li želite da označite sve poruke kao pročitane?",
-    confirmMarkAllReadButton = "Označi kao pročitano",
-    pinContactThread = "Prikači kontakt",
-    unpinContactThread = "Otkači kontakt",
-    pinMessage = "Prikači poruku",
-    unpinMessage = "Otkači poruku",
-    pinnedMessagesTitle = "Prikačene poruke",
-    highlightedMessagesTitle = "Hajlajtovano",
-    deleteThread = "Obriši razgovor",
-    callSender = "Pozovi pošiljaoca",
-    viewContactDetails = "Podaci o kontaktu",
-    pickFromContacts = "Izaberi iz kontakata",
-    copyCodePrefix = "Kopiraj kod: ",
-    copyVerificationCodePrefix = "Kopiraj verifikacioni kod: ",
-    codeCopiedToast = { code -> "Kod $code bezbedno kopiran" },
-    shieldSuspiciousBlocked = "Štit: Sumnjiv phishing link blokiran",
-    back = "Nazad",
-    protectedChannelSuffix = "Zaštićeni SMS/MMS kanal",
-    mmsAttachedTitle = "MMS Fotografija priložena",
-    mmsZeroPermissionSub = "Zero-Permission Photo Picker (bez pristupa celoj galeriji)",
-    removeMmsAttachment = "Ukloni MMS prilog",
-    attachMmsImage = "Dodaj MMS sliku",
-    addMmsCaptionPlaceholder = "Dodaj opis uz MMS...",
-    writeSmsPlaceholder = "Napiši SMS poruku...",
-    mmsModeIndicator = "MMS režim • Multimedijalna poruka",
-    send = "Pošalji",
-    cancel = "Otkaži",
-    confirm = "Potvrdi",
-    newSmsMmsDialogTitle = "Izaberi primaoca / pošiljaoca",
-    selectSenderSubtitle = "Izaberite osobu da biste nastavili prethodni čet ili započeli novu konverzaciju",
-    searchOrEnterNumberPlaceholder = "Pretraži kontakt ili unesi broj telefona...",
-    openChatWithNumberButton = { num -> "Otvori čet sa: $num" },
-    existingChatBadge = "Nastavi čet",
-    newChatBadge = "Nova konverzacija",
-    recipientLabel = "Primalac (broj telefona)",
-    messageBodyLabel = "Tekst poruke",
-    hdrMmsPhoto = "HDR MMS Fotografija",
-    messageOptionsTitle = "Opcije poruke",
-    forwardMessageOption = "Prosledi poruku",
-    deleteMessageOption = "Izbriši poruku",
-    copyMessageOption = "Kopiraj poruku",
-    highlightMessageOption = "Hajlajtuj poruku",
-    unhighlightMessageOption = "Ukloni hajlajt",
-    confirmDeleteSingleMessageTitle = "Izbriši poruku?",
-    confirmDeleteSingleMessageBody = "Da li želite da izbrišete ovu poruku iz konverzacije?",
-    forwardMessageDialogTitle = "Prosledi poruku osobi...",
-    messageCopiedToast = "Poruka je kopirana",
-    messageDeletedToast = "Poruka je izbrisana",
-    messageForwardedToast = { name -> "Poruka prosleđena za: $name" },
-    selectedThreadsCountLabel = { count -> "Označeno: $count" },
-    bottomBarDeleteTooltip = "Izbriši",
-    bottomBarMarkReadTooltip = "Označi kao pročitano",
-    bottomBarBlockSenderTooltip = "Blokiraj pošiljaoca",
-    bottomBarSelectAllTooltip = "Odaberi sve",
-    confirmBatchDeleteTitle = "Izbriši označene poruke?",
-    confirmBatchDeleteMessage = { count, days ->
-        "Da li želite da izbrišete označene poruke ($count)? Biće premeštene u Obrisane poruke i trajno uklonjene nakon $days dana."
-    },
-    confirmBatchMarkReadTitle = "Označi kao pročitano?",
-    confirmBatchMarkReadMessage = { count ->
-        "Da li želite da označite označene poruke ($count) kao pročitane?"
-    },
-    confirmBatchBlockTitle = "Blokiraj pošiljaoca?",
-    confirmBatchBlockMessage = { count ->
-        "Da li želite da blokirate poruke od označenih pošiljalaca ($count)?"
-    },
-    confirmSelectAllTitle = "Odaberi sve poruke?",
-    confirmSelectAllMessage = { count ->
-        "Da li želite da odaberete sve prikazane poruke ($count)?"
-    },
-    reorderCategoriesTitle = "Redosled kategorija poruka",
-    reorderCategoriesSub = "Zadržite dodir na kategoriji na glavnom ekranu ili pomerite kategorije ispod po želji",
-    reorderCategoriesHint = "Zadrži dodir za promenu redosleda",
-    resetCategoriesOrderButton = "Vrati podrazumevani redosled",
-    appearanceSectionTitle = "Izgled, Teme i Providnost",
-    appearanceSectionDesc = "Tema, slajder za providnost UI, monohromatske teme sa 10 akcenatskih boja, pozadine, ikonica i prikaz.",
-    uiTransparencyTitle = "Providnost interfejsa (UI)",
-    uiTransparencySub = "Podesite slajderom prozirnost staklenih kartica, menija i oblačića sa porukama",
-    themeAmoledTitle = "True AMOLED Glass (#000000)",
-    themeAmoledSub = "Čista crna podloga za OLED ekrane i maksimalnu uštedu baterije",
-    themeLightTitle = "Light Glass (Svetla tema)",
-    themeLightSub = "Prozračna svetla tema sa matiranim staklenim karticama",
-    themeDarkTitle = "Dark Glass (Tamna tema)",
-    themeDarkSub = "Duboka teget-siva podloga sa suptilnim odsjajem",
-    themeAutoTitle = "Auto (Sistemska tema)",
-    themeAutoSub = "Automatski prati dnevni/noćni režim telefona (Light / AMOLED)",
-    activePrefix = "Aktivno • ",
-    permissionsSectionTitle = "Dozvole i Podrazumevana Aplikacija",
-    smsMmsContactsPermLabel = "SMS, MMS i Kontakti dozvole",
-    permGranted = "Odobreno",
-    permDemoNotGranted = "Demo režim (Nije odobreno)",
-    defaultSmsRoleLabel = "Podrazumevana SMS aplikacija (ROLE_SMS)",
-    roleActive = "Aktivna",
-    roleNotSet = "Nije postavljena",
-    grantSmsMmsPermButton = "Odobri SMS i MMS dozvole",
-    setDefaultSmsRoleButton = "Postavi Txtura kao podrazumevanu SMS aplikaciju",
-    openSystemAppSettingsButton = "Otvori sistemska podešavanja aplikacije",
-    rationalePermanentDenial = "Dozvole su trajno odbijene. Otvorite Podešavanja aplikacije da biste omogućili SMS i MMS.",
-    rationaleRequired = "SMS dozvole su neophodne za čitanje i slanje poruka sa vašeg uređaja.",
-    rationaleLocalOnly = "Txtura koristi SMS, MMS i Kontakti dozvole isključivo lokalno na telefonu.",
-    setDefaultSmsInSystemToast = "Postavite Txtura kao podrazumevanu SMS aplikaciju u Podešavanjima sistema.",
-    dialerErrorToast = "Nije moguće otvoriti aplikaciju za pozive.",
-    contactsErrorToast = "Nije moguće otvoriti aplikaciju za kontakte.",
-    securitySectionTitle = "Aktivne Bezbednosne Mere",
-    secItem1Title = "Globalni Anti-Phishing, Malver i AI-Scam Štit",
-    secItem1Sub = "Višeslojni filter pretnji: detektuje lažne brendove (homograf napade), malver fajlove (.apk/.exe), rizične domene i AI/kripto prevare, dok bezbedne sajtove propušta bez lažnih alarma.",
-    secItem2Title = "IntentSanitizer & Zaštita od redirekcije",
-    secItem2Sub = "Svi dolazni SEND/SENDTO intenti prolaze strogu validaciju šeme i uklanjanje neovlašćenih URI zastavica.",
-    secItem3Title = "Zero-Permission Photo Picker za MMS",
-    secItem3Sub = "Prilaganje MMS slika ne traži pristup celoj galeriji (READ_MEDIA_IMAGES), već samo izabranoj fotografiji.",
-    secItem4Title = "Zaštićeno kopiranje 2FA/OTP kodova",
-    secItem4Sub = "Koristi EXTRA_IS_SENSITIVE zastavicu na Android 13+ kako bi sakrio verifikacione kodove sa ekrana.",
-    secItem5Title = "Zaštićeni sistemski prijemnici i SQL upiti",
-    secItem5Sub = "Prijemnici su zaključani BROADCAST_SMS / BROADCAST_WAP_PUSH dozvolama uz parametrizovane upite i isključen nešifrovani Cloud/ADB bekap.",
-    riskSafe = "Bezbedna poruka",
-    riskCaution = "Oprez: skraćeni ili nešifrovani link",
-    riskSuspicious = "Upozorenje: Detektovan fišing, malver ili prevara",
-    reasonHttp = "Nešifrovan HTTP link (podaci nisu zaštićeni TLS-om)",
-    reasonIpUrl = "Link vodi direktno na sirovu IP adresu ili nestandardni port",
-    reasonShortener = { host -> "Skraćeni link skriva pravu destinaciju ($host)" },
-    reasonHighRiskTld = { tld -> "Domen visokog rizika ($tld) često korišćen za fišing i malver" },
-    reasonSocialEngineering = "Socijalni inženjering / hitan zahtev u kombinaciji sa nepouzdanim linkom",
-    reasonMalwareFile = { ext -> "Link vodi ka potencijalno opasnom izvršnom/malver fajlu ($ext)" },
-    reasonHomographOrBrandSpoof = { target -> "Detektovano lažno predstavljanje brenda ili homograf domen ($target)" },
-    reasonAiOrCryptoScam = "Obrazac AI investicione prevare, lažnog posla ili lažnog hitnog broja",
-    reasonEmbeddedCredentialsUrl = "URL koristi '@' trik za maskiranje prave adrese sajta",
-    defaultSmsPromptTitle = "Podrazumevana SMS i MMS aplikacija",
-    defaultSmsPromptMessage = "Da li želite da podesite Txtura kao podrazumevanu aplikaciju za prijem SMS i MMS poruka?",
-    defaultSmsPromptConfirm = "Podesi kao podrazumevanu",
-    defaultSmsPromptLater = "Ne sada",
-    showContactPhotosTitle = "Prikazuj slike kontakata",
-    showContactPhotosSub = "Prikazuje fotografije i avatare kontakata u listi poruka i u zaglavlju razgovora",
-    mainLayoutModeTitle = "Prikaz glavnog prozora sa porukama",
-    mainLayoutModeSub = "Izaberite između podrazumevanog (Default) i kompaktnog prikaza glavnog prozora",
-    layoutModeDefault = "Default prikaz",
-    layoutModeCompact = "Kompaktni prikaz",
-    bubbleZoomHint = "Zumirajte sa dva prsta za promenu veličine oblačića",
-    swipeSectionTitle = "Poruke, Kategorije i Svajp radnje",
-    swipeSectionDesc = "Podesite brze svajp radnje, redosled kategorija i obrisane poruke.",
-    swipeRightLabel = "Radnja za svajp udesno (→)",
-    swipeLeftLabel = "Radnja za svajp ulevo (←)",
-    swipeActionPin = "Prikači / Otkači",
-    swipeActionDelete = "Obriši (u korpu)",
-    swipeActionCall = "Pozovi kontakt",
-    swipeActionMarkRead = "Označi pročitano",
-    swipeActionContact = "Detalji kontakta",
-    swipeActionNone = "Isključeno",
-    trashSectionTitle = "Obrisane poruke i čuvanje",
-    trashSectionDesc = "Obrisane poruke se premeštaju u folder Obrisane poruke odakle se mogu vratiti pre isteka roka.",
-    deletedMessagesTitle = "Obrisane poruke",
-    deletedMessagesSubtitle = { count, days -> "$count u obrisanim • Automatsko brisanje nakon $days dana" },
-    openDeletedMessagesButton = { count -> "Otvori obrisane poruke ($count)" },
-    autoDeleteDaysTitle = "Automatski izbriši obrisane poruke nakon",
-    autoDeleteDaysSub = "Poruke u folderu Obrisane poruke starije od izabranog broja dana se trajno brišu",
-    daysCountLabel = { days -> "$days dana" },
-    groupingModeTitle = "Grupisanje i sortiranje obrisanih poruka",
-    groupingModeSub = "Izaberite da li se obrisane poruke grupišu i sortiraju po datumu brisanja ili po kontaktu",
-    groupByDateLabel = "Po datumu brisanja",
-    groupByContactLabel = "Po kontaktu",
-    confirmDeleteTitle = "Premesti u obrisane poruke?",
-    confirmDeleteMessage = { name, days ->
-        "Da li ste sigurni da želite da obrišete razgovor sa „$name“? Poruka neće biti odmah trajno obrisana, već se premešta u Obrisane poruke odakle će biti automatski izbrisana nakon $days dana."
-    },
-    confirmMoveToTrashButton = "Premesti u obrisane",
-    confirmPermanentDeleteTitle = "Trajno brisanje poruke?",
-    confirmPermanentDeleteMessage = { name ->
-        "Da li želite da trajno izbrišete razgovor sa „$name“ iz foldera obrisanih poruka? Ova radnja se ne može poništiti."
-    },
-    confirmPermanentDeleteButton = "Trajno obriši",
-    restoreButton = "Vrati poruku",
-    deletePermanentlyButton = "Trajno obriši",
-    emptyTrashButton = "Isprazni obrisane",
-    emptyTrashMessage = "Nema poruka u folderu Obrisane poruke.",
-    daysRemainingBadge = { days -> "Još $days d." },
-    deletedOnPrefix = "Obrisano: ",
-    messagesCountLabel = { count ->
-        when {
-            (count % 10 == 1) && (count % 100 != 11) -> "$count poruka"
-            (count % 10 in 2..4) && (count % 100 !in 12..14) -> "$count poruke"
-            else -> "$count poruka"
+    // Main Screen Selection Mode & Top Actions
+    val selectedThreadsCountLabel: (Int) -> String = { count ->
+        if (isSerbian) "Označeno: $count" else "$count selected"
+    }
+    val bottomBarDeleteTooltip: String = s("Delete", "Izbriši")
+    val bottomBarMarkReadTooltip: String = s("Mark as read", "Označi kao pročitano")
+    val bottomBarSelectAllTooltip: String = s("Select all", "Odaberi sve")
+    val confirmBatchDeleteTitle: String = s("Delete selected messages?", "Izbriši označene poruke?")
+    val confirmBatchDeleteMessage: (Int, Int) -> String = { count, days ->
+        if (isSerbian) {
+            "Da li želite da izbrišete označene poruke ($count)? Biće premeštene u Obrisane poruke i trajno uklonjene nakon $days dana."
+        } else {
+            "Do you want to move $count selected conversation(s) to Trash? They will be permanently deleted after $days days."
         }
-    },
-    restoredToast = { name -> "Vraćene poruke za kontakt: $name" },
-    movedToTrashToast = { name -> "Premestili ste razgovor ($name) u Obrisane poruke" },
-    blockedSendersSectionTitle = "Blokiranje pošiljalaca poruka",
-    blockedSendersSectionDesc = "Dodajte ili uklonite blokirane pošiljaoce i brojeve telefona od kojih ne želite da primate poruke.",
-    addBlockedSenderPlaceholder = "Unesite broj telefona ili naziv pošiljaoca...",
-    blockSenderButton = "Blokiraj",
-    unblockSenderButton = "Odblokiraj",
-    blockedSendersEmpty = "Trenutno nema blokiranih pošiljalaca.",
-    senderBlockedToast = { addr -> "Blokiran pošiljalac: $addr" },
-    senderUnblockedToast = { addr -> "Odblokiran pošiljalac: $addr" },
-    wallpaperSectionTitle = "Pozadine i Teme",
-    wallpaperSectionDesc = "Izaberite jednu od 10 ugrađenih pozadina, 10 monohromatskih akcenatskih tema ili sliku iz galerije.",
-    mainWallpaperButton = "Pozadina glavnog prozora i akcenti",
-    chatWallpaperTooltip = "Pozadina četa za ovaj kontakt",
-    mainWallpaperDialogTitle = "Pozadina glavnog prozora",
-    chatWallpaperDialogTitle = { name -> "Pozadina četa: $name" },
-    pickWallpaperFromGallery = "Dodaj svoju sliku iz galerije",
-    customGalleryWallpaperActive = "Aktivna sopstvena slika iz galerije",
-    useMainWallpaperDefault = "Koristi pozadinu glavnog prozora",
-    wpDefault = "Podrazumevana Obsidijan Glass podloga",
-    wpAurora = "Polarna svetlost (Aurora)",
-    wpVelvetPlum = "Kraljevska šljiva (Velvet Plum)",
-    wpMidnightOcean = "Ponoćni okean",
-    wpSunsetHorizon = "Zalazak sunca (Horizon)",
-    wpEmeraldForest = "Smaragdna magla",
-    wpRoyalAmethyst = "Kraljevski ametist",
-    wpStarlightGalaxy = "Zvezdana galaksija",
-    wpCrimsonVelvet = "Grimizni somot (Velvet)",
-    wpArcticFrost = "Arktički led (Frost)",
-    wpObsidianGold = "Obsidijan i zlato",
-    wpMonoSlate = "Monohrom + Titanijum akcenat",
-    wpMonoSapphire = "Monohrom + Safirno plavi akcenat",
-    wpMonoSage = "Monohrom + Smaragdno zeleni akcenat",
-    wpMonoChampagne = "Monohrom + Zlatni akcenat",
-    wpMonoPlum = "Monohrom + Ametist ljubičasti akcenat",
-    wpMonoGraphite = "Monohrom + Srebrni/Oniks akcenat",
-    wpMonoRose = "Monohrom + Ružičasti akcenat",
-    wpMonoNavy = "Monohrom + Indigo teget akcenat",
-    wpMonoSmoke = "Monohrom + Tirkizni akcenat",
-    wpMonoEspresso = "Monohrom + Bakarni akcenat",
-    uiColorModeSectionTitle = "Režim palete boja",
-    uiColorModeSectionDesc = "Izaberite 10 višebojnih tema ili 10 monohromatskih tema (zavisno od svetlog/tamnog režima + 1 akcenatska boja)",
-    uiColorModeColorfulTitle = "Višebojne teme (10)",
-    uiColorModeColorfulDesc = "Bogate višebojne kombinacije sa komplementarnim akcentima",
-    uiColorModeMonochromeTitle = "Monohromatske teme (10)",
-    uiColorModeMonochromeDesc = "Prilagođene svetlom ili tamnom režimu sa 10 akcenatskih boja",
-    wallpaperTabColorful = "Višebojne (10)",
-    wallpaperTabMonochrome = "Monohrom + Akcenat (10)",
-    launcherIconShapeSectionTitle = "Stil ikonice aplikacije",
-    launcherIconShapeSectionDesc = "Izaberite oblik i stil prikaza ikonice na početnom ekranu",
-    launcherIconShapeCircle = "Krug",
-    launcherIconShapeSquircle = "Zaobljeni kvadrat",
-    launcherIconShapeRoundedSquare = "Zaobljena kutija",
-    launcherIconShapeTeardrop = "Kapljica",
-    launcherIconShapePebble = "Kamenčić",
-    launcherIconShapeSavedToast = { shape -> "Stil ikonice postavljen na: $shape" },
-    backupSectionTitle = "Bekap i vraćanje podataka",
-    backupSectionDesc = "Kreirajte rezervne kopije poruka i podešavanja ili vratite podatke iz fajla.",
-    localBackupTitle = "Lokalna rezervna kopija",
-    localBackupSub = "Izvezi sve poruke, pozadine i podešavanja u JSON fajl na uređaju",
-    createLocalBackupButton = "Kreiraj lokalnu kopiju",
-    restoreLocalBackupButton = "Vrati iz lokalnog fajla",
-    shareBackupButton = "Podeli / Pošalji fajl kopije",
-    googleAccountBackupTitle = "Google nalog i Google Drive",
-    googleAccountBackupSub = "Sačuvajte kopiju direktno na Google Drive ili sinhronizujte sa povezanim Google nalogom",
-    saveToGoogleDriveButton = "Sačuvaj na Google Drive",
-    restoreFromGoogleDriveButton = "Vrati sa Google Drive-a",
-    googleSystemBackupSettingsButton = "Podešavanja Google bekapa na telefonu",
-    googleAccountConnected = { email -> "Povezan Google nalog: $email" },
-    googleAccountDefaultLabel = "Povezano sa sistemskim Google nalogom",
-    googleDriveNotInstalled = "Aplikacija Google Drive nije instalirana, otvaramo izbornik datoteka.",
-    backupCreatedSuccess = { count, msgs -> "Uspešno kreirana rezervna kopija: $count razgovora, $msgs poruka" },
-    backupRestoreSuccess = { count, msgs -> "Uspešno vraćeno $count razgovora i $msgs poruka" },
-    backupErrorInvalid = "Nevažeća rezervna kopija ili oštećen format fajla.",
-    lastBackupLabel = { date -> "Poslednja rezervna kopija: $date" },
-    noPreviousBackup = "Još uvek nema kreiranih kopija",
-    confirmRestoreTitle = "Vraćanje iz rezervne kopije?",
-    confirmRestoreMessage = { date, count, msgs ->
-        "Da li želite da vratite podatke iz rezervne kopije ($date) koja sadrži $count razgovora i $msgs poruka? Postojeća podešavanja i poruke biće ažurirani."
-    },
-    confirmRestoreButton = "Vrati podatke"
-)
+    }
+    val confirmBatchMarkReadTitle: String = s("Mark selected as read?", "Označi kao pročitano?")
+    val confirmBatchMarkReadMessage: (Int) -> String = { count ->
+        if (isSerbian) {
+            "Da li želite da označite označene poruke ($count) kao pročitane?"
+        } else {
+            "Do you want to mark all messages in the $count selected conversation(s) as read?"
+        }
+    }
+    val confirmSelectAllTitle: String = s("Select all messages?", "Odaberi sve poruke?")
+    val confirmSelectAllMessage: (Int) -> String = { count ->
+        if (isSerbian) {
+            "Da li želite da odaberete sve prikazane poruke ($count)?"
+        } else {
+            "Do you want to select all $count displayed conversations?"
+        }
+    }
+    val threadsDeletedToast: (Int) -> String = { count ->
+        if (isSerbian) "Premešteno u obrisane poruke: $count" else "Moved $count conversation(s) to Deleted Messages"
+    }
+    val threadsMarkedReadToast: (Int) -> String = { count ->
+        if (isSerbian) "Označeno kao pročitano: $count" else "Marked $count conversation(s) as read"
+    }
+    val allMessagesMarkedReadToast: String = s(
+        "All messages marked as read",
+        "Sve poruke su označene kao pročitane",
+    )
+
+    // Settings Screen Categories
+    val appearanceSectionTitle: String = s("Appearance, Themes & Transparency", "Izgled, Teme i Providnost")
+    val appearanceSectionDesc: String = s(
+        "Light/Dark/AMOLED mode, UI transparency slider, 10 monochrome & 10 colorful themes, wallpapers, icon shape & layout.",
+        "Tema, slajder za providnost UI, monohromatske teme sa 10 akcenatskih boja, pozadine, ikonica i prikaz.",
+    )
+    val uiTransparencyTitle: String = s("UI Glass Opacity & Transparency", "Providnost interfejsa (UI)")
+    val uiTransparencySub: String = s(
+        "Adjust how translucent or solid the glass cards, bars, and bubbles appear",
+        "Podesite slajderom prozirnost staklenih kartica, menija i oblačića sa porukama",
+    )
+    val permissionsSectionTitle: String = s("Permissions & Default App", "Dozvole i Podrazumevana Aplikacija")
+    val smsMmsContactsPermLabel: String = s("SMS, MMS & Contacts permissions", "SMS, MMS i Kontakti dozvole")
+    val permGranted: String = s("Granted", "Odobreno")
+    val permDemoNotGranted: String = s("Demo mode (Not granted)", "Demo režim (Nije odobreno)")
+    val defaultSmsRoleLabel: String = s("Default SMS app (ROLE_SMS)", "Podrazumevana SMS aplikacija (ROLE_SMS)")
+    val roleActive: String = s("Active", "Aktivna")
+    val roleNotSet: String = s("Not set", "Nije postavljena")
+    val openSystemAppSettingsButton: String = s(
+        "Open system app settings",
+        "Otvori sistemska podešavanja aplikacije",
+    )
+    val rationalePermanentDenial: String = s(
+        "Permissions were permanently denied. Open App Settings to enable SMS & MMS.",
+        "Dozvole su trajno odbijene. Otvorite Podešavanja aplikacije da biste omogućili SMS i MMS.",
+    )
+    val rationaleRequired: String = s(
+        "SMS permissions are required to read and send messages on your device.",
+        "SMS dozvole su neophodne za čitanje i slanje poruka sa vašeg uređaja.",
+    )
+    val rationaleLocalOnly: String = s(
+        "Txtura uses SMS, MMS and Contacts permissions strictly on-device.",
+        "Txtura koristi SMS, MMS i Kontakti dozvole isključivo lokalno na telefonu.",
+    )
+    val setDefaultSmsInSystemToast: String = s(
+        "Set Txtura as your default SMS app in System Settings.",
+        "Postavite Txtura kao podrazumevanu SMS aplikaciju u Podešavanjima sistema.",
+    )
+    val dialerErrorToast: String = s("Unable to open phone dialer app.", "Nije moguće otvoriti aplikaciju za pozive.")
+    val contactsErrorToast: String = s("Unable to open contacts app.", "Nije moguće otvoriti aplikaciju za kontakte.")
+    val securitySectionTitle: String = s("Active Security Measures", "Aktivne Bezbednosne Mere")
+    val secItem1Title: String = s(
+        "Global Anti-Phishing, Malware & AI Scam Engine",
+        "Globalni Anti-Phishing, Malver i AI-Scam Štit",
+    )
+    val secItem1Sub: String = s(
+        "Multi-layer URL & threat analyzer: detects IDN homograph/brand spoofing, APK/EXE malware links, high-risk TLDs, and AI/crypto scams without flagging safe HTTPS links.",
+        "Višeslojni filter pretnji: detektuje lažne brendove (homograf napade), malver fajlove (.apk/.exe), rizične domene i AI/kripto prevare, dok bezbedne sajtove propušta bez lažnih alarma.",
+    )
+    val secItem2Title: String = s("IntentSanitizer & Redirection Guard", "IntentSanitizer & Zaštita od redirekcije")
+    val secItem2Sub: String = s(
+        "All incoming SEND/SENDTO intents undergo strict scheme validation and forbidden URI flag stripping.",
+        "Svi dolazni SEND/SENDTO intenti prolaze strogu validaciju šeme i uklanjanje neovlašćenih URI zastavica.",
+    )
+    val secItem3Title: String = s("Zero-Permission Photo Picker for MMS", "Zero-Permission Photo Picker za MMS")
+    val secItem3Sub: String = s(
+        "Attaching MMS images never requests full gallery access (READ_MEDIA_IMAGES), only the selected photo.",
+        "Prilaganje MMS slika ne traži pristup celoj galeriji (READ_MEDIA_IMAGES), već samo izabranoj fotografiji.",
+    )
+    val secItem4Title: String = s("Confidential 2FA/OTP Clipboard Copy", "Zaštićeno kopiranje 2FA/OTP kodova")
+    val secItem4Sub: String = s(
+        "Uses EXTRA_IS_SENSITIVE flag on Android 13+ to hide verification codes from clipboard previews.",
+        "Koristi EXTRA_IS_SENSITIVE zastavicu na Android 13+ kako bi sakrio verifikacione kodove sa ekrana.",
+    )
+    val secItem5Title: String = s(
+        "Protected System Receivers & Parameterized Queries",
+        "Zaštićeni sistemski prijemnici i SQL upiti",
+    )
+    val secItem5Sub: String = s(
+        "Receivers are locked with BROADCAST_SMS / BROADCAST_WAP_PUSH permissions and unencrypted cloud backup is disabled.",
+        "Prijemnici su zaključani BROADCAST_SMS / BROADCAST_WAP_PUSH dozvolama uz parametrizovane upite i isključen nešifrovani Cloud/ADB bekap.",
+    )
+
+    // Security Analyzer
+    val riskSuspicious: String = s(
+        "Warning: Malicious link, Phishing or Scam detected",
+        "Upozorenje: Detektovan fišing, malver ili prevara",
+    )
+    val reasonHttp: String = s(
+        "Unencrypted HTTP link (not protected by TLS)",
+        "Nešifrovan HTTP link (podaci nisu zaštićeni TLS-om)",
+    )
+    val reasonIpUrl: String = s(
+        "Link points directly to a raw IP address or non-standard port",
+        "Link vodi direktno na sirovu IP adresu ili nestandardni port",
+    )
+    val reasonShortener: (String) -> String = { host ->
+        if (isSerbian) "Skraćeni link skriva pravu destinaciju ($host)"
+        else "Shortened link hides true destination ($host)"
+    }
+    val reasonHighRiskTld: (String) -> String = { tld ->
+        if (isSerbian) "Domen visokog rizika ($tld) često korišćen za fišing i malver"
+        else "High-risk domain extension ($tld) frequently abused in phishing & malware"
+    }
+    val reasonSocialEngineering: String = s(
+        "Urgent social engineering lure combined with an untrusted link",
+        "Socijalni inženjering / hitan zahtev u kombinaciji sa nepouzdanim linkom",
+    )
+    val reasonMalwareFile: (String) -> String = { ext ->
+        if (isSerbian) "Link vodi ka potencijalno opasnom izvršnom/malver fajlu ($ext)"
+        else "Dangerous executable/malware file link detected ($ext)"
+    }
+    val reasonHomographOrBrandSpoof: (String) -> String = { target ->
+        if (isSerbian) "Detektovano lažno predstavljanje brenda ili homograf domen ($target)"
+        else "Brand impersonation or IDN homograph spoofing detected ($target)"
+    }
+    val reasonAiOrCryptoScam: String = s(
+        "AI investment, crypto fraud, fake task or family impersonation scam pattern",
+        "Obrazac AI investicione prevare, lažnog posla ili lažnog hitnog broja",
+    )
+    val reasonEmbeddedCredentialsUrl: String = s(
+        "URL uses '@' redirection trick to disguise real destination",
+        "URL koristi '@' trik za maskiranje prave adrese sajta",
+    )
+    val defaultSmsPromptTitle: String = s("Default SMS & MMS App", "Podrazumevana SMS i MMS aplikacija")
+    val defaultSmsPromptMessage: String = s(
+        "Would you like to set Txtura as your default application for receiving SMS and MMS messages?",
+        "Da li želite da podesite Txtura kao podrazumevanu aplikaciju za prijem SMS i MMS poruka?",
+    )
+    val defaultSmsPromptConfirm: String = s("Set as Default", "Podesi kao podrazumevanu")
+    val defaultSmsPromptLater: String = s("Not now", "Ne sada")
+    val showContactPhotosTitle: String = s("Show contact photos", "Prikazuj slike kontakata")
+    val showContactPhotosSub: String = s(
+        "Display contact photos and avatars in the message list and conversation header",
+        "Prikazuje fotografije i avatare kontakata u listi poruka i u zaglavlju razgovora",
+    )
+    val mainLayoutModeSub: String = s(
+        "Choose between Default or Compact view for the main messages window",
+        "Izaberite između podrazumevanog (Default) i kompaktnog prikaza glavnog prozora",
+    )
+    val layoutModeDefault: String = s("Default view", "Default prikaz")
+    val layoutModeCompact: String = s("Compact view", "Kompaktni prikaz")
+
+    // Swipe Gestures & Trash / Deleted Messages
+    val swipeSectionTitle: String = s("Messages, Categories & Swipe Actions", "Poruke, Kategorije i Svajp radnje")
+    val swipeSectionDesc: String = s(
+        "Configure swipe gestures, category order, and deleted messages retention.",
+        "Podesite brze svajp radnje, redosled kategorija i obrisane poruke.",
+    )
+    val swipeRightLabel: String = s("Swipe Right Action (→)", "Radnja za svajp udesno (→)")
+    val swipeLeftLabel: String = s("Swipe Left Action (←)", "Radnja za svajp ulevo (←)")
+    val swipeActionPin: String = s("Pin / Unpin", "Prikači / Otkači")
+    val swipeActionDelete: String = s("Delete (Trash)", "Obriši (u korpu)")
+    val swipeActionCall: String = s("Call sender", "Pozovi kontakt")
+    val swipeActionMarkRead: String = s("Mark read", "Označi pročitano")
+    val swipeActionContact: String = s("Contact card", "Detalji kontakta")
+    val swipeActionNone: String = s("Disabled", "Isključeno")
+    val deletedMessagesTitle: String = s("Deleted Messages", "Obrisane poruke")
+    val deletedMessagesSubtitle: (Int, Int) -> String = { count, days ->
+        if (isSerbian) "$count u obrisanim • Automatsko brisanje nakon $days dana"
+        else "$count in Trash • Auto-delete after $days days"
+    }
+    val openDeletedMessagesButton: (Int) -> String = { count ->
+        if (isSerbian) "Otvori obrisane poruke ($count)" else "Open Deleted Messages ($count)"
+    }
+    val autoDeleteDaysTitle: String = s("Auto-delete deleted messages after", "Automatski izbriši obrisane poruke nakon")
+    val daysCountLabel: (Int) -> String = { days ->
+        if (isSerbian) "$days dana" else "$days days"
+    }
+    val groupingModeTitle: String = s("Sort & group deleted messages by", "Grupisanje i sortiranje obrisanih poruka")
+    val groupByDateLabel: String = s("By Deletion Date", "Po datumu brisanja")
+    val groupByContactLabel: String = s("By Contact", "Po kontaktu")
+    val confirmDeleteTitle: String = s("Move to Deleted Messages?", "Premesti u obrisane poruke?")
+    val confirmDeleteMessage: (String, Int) -> String = { name, days ->
+        if (isSerbian) {
+            "Da li ste sigurni da želite da obrišete razgovor sa „$name“? Poruka neće biti odmah trajno obrisana, već se premešta u Obrisane poruke odakle će biti automatski izbrisana nakon $days dana."
+        } else {
+            "Are you sure you want to delete the conversation with \"$name\"? It will be moved to Deleted Messages and automatically permanently deleted after $days days."
+        }
+    }
+    val confirmMoveToTrashButton: String = s("Move to Trash", "Premesti u obrisane")
+    val confirmPermanentDeleteTitle: String = s("Delete Permanently?", "Trajno brisanje poruke?")
+    val confirmPermanentDeleteMessage: (String) -> String = { name ->
+        if (isSerbian) {
+            "Da li želite da trajno izbrišete razgovor sa „$name“ iz foldera obrisanih poruka? Ova radnja se ne može poništiti."
+        } else {
+            "Permanently delete the conversation with \"$name\"? This action cannot be undone."
+        }
+    }
+    val confirmPermanentDeleteButton: String = s("Delete Forever", "Trajno obriši")
+    val restoreButton: String = s("Restore", "Vrati poruku")
+    val deletePermanentlyButton: String = s("Delete forever", "Trajno obriši")
+    val emptyTrashButton: String = s("Empty Trash", "Isprazni obrisane")
+    val emptyTrashMessage: String = s("No deleted messages in Trash.", "Nema poruka u folderu Obrisane poruke.")
+    val daysRemainingBadge: (Int) -> String = { days ->
+        if (isSerbian) "Još $days d." else "${days}d left"
+    }
+    val deletedOnPrefix: String = s("Deleted: ", "Obrisano: ")
+    val messagesCountLabel: (Int) -> String = { count ->
+        if (isSerbian) {
+            when {
+                ((count % 10) == 1) && ((count % 100) != 11) -> "$count poruka"
+                ((count % 10) in 2..4) && ((count % 100) !in 12..14) -> "$count poruke"
+                else -> "$count poruka"
+            }
+        } else {
+            if (count == 1) "1 message" else "$count messages"
+        }
+    }
+    val restoredToast: (String) -> String = { name ->
+        if (isSerbian) "Vraćene poruke za kontakt: $name" else "Restored messages from $name"
+    }
+    val movedToTrashToast: (String) -> String = { name ->
+        if (isSerbian) "Premestili ste razgovor ($name) u Obrisane poruke" else "Moved $name to Deleted Messages"
+    }
+
+    // Blocked Senders Section
+    val blockedSendersSectionTitle: String = s("Blocked Senders", "Blokiranje pošiljalaca poruka")
+    val blockedSendersSectionDesc: String = s(
+        "Manage blocked phone numbers and senders whose messages will be blocked.",
+        "Dodajte ili uklonite blokirane pošiljaoce i brojeve telefona od kojih ne želite da primate poruke.",
+    )
+    val addBlockedSenderPlaceholder: String = s(
+        "Enter phone number or sender ID...",
+        "Unesite broj telefona ili naziv pošiljaoca...",
+    )
+    val blockSenderButton: String = s("Block", "Blokiraj")
+    val unblockSenderButton: String = s("Unblock", "Odblokiraj")
+    val blockedSendersEmpty: String = s("No blocked senders.", "Trenutno nema blokiranih pošiljalaca.")
+    val senderBlockedToast: (String) -> String = { addr ->
+        if (isSerbian) "Blokiran pošiljalac: $addr" else "Blocked sender: $addr"
+    }
+    val senderUnblockedToast: (String) -> String = { addr ->
+        if (isSerbian) "Odblokiran pošiljalac: $addr" else "Unblocked sender: $addr"
+    }
+
+    // Wallpapers & Backgrounds
+    val wallpaperSectionTitle: String = s("Backgrounds & Themes", "Pozadine i Teme")
+    val chatWallpaperTooltip: String = s("Chat wallpaper for this contact", "Pozadina četa za ovaj kontakt")
+    val chatWallpaperDialogTitle: (String) -> String = { name ->
+        if (isSerbian) "Pozadina četa: $name" else "Wallpaper: $name"
+    }
+    val pickWallpaperFromGallery: String = s("Add Photo from Gallery", "Dodaj svoju sliku iz galerije")
+    val customGalleryWallpaperActive: String = s(
+        "Custom Gallery Photo Active",
+        "Aktivna sopstvena slika iz galerije",
+    )
+    val useMainWallpaperDefault: String = s("Use Main Window Wallpaper", "Koristi pozadinu glavnog prozora")
+    val wpDefault: String = s("Default Obsidian Glass", "Podrazumevana Obsidijan Glass podloga")
+    val wpAurora: String = s("Aurora Borealis", "Polarna svetlost (Aurora)")
+    val wpVelvetPlum: String = s("Velvet Plum", "Kraljevska šljiva (Velvet Plum)")
+    val wpMidnightOcean: String = s("Midnight Ocean", "Ponoćni okean")
+    val wpSunsetHorizon: String = s("Sunset Horizon", "Zalazak sunca (Horizon)")
+    val wpEmeraldForest: String = s("Emerald Mist", "Smaragdna magla")
+    val wpRoyalAmethyst: String = s("Royal Amethyst", "Kraljevski ametist")
+    val wpStarlightGalaxy: String = s("Starlight Galaxy", "Zvezdana galaksija")
+    val wpCrimsonVelvet: String = s("Crimson Velvet", "Grimizni somot (Velvet)")
+    val wpArcticFrost: String = s("Arctic Frost", "Arktički led (Frost)")
+    val wpObsidianGold: String = s("Obsidian & Gold", "Obsidijan i zlato")
+    val wpMonoSlate: String = s("Monochrome + Slate Accent", "Monohrom + Titanijum akcenat")
+    val wpMonoSapphire: String = s("Monochrome + Sapphire Accent", "Monohrom + Safirno plavi akcenat")
+    val wpMonoSage: String = s("Monochrome + Emerald Accent", "Monohrom + Smaragdno zeleni akcenat")
+    val wpMonoChampagne: String = s("Monochrome + Gold Accent", "Monohrom + Zlatni akcenat")
+    val wpMonoPlum: String = s("Monochrome + Amethyst Accent", "Monohrom + Ametist ljubičasti akcenat")
+    val wpMonoGraphite: String = s("Monochrome + Silver/Onyx Accent", "Monohrom + Srebrni/Oniks akcenat")
+    val wpMonoRose: String = s("Monochrome + Rose Accent", "Monohrom + Ružičasti akcenat")
+    val wpMonoNavy: String = s("Monochrome + Indigo Accent", "Monohrom + Indigo teget akcenat")
+    val wpMonoSmoke: String = s("Monochrome + Teal Accent", "Monohrom + Tirkizni akcenat")
+    val wpMonoEspresso: String = s("Monochrome + Copper Accent", "Monohrom + Bakarni akcenat")
+
+    // Txtura Tactile Background Textures
+    val textureSectionTitle: String = s("Txtura Background Texture", "Tekstura pozadine (Txtura)")
+    val textureSectionSub: String = s(
+        "Each theme has a matching signature texture, or choose any texture pattern below",
+        "Svaka tema ima prilagođenu teksturu, a možete izabrati i bilo koju teksturu po želji",
+    )
+    val texAutoTheme: String = s("Auto (Theme Texture)", "Automatska (prema temi)")
+    val texSilkWeave: String = s("Silk Weave", "Svileno tkanje")
+    val texAuroraRibbons: String = s("Aurora Silk Waves", "Svileni talasi")
+    val texVelvetNap: String = s("Crushed Velvet", "Kraljevski somot")
+    val texOceanCaustics: String = s("Ocean Ripples", "Vodeni talasi")
+    val texSandDunes: String = s("Sandstone Dunes", "Peščane dine")
+    val texOrganicBotanical: String = s("Botanical & Woodgrain", "Organski godovi")
+    val texCrystalFacets: String = s("Crystal Facets", "Kristalne fasete")
+    val texConstellationMesh: String = s("Starlight Mesh", "Zvezdana mreža")
+    val texDamaskJacquard: String = s("Damask Jacquard", "Žakar brokat")
+    val texFrostCrystals: String = s("Frost Crystals", "Ledeni kristali")
+    val texKintsugiMarble: String = s("Kintsugi Marble", "Mermer i zlato")
+    val texSlateStrata: String = s("Slate Stone", "Škriljac kamen")
+    val texBrushedMetal: String = s("Brushed Titanium", "Brušeni titanijum")
+    val texLinenCanvas: String = s("Linen Canvas", "Laneno platno")
+    val texFlutedGlass: String = s("Fluted Glass", "Rebrasto staklo")
+    val texSuedeMicrofiber: String = s("Suede Microfiber", "Antilop koža")
+    val texCarbonTwill: String = s("Carbon Fiber", "Karbonska vlakna")
+    val texCottonPaper: String = s("Cotton Rag Paper", "Pamučni papir")
+    val texHerringboneTwill: String = s("Herringbone Weave", "Riblja kost")
+    val texTopographicContour: String = s("Topographic Relief", "Topografski reljef")
+    val texPebbledLeather: String = s("Pebbled Leather", "Zrnasta koža")
+    val texNone: String = s("No Texture (Smooth)", "Bez teksture (Glatko)")
+
+    // UI Color Mode
+    val uiColorModeColorfulTitle: String = s("Colorful (10)", "Višebojne (10)")
+    val uiColorModeMonochromeTitle: String = s("Monochrome (10)", "Monohrom (10)")
+    val uiColorModeMonochromeDesc: String = s(
+        "Follows Light or Dark mode with your choice of 10 single accent colors",
+        "Prilagođene svetlom ili tamnom režimu sa 10 akcenatskih boja",
+    )
+    val wallpaperTabColorful: String = s("Colorful (10)", "Višebojne (10)")
+    val wallpaperTabMonochrome: String = s("Monochrome (10)", "Monohrom (10)")
+
+    // Launcher Icon Shape Style
+    val launcherIconShapeSectionTitle: String = s("Launcher Icon Style", "Stil ikonice aplikacije")
+    val launcherIconShapeCircle: String = s("Circle", "Krug")
+    val launcherIconShapeSquircle: String = s("Squircle", "Zaobljeni kvadrat")
+    val launcherIconShapeRoundedSquare: String = s("Rounded Box", "Zaobljena kutija")
+    val launcherIconShapeTeardrop: String = s("Teardrop", "Kapljica")
+    val launcherIconShapePebble: String = s("Pebble", "Kamenčić")
+    val launcherIconShapeSavedToast: (String) -> String = { shape ->
+        if (isSerbian) "Stil ikonice postavljen na: $shape" else "Launcher icon style set to $shape"
+    }
+
+    // Backup & Restore
+    val backupSectionTitle: String = s("Backup & Restore", "Bekap i vraćanje podataka")
+    val backupSectionDesc: String = s(
+        "Create local backups or export your conversations and settings.",
+        "Kreirajte rezervne kopije poruka i podešavanja ili vratite podatke iz fajla.",
+    )
+    val createLocalBackupButton: String = s("Create Local Backup", "Kreiraj lokalnu kopiju")
+    val restoreLocalBackupButton: String = s("Restore from Local File", "Vrati iz lokalnog fajla")
+    val shareBackupButton: String = s("Share / Export Backup File", "Podeli / Pošalji fajl kopije")
+
+    // Sub-item titles for Settings
+    val subSettingThemeModeTitle: String = s("Theme Mode (AMOLED / Light / Dark / Auto)", "Režim teme (AMOLED / Svetla / Tamna / Auto)")
+
+    // Chat Top-Right 3-Dots Menu & Block Contact Confirmation
+    val moreOptionsTooltip: String = s("More options", "Više opcija")
+    val blockContactOption: String = s("Block messages from this contact", "Blokiraj poruke od ovog kontakta")
+    val confirmBlockContactTitle: String = s("Block this contact?", "Blokiraj kontakt?")
+    val confirmBlockContactMessage: (String, String) -> String = { name, addr ->
+        if (isSerbian) {
+            "Da li želite da blokirate sve poruke od kontakta „$name“ ($addr)?"
+        } else {
+            "Are you sure you want to block all messages from \"$name\" ($addr)?"
+        }
+    }
+    val backupCreatedSuccess: (Int, Int) -> String = { count, msgs ->
+        if (isSerbian) "Uspešno kreirana rezervna kopija: $count razgovora, $msgs poruka"
+        else "Backup created: $count conversations, $msgs messages"
+    }
+    val backupRestoreSuccess: (Int, Int) -> String = { count, msgs ->
+        if (isSerbian) "Uspešno vraćeno $count razgovora i $msgs poruka"
+        else "Restored $count conversations and $msgs messages successfully"
+    }
+    val backupErrorInvalid: String = s(
+        "Invalid or corrupted backup file.",
+        "Nevažeća rezervna kopija ili oštećen format fajla.",
+    )
+    val lastBackupLabel: (String) -> String = { date ->
+        if (isSerbian) "Poslednja rezervna kopija: $date" else "Last backup: $date"
+    }
+    val noPreviousBackup: String = s("No backup created yet", "Još uvek nema kreiranih kopija")
+    val confirmRestoreTitle: String = s("Restore from Backup?", "Vraćanje iz rezervne kopije?")
+    val confirmRestoreMessage: (String, Int, Int) -> String = { date, count, msgs ->
+        if (isSerbian) {
+            "Da li želite da vratite podatke iz rezervne kopije ($date) koja sadrži $count razgovora i $msgs poruka? Postojeća podešavanja i poruke biće ažurirani."
+        } else {
+            "Do you want to restore data from backup ($date) containing $count conversations and $msgs messages? Existing settings and messages will be updated."
+        }
+    }
+    val confirmRestoreButton: String = s("Restore Data", "Vrati podatke")
+}
+
+private val EnglishStrings = AppStrings(isSerbian = false)
+private val SerbianStrings = AppStrings(isSerbian = true)
 
 object TxturaStrings {
 

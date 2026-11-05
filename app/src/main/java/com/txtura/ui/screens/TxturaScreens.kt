@@ -11,7 +11,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,12 +18,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -49,7 +48,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -61,6 +61,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -70,13 +73,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -86,6 +92,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.txtura.data.BackupRestorePayload
 import com.txtura.data.ChatMessage
 import com.txtura.data.ContactPickerItem
@@ -99,12 +106,15 @@ import com.txtura.data.SwipeAction
 import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
+import com.txtura.data.WallpaperTexture
 import com.txtura.security.SecurityRiskLevel
+import com.txtura.ui.components.GlassAlertDialog
 import com.txtura.ui.components.GlassBackground
 import com.txtura.ui.components.GlassCard
 import com.txtura.ui.components.GlassIconButton
 import com.txtura.ui.components.GlassTooltipIconButton
 import com.txtura.ui.components.TxturaIcons
+import com.txtura.ui.components.drawTxturaTexture
 import com.txtura.ui.i18n.AppStrings
 import com.txtura.ui.i18n.TxturaStrings
 import com.txtura.ui.theme.LocalGlassPalette
@@ -122,7 +132,6 @@ import kotlin.math.roundToInt
 private enum class BatchSelectionAction {
     DELETE,
     MARK_READ,
-    BLOCK_SENDER,
     SELECT_ALL
 }
 
@@ -144,30 +153,26 @@ fun ConversationsListScreen(
     onDeleteSelectedThreads: (Set<Long>) -> Unit = {},
     onMarkThreadRead: (Long) -> Unit = {},
     onMarkSelectedThreadsRead: (Set<Long>) -> Unit = {},
-    onBlockSelectedSenders: (Set<String>) -> Unit = {},
     onCallSender: (String) -> Unit,
     onOpenContact: (String, String) -> Unit,
     onCopyOtp: (String) -> Unit,
     onOpenNewMessage: () -> Unit,
     onOpenDeletedMessages: () -> Unit = {},
     onMarkAllRead: () -> Unit = {},
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
 ) {
     val strings = TxturaStrings.current()
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf(value = "") }
     val activeCategories = remember(categoryOrder) {
-        if (categoryOrder.isEmpty()) ConversationFilter.defaultOrder else categoryOrder
+        categoryOrder.ifEmpty { ConversationFilter.defaultOrder }
     }
-    var selectedFilter by remember { mutableStateOf(activeCategories.firstOrNull() ?: ConversationFilter.PEOPLE) }
-    var showMarkAllReadConfirmation by remember { mutableStateOf(false) }
-
-    // Category reorder dialog / mode triggered by long-pressing any category chip
-    var categoryBeingReordered by remember { mutableStateOf<ConversationFilter?>(null) }
+    var selectedFilter by remember { mutableStateOf(value = activeCategories.firstOrNull() ?: ConversationFilter.PEOPLE) }
+    var showMarkAllReadConfirmation by remember { mutableStateOf(value = false) }
 
     // Multi-selection mode triggered by long-pressing any conversation card on the main screen
-    var isSelectionMode by remember { mutableStateOf(false) }
-    var selectedThreadIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
-    var pendingBatchAction by remember { mutableStateOf<BatchSelectionAction?>(null) }
+    var isSelectionMode by remember { mutableStateOf(value = false) }
+    var selectedThreadIds by remember { mutableStateOf<Set<Long>>(value = emptySet()) }
+    var pendingBatchAction by remember { mutableStateOf<BatchSelectionAction?>(value = null) }
 
     BackHandler(enabled = isSelectionMode) {
         isSelectionMode = false
@@ -175,7 +180,10 @@ fun ConversationsListScreen(
     }
 
     val serviceThreadById = remember(threads) {
-        threads.associate { thread -> thread.id to isServiceThread(thread) }
+        threads.associateBy(
+            keySelector = ConversationThread::id,
+            valueTransform = ::isServiceThread
+        )
     }
 
     val filteredThreads = remember(threads, searchQuery, selectedFilter, serviceThreadById) {
@@ -183,7 +191,7 @@ fun ConversationsListScreen(
             val matchesSearch = searchQuery.isBlank() ||
                 thread.contactName.contains(searchQuery, ignoreCase = true) ||
                 thread.address.contains(searchQuery, ignoreCase = true) ||
-                thread.messages.any { it.body.contains(searchQuery, ignoreCase = true) }
+                thread.messages.any { msg -> msg.body.contains(searchQuery, ignoreCase = true) }
 
             val matchesFilter = when (selectedFilter) {
                 ConversationFilter.PEOPLE -> isStandardPersonThread(thread, serviceThreadById[thread.id] == true)
@@ -196,158 +204,131 @@ fun ConversationsListScreen(
         }
     }
 
-    // Confirmation dialog for "Označi sve kao pročitano" in the top bar
-    if (showMarkAllReadConfirmation) {
+    GlassBackground(wallpaperConfig = mainWallpaper) {
         val palette = LocalGlassPalette.current
-        AlertDialog(
-            onDismissRequest = { showMarkAllReadConfirmation = false },
-            containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-            titleContentColor = palette.textPrimary,
-            textContentColor = palette.textSecondary,
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = TxturaIcons.CheckDouble,
-                        contentDescription = null,
-                        tint = palette.accentPrimary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
+
+        // Confirmation dialog for "Označi sve kao pročitano" in the top bar
+        if (showMarkAllReadConfirmation) {
+            GlassAlertDialog(
+                onDismissRequest = { showMarkAllReadConfirmation = false },
+                accentBorderColor = palette.accentPrimary,
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = TxturaIcons.CheckDouble,
+                            contentDescription = null,
+                            tint = palette.accentPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = strings.confirmMarkAllReadTitle,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = palette.textPrimary
+                        )
+                    }
+                },
+                text = {
                     Text(
-                        text = strings.confirmMarkAllReadTitle,
+                        text = strings.confirmMarkAllReadMessage,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showMarkAllReadConfirmation = false
+                            onMarkAllRead()
+                        }
+                    ) {
+                        Text(
+                            text = strings.confirmMarkAllReadButton,
+                            color = palette.accentPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showMarkAllReadConfirmation = false }) {
+                        Text(strings.cancel, color = palette.textSecondary)
+                    }
+                }
+            )
+        }
+
+        // Confirmation dialog for selection mode actions (Delete, Mark Read, Select All)
+        val batchAction = pendingBatchAction
+        if (batchAction != null) {
+            val count = selectedThreadIds.size
+            val titleText = when (batchAction) {
+                BatchSelectionAction.DELETE -> strings.confirmBatchDeleteTitle
+                BatchSelectionAction.MARK_READ -> strings.confirmBatchMarkReadTitle
+                BatchSelectionAction.SELECT_ALL -> strings.confirmSelectAllTitle
+            }
+            val bodyText = when (batchAction) {
+                BatchSelectionAction.DELETE -> strings.confirmBatchDeleteMessage(count, autoDeleteDays)
+                BatchSelectionAction.MARK_READ -> strings.confirmBatchMarkReadMessage(count)
+                BatchSelectionAction.SELECT_ALL -> strings.confirmSelectAllMessage(filteredThreads.size)
+            }
+            val accent = when (batchAction) {
+                BatchSelectionAction.DELETE -> palette.dangerColor
+                BatchSelectionAction.MARK_READ, BatchSelectionAction.SELECT_ALL -> palette.accentPrimary
+            }
+
+            GlassAlertDialog(
+                onDismissRequest = { pendingBatchAction = null },
+                accentBorderColor = accent,
+                title = {
+                    Text(
+                        text = titleText,
                         style = MaterialTheme.typography.titleLarge,
                         color = palette.textPrimary
                     )
-                }
-            },
-            text = {
-                Text(
-                    text = strings.confirmMarkAllReadMessage,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = palette.textPrimary
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showMarkAllReadConfirmation = false
-                        onMarkAllRead()
-                    }
-                ) {
+                },
+                text = {
                     Text(
-                        text = strings.confirmMarkAllReadButton,
-                        color = palette.accentPrimary,
-                        fontWeight = FontWeight.Bold
+                        text = bodyText,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary
                     )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showMarkAllReadConfirmation = false }) {
-                    Text(strings.cancel, color = palette.textSecondary)
-                }
-            }
-        )
-    }
-
-    // Confirmation dialog for each of the 4 bottom-bar actions in selection mode
-    val batchAction = pendingBatchAction
-    if (batchAction != null) {
-        val palette = LocalGlassPalette.current
-        val count = selectedThreadIds.size
-        val titleText = when (batchAction) {
-            BatchSelectionAction.DELETE -> strings.confirmBatchDeleteTitle
-            BatchSelectionAction.MARK_READ -> strings.confirmBatchMarkReadTitle
-            BatchSelectionAction.BLOCK_SENDER -> strings.confirmBatchBlockTitle
-            BatchSelectionAction.SELECT_ALL -> strings.confirmSelectAllTitle
-        }
-        val bodyText = when (batchAction) {
-            BatchSelectionAction.DELETE -> strings.confirmBatchDeleteMessage(count, autoDeleteDays)
-            BatchSelectionAction.MARK_READ -> strings.confirmBatchMarkReadMessage(count)
-            BatchSelectionAction.BLOCK_SENDER -> strings.confirmBatchBlockMessage(count)
-            BatchSelectionAction.SELECT_ALL -> strings.confirmSelectAllMessage(filteredThreads.size)
-        }
-        val accent = when (batchAction) {
-            BatchSelectionAction.DELETE, BatchSelectionAction.BLOCK_SENDER -> palette.dangerColor
-            BatchSelectionAction.MARK_READ, BatchSelectionAction.SELECT_ALL -> palette.accentPrimary
-        }
-
-        AlertDialog(
-            onDismissRequest = { pendingBatchAction = null },
-            containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-            titleContentColor = palette.textPrimary,
-            textContentColor = palette.textSecondary,
-            title = {
-                Text(
-                    text = titleText,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = palette.textPrimary
-                )
-            },
-            text = {
-                Text(
-                    text = bodyText,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = palette.textPrimary
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingBatchAction = null
-                        when (batchAction) {
-                            BatchSelectionAction.DELETE -> {
-                                onDeleteSelectedThreads(selectedThreadIds)
-                                isSelectionMode = false
-                                selectedThreadIds = emptySet()
-                            }
-                            BatchSelectionAction.MARK_READ -> {
-                                onMarkSelectedThreadsRead(selectedThreadIds)
-                                isSelectionMode = false
-                                selectedThreadIds = emptySet()
-                            }
-                            BatchSelectionAction.BLOCK_SENDER -> {
-                                val addressesToBlock = threads
-                                    .filter { it.id in selectedThreadIds }
-                                    .map { it.address }
-                                    .toSet()
-                                onBlockSelectedSenders(addressesToBlock)
-                                isSelectionMode = false
-                                selectedThreadIds = emptySet()
-                            }
-                            BatchSelectionAction.SELECT_ALL -> {
-                                selectedThreadIds = filteredThreads.map { it.id }.toSet()
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            pendingBatchAction = null
+                            when (batchAction) {
+                                BatchSelectionAction.DELETE -> {
+                                    onDeleteSelectedThreads(selectedThreadIds)
+                                    isSelectionMode = false
+                                    selectedThreadIds = emptySet()
+                                }
+                                BatchSelectionAction.MARK_READ -> {
+                                    onMarkSelectedThreadsRead(selectedThreadIds)
+                                    isSelectionMode = false
+                                    selectedThreadIds = emptySet()
+                                }
+                                BatchSelectionAction.SELECT_ALL -> {
+                                    selectedThreadIds = filteredThreads.asSequence().map { it.id }.toSet()
+                                }
                             }
                         }
+                    ) {
+                        Text(
+                            text = strings.confirm,
+                            color = accent,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
-                ) {
-                    Text(
-                        text = strings.confirm,
-                        color = accent,
-                        fontWeight = FontWeight.Bold
-                    )
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingBatchAction = null }) {
+                        Text(strings.cancel, color = palette.textSecondary)
+                    }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingBatchAction = null }) {
-                    Text(strings.cancel, color = palette.textSecondary)
-                }
-            }
-        )
-    }
+            )
+        }
 
-    // Category Reorder Dialog opened when holding/long-pressing any category chip
-    if (categoryBeingReordered != null) {
-        CategoryReorderDialog(
-            currentOrder = activeCategories,
-            highlightedCategory = categoryBeingReordered,
-            strings = strings,
-            onUpdateOrder = onUpdateCategoryOrder,
-            onDismiss = { categoryBeingReordered = null }
-        )
-    }
-
-    GlassBackground(wallpaperConfig = mainWallpaper) {
-        val palette = LocalGlassPalette.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -390,59 +371,100 @@ fun ConversationsListScreen(
                     )
                 }
 
-                // Top-right actions: New Message (+), Trash, Mark All Read (between Trash & Settings), Settings Gear
+                // Top-right actions:
+                // When in selection mode, hide standard top-right icons and show selection actions
+                // (Delete, Mark as read, Select all) in the top-right corner. Once selection finishes,
+                // restore standard top-right icons (+, Trash, Mark All Read, Settings Gear).
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    GlassTooltipIconButton(
-                        icon = TxturaIcons.Plus,
-                        tooltipText = strings.newMessage,
-                        tint = palette.accentPrimary,
-                        onClick = onOpenNewMessage
-                    )
-
-                    Box {
+                    if (isSelectionMode) {
+                        // 1. Izbriši (Delete selected)
                         GlassTooltipIconButton(
                             icon = TxturaIcons.Delete,
-                            tooltipText = strings.deletedMessagesTitle,
-                            tint = palette.accentPrimary,
-                            onClick = onOpenDeletedMessages
+                            tooltipText = strings.bottomBarDeleteTooltip,
+                            tint = palette.dangerColor,
+                            onClick = {
+                                if (selectedThreadIds.isNotEmpty()) {
+                                    pendingBatchAction = BatchSelectionAction.DELETE
+                                }
+                            }
                         )
-                        if (deletedCount > 0) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .size(18.dp)
-                                    .clip(CircleShape)
-                                    .background(palette.accentPrimary)
-                            ) {
-                                Text(
-                                    text = deletedCount.coerceAtMost(99).toString(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (palette.isAmoled) Color.Black else Color.White,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+
+                        // 2. Označi kao pročitano (Mark selected as read)
+                        GlassTooltipIconButton(
+                            icon = TxturaIcons.CheckDouble,
+                            tooltipText = strings.bottomBarMarkReadTooltip,
+                            tint = palette.accentPrimary,
+                            onClick = {
+                                if (selectedThreadIds.isNotEmpty()) {
+                                    pendingBatchAction = BatchSelectionAction.MARK_READ
+                                }
+                            }
+                        )
+
+                        // 3. Odaberi sve (Select all)
+                        GlassTooltipIconButton(
+                            icon = TxturaIcons.SelectAll,
+                            tooltipText = strings.bottomBarSelectAllTooltip,
+                            tint = palette.safeColor,
+                            onClick = {
+                                if (filteredThreads.isNotEmpty()) {
+                                    pendingBatchAction = BatchSelectionAction.SELECT_ALL
+                                }
+                            }
+                        )
+                    } else {
+                        GlassTooltipIconButton(
+                            icon = TxturaIcons.Plus,
+                            tooltipText = strings.newMessage,
+                            tint = palette.accentPrimary,
+                            onClick = onOpenNewMessage
+                        )
+
+                        Box {
+                            GlassTooltipIconButton(
+                                icon = TxturaIcons.Delete,
+                                tooltipText = strings.deletedMessagesTitle,
+                                tint = palette.accentPrimary,
+                                onClick = onOpenDeletedMessages
+                            )
+                            if (deletedCount > 0) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(palette.accentPrimary)
+                                ) {
+                                    Text(
+                                        text = deletedCount.coerceAtMost(99).toString(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (palette.isAmoled) Color.Black else Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         }
+
+                        // Mark All As Read icon placed between Trash and Settings Gear
+                        GlassTooltipIconButton(
+                            icon = TxturaIcons.CheckDouble,
+                            tooltipText = strings.markAllReadTooltip,
+                            tint = palette.accentPrimary,
+                            onClick = { showMarkAllReadConfirmation = true }
+                        )
+
+                        GlassTooltipIconButton(
+                            icon = TxturaIcons.SettingsGear,
+                            tooltipText = strings.settingsTooltip,
+                            tint = palette.accentPrimary,
+                            onClick = onOpenSettings
+                        )
                     }
-
-                    // Mark All As Read icon placed between Trash and Settings Gear
-                    GlassTooltipIconButton(
-                        icon = TxturaIcons.CheckDouble,
-                        tooltipText = strings.markAllReadTooltip,
-                        tint = palette.accentPrimary,
-                        onClick = { showMarkAllReadConfirmation = true }
-                    )
-
-                    GlassTooltipIconButton(
-                        icon = TxturaIcons.SettingsGear,
-                        tooltipText = strings.settingsTooltip,
-                        tint = palette.accentPrimary,
-                        onClick = onOpenSettings
-                    )
                 }
             }
 
@@ -499,36 +521,15 @@ fun ConversationsListScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Single-line swipeable horizontal category bar (Osobe, Servisne poruke, Nepročitano, Zakačeno, Sve poruke).
-            // Long-pressing any category chip allows the user to reorder categories!
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-            ) {
-                activeCategories.forEach { filter ->
-                    val selected = filter == selectedFilter
-                    val label = filterLabel(filter, strings)
-                    GlassCard(
-                        shape = RoundedCornerShape(50),
-                        elevated = selected,
-                        accentHighlight = if (selected) palette.accentPrimary else null,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                        onClick = { selectedFilter = filter },
-                        onLongClick = { categoryBeingReordered = filter }
-                    ) {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) palette.accentPrimary else palette.textSecondary,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            maxLines = 1
-                        )
-                    }
-                }
-            }
+            // Single-line swipeable horizontal category bar.
+            // Holding a category chip and dragging it left or right reorders categories live!
+            DraggableCategoryBar(
+                categories = activeCategories,
+                selectedFilter = selectedFilter,
+                strings = strings,
+                onSelectFilter = { selectedFilter = it },
+                onUpdateCategoryOrder = onUpdateCategoryOrder
+            )
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -612,7 +613,7 @@ fun ConversationsListScreen(
                                         },
                                         onLongClick = {
                                             isSelectionMode = true
-                                            selectedThreadIds = selectedThreadIds + thread.id
+                                            selectedThreadIds += thread.id
                                         },
                                         onTogglePin = { onTogglePin(thread.id) },
                                         onDelete = { onRequestDeleteThread(thread) },
@@ -623,82 +624,6 @@ fun ConversationsListScreen(
                                 }
                             }
                         }
-                    }
-                }
-            }
-
-            // Selection Mode Bottom Bar: Icons ONLY (Delete, Mark Read, Block Sender, Select All),
-            // showing icon name/explanation on long-press and asking user confirmation on click.
-            AnimatedVisibility(
-                visible = isSelectionMode,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                GlassCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp, bottom = 10.dp),
-                    shape = RoundedCornerShape(26.dp),
-                    elevated = true,
-                    accentHighlight = palette.accentPrimary,
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        // 1. Izbriši (Delete)
-                        GlassTooltipIconButton(
-                            icon = TxturaIcons.Delete,
-                            tooltipText = strings.bottomBarDeleteTooltip,
-                            tint = palette.dangerColor,
-                            size = 46.dp,
-                            onClick = {
-                                if (selectedThreadIds.isNotEmpty()) {
-                                    pendingBatchAction = BatchSelectionAction.DELETE
-                                }
-                            }
-                        )
-
-                        // 2. Označi kao pročitano (Mark as read)
-                        GlassTooltipIconButton(
-                            icon = TxturaIcons.CheckDouble,
-                            tooltipText = strings.bottomBarMarkReadTooltip,
-                            tint = palette.accentPrimary,
-                            size = 46.dp,
-                            onClick = {
-                                if (selectedThreadIds.isNotEmpty()) {
-                                    pendingBatchAction = BatchSelectionAction.MARK_READ
-                                }
-                            }
-                        )
-
-                        // 3. Blokiraj pošiljaoca (Block sender)
-                        GlassTooltipIconButton(
-                            icon = TxturaIcons.Block,
-                            tooltipText = strings.bottomBarBlockSenderTooltip,
-                            tint = palette.cautionColor,
-                            size = 46.dp,
-                            onClick = {
-                                if (selectedThreadIds.isNotEmpty()) {
-                                    pendingBatchAction = BatchSelectionAction.BLOCK_SENDER
-                                }
-                            }
-                        )
-
-                        // 4. Odaberi sve (Select all)
-                        GlassTooltipIconButton(
-                            icon = TxturaIcons.SelectAll,
-                            tooltipText = strings.bottomBarSelectAllTooltip,
-                            tint = palette.safeColor,
-                            size = 46.dp,
-                            onClick = {
-                                if (filteredThreads.isNotEmpty()) {
-                                    pendingBatchAction = BatchSelectionAction.SELECT_ALL
-                                }
-                            }
-                        )
                     }
                 }
             }
@@ -739,118 +664,139 @@ private fun GlassSelectionCheckbox(
     }
 }
 
+/**
+ * Single-line horizontal category bar that supports:
+ * - Normal left/right swipe scrolling
+ * - Tap to select active category
+ * - Long-press (hold) + drag left or right to directly reorder the category chips and save as default order!
+ */
 @Composable
-private fun CategoryReorderDialog(
-    currentOrder: List<ConversationFilter>,
-    highlightedCategory: ConversationFilter?,
+private fun DraggableCategoryBar(
+    categories: List<ConversationFilter>,
+    selectedFilter: ConversationFilter,
     strings: AppStrings,
-    onUpdateOrder: (List<ConversationFilter>) -> Unit,
-    onDismiss: () -> Unit
+    onSelectFilter: (ConversationFilter) -> Unit,
+    onUpdateCategoryOrder: (List<ConversationFilter>) -> Unit
 ) {
     val palette = LocalGlassPalette.current
-    var workingOrder by remember(currentOrder) { mutableStateOf(currentOrder) }
+    val density = LocalDensity.current
+    val spacingPx = remember(density) { with(density) { 8.dp.toPx() } }
+    val scrollState = rememberScrollState()
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-        titleContentColor = palette.textPrimary,
-        textContentColor = palette.textSecondary,
-        title = {
-            Text(
-                text = strings.reorderCategoriesTitle,
-                style = MaterialTheme.typography.titleLarge,
-                color = palette.textPrimary
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = strings.reorderCategoriesSub,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.textSecondary
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                workingOrder.forEachIndexed { index, filter ->
-                    val isHighlighted = filter == highlightedCategory
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        elevated = isHighlighted,
-                        accentHighlight = if (isHighlighted) palette.accentPrimary else null,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "${index + 1}. ${filterLabel(filter, strings)}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (isHighlighted) palette.accentPrimary else palette.textPrimary,
-                                fontWeight = if (isHighlighted) FontWeight.Bold else FontWeight.SemiBold
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                GlassCard(
-                                    shape = CircleShape,
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    onClick = {
-                                        if (index > 0) {
-                                            val mutable = workingOrder.toMutableList()
-                                            val item = mutable.removeAt(index)
-                                            mutable.add(index - 1, item)
-                                            workingOrder = mutable
-                                            onUpdateOrder(mutable)
-                                        }
-                                    }
-                                ) {
-                                    Text(
-                                        text = "↑",
-                                        color = if (index > 0) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.35f),
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                                GlassCard(
-                                    shape = CircleShape,
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    onClick = {
-                                        if (index < workingOrder.lastIndex) {
-                                            val mutable = workingOrder.toMutableList()
-                                            val item = mutable.removeAt(index)
-                                            mutable.add(index + 1, item)
-                                            workingOrder = mutable
-                                            onUpdateOrder(mutable)
-                                        }
-                                    }
-                                ) {
-                                    Text(
-                                        text = "↓",
-                                        color = if (index < workingOrder.lastIndex) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.35f),
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
+    var localOrder by remember { mutableStateOf(categories) }
+    var draggedFilter by remember { mutableStateOf<ConversationFilter?>(null) }
+    var dragOffsetX by remember { mutableFloatStateOf(0f) }
+    val itemWidthsPx = remember { mutableStateMapOf<ConversationFilter, Int>() }
+
+    LaunchedEffect(categories) {
+        if (draggedFilter == null) {
+            localOrder = categories
+        }
+    }
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(scrollState, enabled = draggedFilter == null)
+    ) {
+        localOrder.forEach { filter ->
+            key(filter) {
+                val selected = filter == selectedFilter
+                val isDragged = filter == draggedFilter
+                val label = filterLabel(filter, strings)
+
+                Box(
+                    modifier = Modifier
+                        .zIndex(if (isDragged) 10f else 0f)
+                        .onSizeChanged { size ->
+                            itemWidthsPx[filter] = size.width
                         }
+                        .graphicsLayer {
+                            translationX = if (isDragged) dragOffsetX else 0f
+                            scaleX = if (isDragged) 1.08f else 1f
+                            scaleY = if (isDragged) 1.08f else 1f
+                        }
+                        .pointerInput(filter) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    draggedFilter = filter
+                                    dragOffsetX = 0f
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragOffsetX += dragAmount.x
+                                    val currentIndex = localOrder.indexOf(filter)
+                                    if (currentIndex != -1) {
+                                        if ((dragOffsetX > 0f) && (currentIndex < localOrder.lastIndex)) {
+                                            val nextFilter = localOrder[currentIndex + 1]
+                                            val nextWidth = (itemWidthsPx[nextFilter] ?: 160).toFloat()
+                                            val threshold = (nextWidth * 0.55f) + spacingPx
+                                            if (dragOffsetX > threshold) {
+                                                val updated = localOrder.toMutableList().apply {
+                                                    val item = removeAt(currentIndex)
+                                                    add(currentIndex + 1, item)
+                                                }
+                                                localOrder = updated
+                                                dragOffsetX -= (nextWidth + spacingPx)
+                                                onUpdateCategoryOrder(updated)
+                                            }
+                                        } else if ((dragOffsetX < 0f) && (currentIndex > 0)) {
+                                            val prevFilter = localOrder[currentIndex - 1]
+                                            val prevWidth = (itemWidthsPx[prevFilter] ?: 160).toFloat()
+                                            val threshold = -((prevWidth * 0.55f) + spacingPx)
+                                            if (dragOffsetX < threshold) {
+                                                val updated = localOrder.toMutableList().apply {
+                                                    val item = removeAt(currentIndex)
+                                                    add(currentIndex - 1, item)
+                                                }
+                                                localOrder = updated
+                                                dragOffsetX += (prevWidth + spacingPx)
+                                                onUpdateCategoryOrder(updated)
+                                            }
+                                        }
+                                    }
+                                },
+                                onDragEnd = {
+                                    draggedFilter = null
+                                    dragOffsetX = 0f
+                                    onUpdateCategoryOrder(localOrder)
+                                },
+                                onDragCancel = {
+                                    draggedFilter = null
+                                    dragOffsetX = 0f
+                                }
+                            )
+                        }
+                ) {
+                    GlassCard(
+                        shape = RoundedCornerShape(50),
+                        elevated = selected || isDragged,
+                        accentHighlight = when {
+                            isDragged -> palette.safeColor
+                            selected -> palette.accentPrimary
+                            else -> null
+                        },
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        onClick = { onSelectFilter(filter) }
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = when {
+                                isDragged -> palette.safeColor
+                                selected -> palette.accentPrimary
+                                else -> palette.textSecondary
+                            },
+                            fontWeight = if (selected || isDragged) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1
+                        )
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(strings.confirm, color = palette.accentPrimary, fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = {
-                    workingOrder = ConversationFilter.defaultOrder
-                    onUpdateOrder(ConversationFilter.defaultOrder)
-                }
-            ) {
-                Text(strings.resetCategoriesOrderButton, color = palette.textSecondary)
-            }
         }
-    )
+    }
 }
 
 /**
@@ -873,16 +819,12 @@ private fun isServiceThread(thread: ConversationThread): Boolean {
     if (address.any { it.isLetter() }) return true
 
     // 2. Shortcode (typically 3 to 7 digits, e.g. 1999, 9800, 2222)
-    if (cleanDigits.length in 3..7 && !address.startsWith("+")) {
+    if ((cleanDigits.length in 3..7) && !address.startsWith("+")) {
         return true
     }
 
     // 3. Extracted OTP / 2FA verification codes
-    if (thread.messages.any { it.securityAnalysis.extractedOtpCode != null }) {
-        return true
-    }
-
-    return false
+    return thread.messages.any { it.securityAnalysis.extractedOtpCode != null }
 }
 
 fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
@@ -896,12 +838,13 @@ fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
 }
 
 /**
- * Dedicated Settings Screen ("Settings" / "Podešavanja") organized into categorized dropdown/expandable menus:
- * 1. Izgled, Teme i Providnost (Tema, Slajder za providnost UI, 10 Monohromatskih tema + 10 Višebojnih tema, Pozadine, Stil ikonice, Prikaz glavnog prozora, Slike kontakata)
- * 2. Poruke, Kategorije i Svajp radnje (Redosled kategorija, Svajp udesno/ulevo, Obrisane poruke)
- * 3. Blokiranje pošiljalaca poruka (Dodavanje i upravljanje blokiranim pošiljaocima)
- * 4. Bekap i vraćanje podataka (Lokalni bekap, izvoz/deljenje i vraćanje podataka)
- * 5. Dozvole i Podrazumevana Aplikacija (SMS/MMS dozvole i podrazumevana SMS uloga)
+ * Dedicated Settings Screen ("Settings" / "Podešavanja") organized into 5 intuitive expandable categories
+ * featuring Sliders, On/Off Switches, Segmented Pills, and compact visual pickers:
+ * 1. Izgled, Teme i Providnost (Providnost UI slajder 100% podrazumevano, 4-segmentni birač teme, On/Off Monohromatski režim, Pozadina i 2-kolonski prikaz 10 tema, Stil ikonice, On/Off Kompaktni prikaz, On/Off Slike kontakata)
+ * 2. Poruke i Svajp radnje (On/Off + horizontalni birač za Svajp udesno/ulevo, Slajder za automatsko brisanje iz korpe 7-90 dana, On/Off grupisanje po kontaktu, Otvaranje Korpe)
+ * 3. Blokiranje pošiljalaca poruka (Brzi unos i lista blokiranih sa 1-klik odblokiranjem)
+ * 4. Bekap i vraćanje podataka (Lokalni bekap, vraćanje i deljenje/izvoz)
+ * 5. Dozvole i Podrazumevana Aplikacija (On/Off prekidači za dozvole i podrazumevanu SMS aplikaciju)
  */
 @Composable
 fun SettingsScreen(
@@ -914,14 +857,11 @@ fun SettingsScreen(
     launcherIconShape: LauncherIconShape = LauncherIconShape.ROUNDED_SQUARE,
     swipeRightAction: SwipeAction,
     swipeLeftAction: SwipeAction,
-    categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder,
     autoDeleteDays: Int,
     deletedGroupingMode: DeletedGroupingMode,
     deletedMessagesCount: Int,
     blockedSenders: List<String> = emptyList(),
     lastBackupTimestamp: Long = 0L,
-    connectedGoogleAccount: String? = null,
-    isGoogleDriveInstalled: Boolean = false,
     hasSmsPermission: Boolean,
     isDefaultSmsApp: Boolean,
     rationaleMessage: String?,
@@ -933,10 +873,10 @@ fun SettingsScreen(
     onSelectUiColorMode: (UiColorMode) -> Unit = {},
     onSelectLauncherIconShape: (LauncherIconShape) -> Unit = {},
     onSelectMainWallpaperPreset: (WallpaperPreset) -> Unit = {},
+    onSelectMainWallpaperTexture: (WallpaperTexture) -> Unit = {},
     onPickMainWallpaperFromGallery: () -> Unit = {},
     onSelectSwipeRightAction: (SwipeAction) -> Unit,
     onSelectSwipeLeftAction: (SwipeAction) -> Unit,
-    onUpdateCategoryOrder: (List<ConversationFilter>) -> Unit = {},
     onSelectAutoDeleteDays: (Int) -> Unit,
     onSelectDeletedGroupingMode: (DeletedGroupingMode) -> Unit,
     onOpenDeletedMessages: () -> Unit,
@@ -945,9 +885,6 @@ fun SettingsScreen(
     onCreateLocalBackup: () -> Unit = {},
     onRestoreLocalBackup: () -> Unit = {},
     onShareBackupFile: () -> Unit = {},
-    onSaveToGoogleDrive: () -> Unit = {},
-    onRestoreFromGoogleDrive: () -> Unit = {},
-    onOpenSystemBackupSettings: () -> Unit = {},
     onRequestSmsPermissions: () -> Unit,
     onRequestDefaultSmsRole: () -> Unit,
     onOpenSystemAppSettings: () -> Unit
@@ -956,11 +893,16 @@ fun SettingsScreen(
     val scrollState = rememberScrollState()
     val retentionOptions = listOf(7, 15, 30, 60, 90)
 
+    // Level 1: Main Category expansion state
     var expandedAppearance by remember { mutableStateOf(false) }
     var expandedMessagesAndSwipe by remember { mutableStateOf(false) }
     var expandedBlockedSenders by remember { mutableStateOf(false) }
     var expandedBackup by remember { mutableStateOf(false) }
     var expandedPermissions by remember { mutableStateOf(false) }
+
+    // Optional expandable sub-panel for the 10-theme + Gallery wallpaper picker so Appearance stays compact
+    var showWallpaperGrid by remember { mutableStateOf(false) }
+
     var showSecurityMeasuresDialog by remember { mutableStateOf(false) }
     var newBlockedSenderInput by remember { mutableStateOf("") }
 
@@ -1032,7 +974,7 @@ fun SettingsScreen(
                     .verticalScroll(scrollState)
                     .padding(bottom = 24.dp)
             ) {
-                // 1. DROPDOWN CATEGORY: Izgled, Teme i Providnost (Everything related to Appearance in ONE dropdown!)
+                // 1. MAIN CATEGORY: Izgled, Teme i Providnost
                 ExpandableSettingsSection(
                     icon = TxturaIcons.SparklesTheme,
                     iconTint = palette.accentPrimary,
@@ -1049,393 +991,351 @@ fun SettingsScreen(
                         expandedPermissions = false
                     }
                 ) {
-                    // 1A. Theme Mode (AMOLED, Light, Dark, Auto)
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ThemeOptionRow(
-                            mode = TxturaThemeMode.AMOLED,
-                            title = strings.themeAmoledTitle,
-                            subtitle = strings.themeAmoledSub,
-                            activePrefix = strings.activePrefix,
-                            selected = themeMode == TxturaThemeMode.AMOLED,
-                            onClick = { onSelectTheme(TxturaThemeMode.AMOLED) }
-                        )
-                        ThemeOptionRow(
-                            mode = TxturaThemeMode.LIGHT,
-                            title = strings.themeLightTitle,
-                            subtitle = strings.themeLightSub,
-                            activePrefix = strings.activePrefix,
-                            selected = themeMode == TxturaThemeMode.LIGHT,
-                            onClick = { onSelectTheme(TxturaThemeMode.LIGHT) }
-                        )
-                        ThemeOptionRow(
-                            mode = TxturaThemeMode.DARK,
-                            title = strings.themeDarkTitle,
-                            subtitle = strings.themeDarkSub,
-                            activePrefix = strings.activePrefix,
-                            selected = themeMode == TxturaThemeMode.DARK,
-                            onClick = { onSelectTheme(TxturaThemeMode.DARK) }
-                        )
-                        ThemeOptionRow(
-                            mode = TxturaThemeMode.SYSTEM,
-                            title = strings.themeAutoTitle,
-                            subtitle = strings.themeAutoSub,
-                            activePrefix = strings.activePrefix,
-                            selected = themeMode == TxturaThemeMode.SYSTEM,
-                            onClick = { onSelectTheme(TxturaThemeMode.SYSTEM) }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // 1B. UI Transparency Slider (Slajder za providnost UI)
-                    val transparencyPercent = ((1.35f - uiOpacity.coerceIn(0.25f, 1.35f)) / 1.10f * 100f).roundToInt().coerceIn(0, 100)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = strings.uiTransparencyTitle,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = palette.textPrimary,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = strings.uiTransparencySub,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.textSecondary
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "$transparencyPercent%",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = palette.accentPrimary,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    Slider(
-                        value = uiOpacity.coerceIn(0.25f, 1.35f),
-                        onValueChange = { onUpdateUiOpacity(it.coerceIn(0.25f, 1.35f)) },
-                        valueRange = 0.25f..1.35f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = palette.accentPrimary,
-                            activeTrackColor = palette.accentPrimary,
-                            inactiveTrackColor = palette.glassSurfaceElevated
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // 1C. UI Palette Mode (Višebojne teme vs Monohromatske teme zavisno od svetlog/tamnog režima + 10 akcenata)
-                    Text(
-                        text = strings.uiColorModeSectionTitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = strings.uiColorModeSectionDesc,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textSecondary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        UiColorMode.entries.forEach { mode ->
-                            val selected = mode == uiColorMode
-                            val label = when (mode) {
-                                UiColorMode.COLORFUL -> strings.uiColorModeColorfulTitle
-                                UiColorMode.MONOCHROME -> strings.uiColorModeMonochromeTitle
-                            }
-                            GlassCard(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(14.dp),
-                                elevated = selected,
-                                accentHighlight = if (selected) palette.accentPrimary else null,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                                onClick = { onSelectUiColorMode(mode) }
-                            ) {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (selected) palette.accentPrimary else palette.textSecondary,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    modifier = Modifier.align(Alignment.Center)
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // 1D. Pozadine i Akcenti (10 Višebojnih + 10 Monohromatskih akcenatskih tema + Galerija)
-                    Text(
-                        text = strings.wallpaperSectionTitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = strings.wallpaperSectionDesc,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textSecondary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        elevated = mainWallpaper.isCustomGalleryImage,
-                        accentHighlight = if (mainWallpaper.isCustomGalleryImage) palette.accentPrimary else palette.accentSecondary,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-                        onClick = onPickMainWallpaperFromGallery
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // 1A. Providnost korisničkog interfejsa (Slajder: 100% podrazumevano + brzi procenti)
+                        val clampedOpacity = uiOpacity.coerceIn(0.0f, 1.0f)
+                        val transparencyPercent = (clampedOpacity * 100f).roundToInt().coerceIn(0, 100)
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    imageVector = TxturaIcons.AttachImage,
-                                    contentDescription = null,
-                                    tint = palette.accentPrimary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = strings.pickWallpaperFromGallery,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = palette.textPrimary,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    if (mainWallpaper.isCustomGalleryImage) {
-                                        Text(
-                                            text = "✓ ${strings.customGalleryWallpaperActive}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = palette.safeColor,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                }
-                            }
-                            Text(
-                                text = "+",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = palette.accentPrimary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    WallpaperPresetSelectorGrid(
-                        currentConfig = mainWallpaper,
-                        uiColorMode = uiColorMode,
-                        strings = strings,
-                        onSelectPreset = onSelectMainWallpaperPreset,
-                        onSwitchColorMode = onSelectUiColorMode
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // 1E. Launcher Icon Style Selector
-                    Text(
-                        text = strings.launcherIconShapeSectionTitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = strings.launcherIconShapeSectionDesc,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textSecondary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        LauncherIconShape.entries.forEach { shape ->
-                            val selected = shape == launcherIconShape
-                            val shapeObj = when (shape) {
-                                LauncherIconShape.CIRCLE -> CircleShape
-                                LauncherIconShape.SQUIRCLE -> RoundedCornerShape(percent = 38)
-                                LauncherIconShape.ROUNDED_SQUARE -> RoundedCornerShape(percent = 22)
-                                LauncherIconShape.TEARDROP -> RoundedCornerShape(topStartPercent = 50, topEndPercent = 50, bottomEndPercent = 50, bottomStartPercent = 10)
-                                LauncherIconShape.PEBBLE -> RoundedCornerShape(topStartPercent = 45, topEndPercent = 18, bottomEndPercent = 45, bottomStartPercent = 18)
-                            }
-                            val shapeLabel = when (shape) {
-                                LauncherIconShape.CIRCLE -> strings.launcherIconShapeCircle
-                                LauncherIconShape.SQUIRCLE -> strings.launcherIconShapeSquircle
-                                LauncherIconShape.ROUNDED_SQUARE -> strings.launcherIconShapeRoundedSquare
-                                LauncherIconShape.TEARDROP -> strings.launcherIconShapeTeardrop
-                                LauncherIconShape.PEBBLE -> strings.launcherIconShapePebble
-                            }
-                            GlassCard(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(14.dp),
-                                elevated = selected,
-                                accentHighlight = if (selected) palette.accentPrimary else null,
-                                contentPadding = PaddingValues(vertical = 8.dp, horizontal = 4.dp),
-                                onClick = { onSelectLauncherIconShape(shape) }
-                            ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Box(
-                                        contentAlignment = Alignment.Center,
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .clip(shapeObj)
-                                            .background(
-                                                Brush.linearGradient(
-                                                    listOf(
-                                                        Color(0xFF0F172A),
-                                                        if (selected) palette.accentPrimary else Color(0xFF334155)
-                                                    )
-                                                )
-                                            )
-                                            .border(
-                                                1.dp,
-                                                if (selected) palette.accentPrimary else Color.White.copy(alpha = 0.25f),
-                                                shapeObj
-                                            )
-                                    ) {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "T",
+                                            text = strings.uiTransparencyTitle,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = palette.textPrimary,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = strings.uiTransparencySub,
                                             style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (selected) palette.accentPrimary else Color.White
+                                            color = palette.textSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = shapeLabel,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontSize = 10.sp,
-                                        color = if (selected) palette.accentPrimary else palette.textSecondary,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(palette.accentPrimary.copy(alpha = 0.18f))
+                                            .border(1.dp, palette.accentPrimary, RoundedCornerShape(50))
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "$transparencyPercent%",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = palette.accentPrimary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+
+                                Slider(
+                                    value = clampedOpacity,
+                                    onValueChange = { onUpdateUiOpacity(it.coerceIn(0.0f, 1.0f)) },
+                                    valueRange = 0.0f..1.0f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = palette.accentPrimary,
+                                        activeTrackColor = palette.accentPrimary,
+                                        inactiveTrackColor = palette.glassSurfaceElevated
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                // Quick-tap percentage pills (25%, 50%, 75%, 100%)
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    listOf(25, 50, 75, 100).forEach { pct ->
+                                        val isCurrentPct = abs(transparencyPercent - pct) <= 3
+                                        GlassCard(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(50),
+                                            elevated = isCurrentPct,
+                                            accentHighlight = if (isCurrentPct) palette.accentPrimary else null,
+                                            contentPadding = PaddingValues(vertical = 5.dp),
+                                            onClick = { onUpdateUiOpacity(pct / 100f) }
+                                        ) {
+                                            Text(
+                                                text = "$pct%",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isCurrentPct) palette.accentPrimary else palette.textSecondary,
+                                                fontWeight = if (isCurrentPct) FontWeight.Bold else FontWeight.Medium,
+                                                modifier = Modifier.align(Alignment.Center)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // 1F. Main Window Display Mode Selector (Default vs Compact)
-                    Text(
-                        text = strings.mainLayoutModeTitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = strings.mainLayoutModeSub,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textSecondary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        MainListLayoutMode.entries.forEach { mode ->
-                            val selected = mode == listLayoutMode
-                            val label = when (mode) {
-                                MainListLayoutMode.DEFAULT -> strings.layoutModeDefault
-                                MainListLayoutMode.COMPACT -> strings.layoutModeCompact
-                            }
-                            GlassCard(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(14.dp),
-                                elevated = selected,
-                                accentHighlight = if (selected) palette.accentPrimary else null,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                                onClick = { onSelectListLayoutMode(mode) }
-                            ) {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (selected) palette.accentPrimary else palette.textSecondary,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    modifier = Modifier.align(Alignment.Center)
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // 1G. Contact Photos Display Toggle
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        elevated = showContactPhotos,
-                        accentHighlight = if (showContactPhotos) palette.accentPrimary else null,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                        onClick = { onToggleShowContactPhotos(!showContactPhotos) }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
+                        // 1B. Režim teme (Kompaktni 4-segmentni vizuelni birač: AMOLED, Light, Dark, Auto)
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    imageVector = TxturaIcons.ContactPerson,
-                                    contentDescription = null,
-                                    tint = if (showContactPhotos) palette.accentPrimary else palette.textSecondary,
-                                    modifier = Modifier.size(20.dp)
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    text = strings.subSettingThemeModeTitle,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.SemiBold
                                 )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    TxturaThemeMode.entries.forEach { mode ->
+                                        val selected = mode == themeMode
+                                        val dotColor = when (mode) {
+                                            TxturaThemeMode.AMOLED -> Color.Black
+                                            TxturaThemeMode.LIGHT -> Color(0xFFF8FAFC)
+                                            TxturaThemeMode.DARK -> Color(0xFF1E293B)
+                                            TxturaThemeMode.SYSTEM -> palette.accentPrimary
+                                        }
+                                        GlassCard(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(12.dp),
+                                            elevated = selected,
+                                            accentHighlight = if (selected) palette.accentPrimary else null,
+                                            contentPadding = PaddingValues(vertical = 8.dp, horizontal = 4.dp),
+                                            onClick = { onSelectTheme(mode) }
+                                        ) {
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(16.dp)
+                                                        .clip(CircleShape)
+                                                        .background(dotColor)
+                                                        .border(
+                                                            1.dp,
+                                                            if (selected) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.5f),
+                                                            CircleShape
+                                                        )
+                                                )
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = mode.label,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = if (selected) palette.accentPrimary else palette.textSecondary,
+                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 1C. On/Off Prekidač: Monohromatske teme (10) vs Višebojne teme (10)
+                        val isMonochromeActive = uiColorMode == UiColorMode.MONOCHROME
+                        SettingsSwitchRow(
+                            title = strings.uiColorModeMonochromeTitle,
+                            subtitle = if (isMonochromeActive) strings.uiColorModeMonochromeDesc else strings.uiColorModeColorfulTitle,
+                            checked = isMonochromeActive
+                        ) { enabled ->
+                            onSelectUiColorMode(if (enabled) UiColorMode.MONOCHROME else UiColorMode.COLORFUL)
+                        }
+
+                        // 1D. Pozadina glavnog prozora, 10 akcenatskih tema i Txtura teksture
+                        ExpandableSubSettingItem(
+                            title = strings.wallpaperSectionTitle,
+                            subtitle = "${wallpaperPresetTitle(mainWallpaper.preset, strings)} • ${wallpaperTextureTitle(mainWallpaper.resolvedTexture, strings)}",
+                            expanded = showWallpaperGrid,
+                            onToggle = { showWallpaperGrid = !showWallpaperGrid }
+                        ) {
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                elevated = mainWallpaper.isCustomGalleryImage,
+                                accentHighlight = if (mainWallpaper.isCustomGalleryImage) palette.accentPrimary else palette.accentSecondary,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                onClick = onPickMainWallpaperFromGallery
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = TxturaIcons.AttachImage,
+                                            contentDescription = null,
+                                            tint = palette.accentPrimary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column {
+                                            Text(
+                                                text = strings.pickWallpaperFromGallery,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = palette.textPrimary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            if (mainWallpaper.isCustomGalleryImage) {
+                                                Text(
+                                                    text = "✓ ${strings.customGalleryWallpaperActive}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = palette.safeColor,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                        }
+                                    }
                                     Text(
-                                        text = strings.showContactPhotosTitle,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = palette.textPrimary,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        text = strings.showContactPhotosSub,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = palette.textSecondary
+                                        text = "+",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = palette.accentPrimary,
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Switch(
-                                checked = showContactPhotos,
-                                onCheckedChange = onToggleShowContactPhotos,
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = if (palette.isAmoled) Color.Black else Color.White,
-                                    checkedTrackColor = palette.accentPrimary,
-                                    uncheckedThumbColor = palette.textSecondary,
-                                    uncheckedTrackColor = palette.glassSurfaceElevated
-                                )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            WallpaperPresetSelectorGrid(
+                                currentConfig = mainWallpaper,
+                                uiColorMode = uiColorMode,
+                                strings = strings,
+                                onSelectPreset = onSelectMainWallpaperPreset,
+                                onSelectTexture = onSelectMainWallpaperTexture,
+                                onSwitchColorMode = onSelectUiColorMode
                             )
                         }
+
+                        // 1E. Stil ikonice aplikacije (Vizuelni birač oblika u jednom redu)
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    text = strings.launcherIconShapeSectionTitle,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    LauncherIconShape.entries.forEach { shape ->
+                                        val selected = shape == launcherIconShape
+                                        val shapeObj = when (shape) {
+                                            LauncherIconShape.CIRCLE -> CircleShape
+                                            LauncherIconShape.SQUIRCLE -> RoundedCornerShape(percent = 38)
+                                            LauncherIconShape.ROUNDED_SQUARE -> RoundedCornerShape(percent = 22)
+                                            LauncherIconShape.TEARDROP -> RoundedCornerShape(topStartPercent = 50, topEndPercent = 50, bottomEndPercent = 50, bottomStartPercent = 10)
+                                            LauncherIconShape.PEBBLE -> RoundedCornerShape(topStartPercent = 45, topEndPercent = 18, bottomEndPercent = 45, bottomStartPercent = 18)
+                                        }
+                                        val shapeLabel = when (shape) {
+                                            LauncherIconShape.CIRCLE -> strings.launcherIconShapeCircle
+                                            LauncherIconShape.SQUIRCLE -> strings.launcherIconShapeSquircle
+                                            LauncherIconShape.ROUNDED_SQUARE -> strings.launcherIconShapeRoundedSquare
+                                            LauncherIconShape.TEARDROP -> strings.launcherIconShapeTeardrop
+                                            LauncherIconShape.PEBBLE -> strings.launcherIconShapePebble
+                                        }
+                                        GlassCard(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(12.dp),
+                                            elevated = selected,
+                                            accentHighlight = if (selected) palette.accentPrimary else null,
+                                            contentPadding = PaddingValues(vertical = 7.dp, horizontal = 3.dp),
+                                            onClick = { onSelectLauncherIconShape(shape) }
+                                        ) {
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Box(
+                                                    contentAlignment = Alignment.Center,
+                                                    modifier = Modifier
+                                                        .size(26.dp)
+                                                        .clip(shapeObj)
+                                                        .background(
+                                                            Brush.linearGradient(
+                                                                listOf(
+                                                                    Color(0xFF0F172A),
+                                                                    if (selected) palette.accentPrimary else Color(0xFF334155)
+                                                                )
+                                                            )
+                                                        )
+                                                        .border(
+                                                            1.dp,
+                                                            if (selected) palette.accentPrimary else Color.White.copy(alpha = 0.25f),
+                                                            shapeObj
+                                                        )
+                                                ) {
+                                                    Text(
+                                                        text = "T",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (selected) palette.accentPrimary else Color.White
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = shapeLabel,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontSize = 10.sp,
+                                                    color = if (selected) palette.accentPrimary else palette.textSecondary,
+                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 1F. On/Off Prekidač: Kompaktni prikaz poruka u glavnom prozoru
+                        val isCompactMode = listLayoutMode == MainListLayoutMode.COMPACT
+                        SettingsSwitchRow(
+                            title = strings.layoutModeCompact,
+                            subtitle = if (isCompactMode) strings.mainLayoutModeSub else strings.layoutModeDefault,
+                            checked = isCompactMode,
+                            onCheckedChange = { compact ->
+                                onSelectListLayoutMode(
+                                    if (compact) MainListLayoutMode.COMPACT else MainListLayoutMode.DEFAULT
+                                )
+                            }
+                        )
+
+                        // 1G. On/Off Prekidač: Prikaz slika kontakata
+                        SettingsSwitchRow(
+                            title = strings.showContactPhotosTitle,
+                            subtitle = strings.showContactPhotosSub,
+                            checked = showContactPhotos,
+                            onCheckedChange = onToggleShowContactPhotos
+                        )
                     }
                 }
 
-                // 2. DROPDOWN CATEGORY: Poruke, Kategorije, Svajp radnje i Korpa
+                // 2. MAIN CATEGORY: Poruke i Svajp radnje (Redosled kategorija uklonjen iz podešavanja — premeštanje je dugim dodirom i prevlačenjem na glavnom ekranu)
                 ExpandableSettingsSection(
                     icon = TxturaIcons.SwipeHoriz,
                     iconTint = palette.accentPrimary,
@@ -1452,275 +1352,153 @@ fun SettingsScreen(
                         expandedPermissions = false
                     }
                 ) {
-                    // 2A. Category Order customization
-                    Text(
-                        text = strings.reorderCategoriesTitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = strings.reorderCategoriesSub,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textSecondary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    categoryOrder.forEachIndexed { index, filter ->
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // 2A. Svajp udesno (On/Off prekidač + horizontalni birač akcije)
+                        SwipeDirectionInteractiveCard(
+                            title = strings.swipeRightLabel,
+                            currentAction = swipeRightAction,
+                            defaultFallbackAction = SwipeAction.PIN,
+                            strings = strings,
+                            onSelectAction = onSelectSwipeRightAction
+                        )
+
+                        // 2B. Svajp ulevo (On/Off prekidač + horizontalni birač akcije)
+                        SwipeDirectionInteractiveCard(
+                            title = strings.swipeLeftLabel,
+                            currentAction = swipeLeftAction,
+                            defaultFallbackAction = SwipeAction.DELETE,
+                            strings = strings,
+                            onSelectAction = onSelectSwipeLeftAction
+                        )
+
+                        // 2C. Slajder za automatsko brisanje obrisanih poruka (7, 15, 30, 60, 90 dana)
+                        val currentStepIndex = retentionOptions.indexOf(autoDeleteDays).let { if (it >= 0) it else 2 }
                         GlassCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 6.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = strings.autoDeleteDaysTitle,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = palette.textPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(palette.accentPrimary.copy(alpha = 0.18f))
+                                            .border(1.dp, palette.accentPrimary, RoundedCornerShape(50))
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = strings.daysCountLabel(autoDeleteDays),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = palette.accentPrimary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+
+                                Slider(
+                                    value = currentStepIndex.toFloat(),
+                                    onValueChange = { rawIdx ->
+                                        val idx = rawIdx.roundToInt().coerceIn(0, retentionOptions.lastIndex)
+                                        val chosenDays = retentionOptions[idx]
+                                        if (chosenDays != autoDeleteDays) {
+                                            onSelectAutoDeleteDays(chosenDays)
+                                        }
+                                    },
+                                    valueRange = 0f..retentionOptions.lastIndex.toFloat(),
+                                    steps = retentionOptions.size - 2,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = palette.accentPrimary,
+                                        activeTrackColor = palette.accentPrimary,
+                                        inactiveTrackColor = palette.glassSurfaceElevated
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Row(
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    retentionOptions.forEach { days ->
+                                        val active = days == autoDeleteDays
+                                        Text(
+                                            text = "${days}d",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (active) palette.accentPrimary else palette.textSecondary,
+                                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                            modifier = Modifier.clickable { onSelectAutoDeleteDays(days) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2D. On/Off Prekidač za grupisanje obrisanih poruka (Po kontaktu vs Po datumu)
+                        val groupByContact = deletedGroupingMode == DeletedGroupingMode.BY_CONTACT
+                        SettingsSwitchRow(
+                            title = strings.groupingModeTitle,
+                            subtitle = if (groupByContact) strings.groupByContactLabel else strings.groupByDateLabel,
+                            checked = groupByContact,
+                            onCheckedChange = { byContact ->
+                                onSelectDeletedGroupingMode(
+                                    if (byContact) DeletedGroupingMode.BY_CONTACT else DeletedGroupingMode.BY_DATE
+                                )
+                            }
+                        )
+
+                        // 2E. Direktno dugme za otvaranje Korpe (Obrisane poruke)
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            elevated = true,
+                            accentHighlight = palette.accentPrimary,
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                            onClick = onOpenDeletedMessages
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(
-                                    text = "${index + 1}. ${filterLabel(filter, strings)}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = palette.textPrimary,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    GlassCard(
-                                        shape = CircleShape,
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        onClick = {
-                                            if (index > 0) {
-                                                val mutable = categoryOrder.toMutableList()
-                                                val item = mutable.removeAt(index)
-                                                mutable.add(index - 1, item)
-                                                onUpdateCategoryOrder(mutable)
-                                            }
-                                        }
-                                    ) {
-                                        Text(
-                                            text = "←",
-                                            color = if (index > 0) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.35f),
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    GlassCard(
-                                        shape = CircleShape,
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        onClick = {
-                                            if (index < categoryOrder.lastIndex) {
-                                                val mutable = categoryOrder.toMutableList()
-                                                val item = mutable.removeAt(index)
-                                                mutable.add(index + 1, item)
-                                                onUpdateCategoryOrder(mutable)
-                                            }
-                                        }
-                                    ) {
-                                        Text(
-                                            text = "→",
-                                            color = if (index < categoryOrder.lastIndex) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.35f),
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // 2B. Swipe Right & Left Actions
-                    Text(
-                        text = strings.swipeRightLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = palette.accentPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        SwipeAction.entries.forEach { action ->
-                            val selected = action == swipeRightAction
-                            GlassCard(
-                                shape = RoundedCornerShape(50),
-                                elevated = selected,
-                                accentHighlight = if (selected) swipeActionColor(action) else null,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
-                                onClick = { onSelectSwipeRightAction(action) }
-                            ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
-                                        imageVector = swipeActionIcon(action),
+                                        imageVector = TxturaIcons.Restore,
                                         contentDescription = null,
-                                        tint = if (selected) swipeActionColor(action) else palette.textSecondary,
-                                        modifier = Modifier.size(14.dp)
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size(18.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
                                     Text(
-                                        text = swipeActionLabel(action, strings),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (selected) swipeActionColor(action) else palette.textSecondary,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                        text = strings.openDeletedMessagesButton(deletedMessagesCount),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = palette.textPrimary,
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Text(
-                        text = strings.swipeLeftLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = palette.accentSecondary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        SwipeAction.entries.forEach { action ->
-                            val selected = action == swipeLeftAction
-                            GlassCard(
-                                shape = RoundedCornerShape(50),
-                                elevated = selected,
-                                accentHighlight = if (selected) swipeActionColor(action) else null,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
-                                onClick = { onSelectSwipeLeftAction(action) }
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = swipeActionIcon(action),
-                                        contentDescription = null,
-                                        tint = if (selected) swipeActionColor(action) else palette.textSecondary,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(5.dp))
-                                    Text(
-                                        text = swipeActionLabel(action, strings),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (selected) swipeActionColor(action) else palette.textSecondary,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // 2C. Deleted Messages (Trash), Auto-Delete Days & Grouping Mode
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        elevated = true,
-                        accentHighlight = palette.accentPrimary,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-                        onClick = onOpenDeletedMessages
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = TxturaIcons.Restore,
-                                    contentDescription = null,
-                                    tint = palette.accentPrimary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
                                 Text(
-                                    text = strings.openDeletedMessagesButton(deletedMessagesCount),
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = palette.textPrimary,
+                                    text = "→",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = palette.accentPrimary,
                                     fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Text(
-                                text = "→",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = palette.accentPrimary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = strings.autoDeleteDaysTitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        retentionOptions.forEach { days ->
-                            val selected = days == autoDeleteDays
-                            GlassCard(
-                                shape = RoundedCornerShape(50),
-                                elevated = selected,
-                                accentHighlight = if (selected) palette.accentPrimary else null,
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp),
-                                onClick = { onSelectAutoDeleteDays(days) }
-                            ) {
-                                Text(
-                                    text = strings.daysCountLabel(days),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (selected) palette.accentPrimary else palette.textSecondary,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = strings.groupingModeTitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        DeletedGroupingMode.entries.forEach { mode ->
-                            val selected = mode == deletedGroupingMode
-                            val label = when (mode) {
-                                DeletedGroupingMode.BY_DATE -> strings.groupByDateLabel
-                                DeletedGroupingMode.BY_CONTACT -> strings.groupByContactLabel
-                            }
-                            GlassCard(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(14.dp),
-                                elevated = selected,
-                                accentHighlight = if (selected) palette.accentPrimary else null,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                                onClick = { onSelectDeletedGroupingMode(mode) }
-                            ) {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (selected) palette.accentPrimary else palette.textSecondary,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    modifier = Modifier.align(Alignment.Center)
                                 )
                             }
                         }
                     }
                 }
 
-                // 3. DROPDOWN CATEGORY: Blokiranje pošiljalaca poruka (Blocked Senders)
+                // 3. MAIN CATEGORY: Blokiranje pošiljalaca poruka (Blocked Senders)
                 ExpandableSettingsSection(
                     icon = TxturaIcons.Block,
                     iconTint = palette.dangerColor,
@@ -1737,108 +1515,107 @@ fun SettingsScreen(
                         expandedPermissions = false
                     }
                 ) {
-                    // Add new blocked sender input row
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                         ) {
-                            Box(modifier = Modifier.weight(1f)) {
-                                if (newBlockedSenderInput.isEmpty()) {
-                                    Text(
-                                        text = strings.addBlockedSenderPlaceholder,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = palette.textSecondary
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Box(modifier = Modifier.weight(1f)) {
+                                    if (newBlockedSenderInput.isEmpty()) {
+                                        Text(
+                                            text = strings.addBlockedSenderPlaceholder,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = palette.textSecondary
+                                        )
+                                    }
+                                    BasicTextField(
+                                        value = newBlockedSenderInput,
+                                        onValueChange = { newBlockedSenderInput = it },
+                                        singleLine = true,
+                                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = palette.textPrimary),
+                                        cursorBrush = SolidColor(palette.accentPrimary),
+                                        modifier = Modifier.fillMaxWidth()
                                     )
                                 }
-                                BasicTextField(
-                                    value = newBlockedSenderInput,
-                                    onValueChange = { newBlockedSenderInput = it },
-                                    singleLine = true,
-                                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = palette.textPrimary),
-                                    cursorBrush = SolidColor(palette.accentPrimary),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            GlassCard(
-                                shape = RoundedCornerShape(50),
-                                elevated = true,
-                                accentHighlight = palette.dangerColor,
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp),
-                                onClick = {
-                                    val clean = newBlockedSenderInput.trim()
-                                    if (clean.isNotEmpty()) {
-                                        onBlockSender(clean)
-                                        newBlockedSenderInput = ""
+                                Spacer(modifier = Modifier.width(8.dp))
+                                GlassCard(
+                                    shape = RoundedCornerShape(50),
+                                    elevated = true,
+                                    accentHighlight = palette.dangerColor,
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp),
+                                    onClick = {
+                                        val clean = newBlockedSenderInput.trim()
+                                        if (clean.isNotEmpty()) {
+                                            onBlockSender(clean)
+                                            newBlockedSenderInput = ""
+                                        }
                                     }
+                                ) {
+                                    Text(
+                                        text = strings.blockSenderButton,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = palette.dangerColor,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
-                            ) {
-                                Text(
-                                    text = strings.blockSenderButton,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = palette.dangerColor,
-                                    fontWeight = FontWeight.Bold
-                                )
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    if (blockedSenders.isEmpty()) {
-                        Text(
-                            text = strings.blockedSendersEmpty,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = palette.textSecondary
-                        )
-                    } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            blockedSenders.forEach { sender ->
-                                GlassCard(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(14.dp),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        modifier = Modifier.fillMaxWidth()
+                        if (blockedSenders.isEmpty()) {
+                            Text(
+                                text = strings.blockedSendersEmpty,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textSecondary
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                blockedSenders.forEach { sender ->
+                                    GlassCard(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(14.dp),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
                                     ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.weight(1f)
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            Icon(
-                                                imageVector = TxturaIcons.Block,
-                                                contentDescription = null,
-                                                tint = palette.dangerColor,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(10.dp))
-                                            Text(
-                                                text = sender,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = palette.textPrimary,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                        }
-                                        GlassCard(
-                                            shape = RoundedCornerShape(50),
-                                            accentHighlight = palette.safeColor,
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp),
-                                            onClick = { onUnblockSender(sender) }
-                                        ) {
-                                            Text(
-                                                text = strings.unblockSenderButton,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = palette.safeColor,
-                                                fontWeight = FontWeight.Bold
-                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(
+                                                    imageVector = TxturaIcons.Block,
+                                                    contentDescription = null,
+                                                    tint = palette.dangerColor,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Text(
+                                                    text = sender,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = palette.textPrimary,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                            GlassCard(
+                                                shape = RoundedCornerShape(50),
+                                                accentHighlight = palette.safeColor,
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp),
+                                                onClick = { onUnblockSender(sender) }
+                                            ) {
+                                                Text(
+                                                    text = strings.unblockSenderButton,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = palette.safeColor,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1847,7 +1624,7 @@ fun SettingsScreen(
                     }
                 }
 
-                // 4. DROPDOWN CATEGORY: Bekap i vraćanje podataka
+                // 4. MAIN CATEGORY: Bekap i vraćanje podataka (Lokalni bekap i izvoz)
                 ExpandableSettingsSection(
                     icon = TxturaIcons.FolderBackup,
                     iconTint = palette.accentPrimary,
@@ -1864,100 +1641,117 @@ fun SettingsScreen(
                         expandedPermissions = false
                     }
                 ) {
-                    Text(
-                        text = strings.localBackupTitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = strings.localBackupSub,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textSecondary
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    val lastBackupText = if (lastBackupTimestamp > 0L) {
+                        strings.lastBackupLabel(formatTimestamp(lastBackupTimestamp))
+                    } else {
+                        strings.noPreviousBackup
+                    }
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = lastBackupText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.accentPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            GlassCard(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp),
+                                elevated = true,
+                                accentHighlight = palette.accentPrimary,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
+                                onClick = onCreateLocalBackup
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(
+                                        imageVector = TxturaIcons.FolderBackup,
+                                        contentDescription = null,
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = strings.createLocalBackupButton,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.accentPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            GlassCard(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(14.dp),
+                                elevated = true,
+                                accentHighlight = palette.accentSecondary,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
+                                onClick = onRestoreLocalBackup
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(
+                                        imageVector = TxturaIcons.Restore,
+                                        contentDescription = null,
+                                        tint = palette.accentSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = strings.restoreLocalBackupButton,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+
                         GlassCard(
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
                             elevated = true,
                             accentHighlight = palette.accentPrimary,
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                            onClick = onCreateLocalBackup
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                            onClick = onShareBackupFile
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
                                 Icon(
-                                    imageVector = TxturaIcons.FolderBackup,
+                                    imageVector = TxturaIcons.Send,
                                     contentDescription = null,
                                     tint = palette.accentPrimary,
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(16.dp)
                                 )
-                                Spacer(modifier = Modifier.height(6.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = strings.createLocalBackupButton,
-                                    style = MaterialTheme.typography.labelSmall,
+                                    text = strings.shareBackupButton,
+                                    style = MaterialTheme.typography.labelMedium,
                                     color = palette.accentPrimary,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
                         }
-
-                        GlassCard(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(14.dp),
-                            elevated = true,
-                            accentHighlight = palette.accentSecondary,
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                            onClick = onRestoreLocalBackup
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = TxturaIcons.Restore,
-                                    contentDescription = null,
-                                    tint = palette.accentSecondary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = strings.restoreLocalBackupButton,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = palette.textPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    GlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                        onClick = onShareBackupFile
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = TxturaIcons.Send,
-                                contentDescription = null,
-                                tint = palette.textSecondary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = strings.shareBackupButton,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.textSecondary
-                            )
-                        }
                     }
                 }
 
-                // 5. DROPDOWN CATEGORY: Dozvole i Podrazumevana Aplikacija
+                // 5. MAIN CATEGORY: Dozvole i Podrazumevana Aplikacija (On/Off prekidači)
                 ExpandableSettingsSection(
                     icon = TxturaIcons.ShieldCheck,
                     iconTint = if (hasSmsPermission && isDefaultSmsApp) palette.safeColor else palette.accentPrimary,
@@ -1974,89 +1768,278 @@ fun SettingsScreen(
                         expandedBackup = false
                     }
                 ) {
-                    PermissionStatusRow(
-                        label = strings.smsMmsContactsPermLabel,
-                        granted = hasSmsPermission,
-                        grantedText = strings.permGranted,
-                        deniedText = strings.permDemoNotGranted
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    PermissionStatusRow(
-                        label = strings.defaultSmsRoleLabel,
-                        granted = isDefaultSmsApp,
-                        grantedText = strings.roleActive,
-                        deniedText = strings.roleNotSet
-                    )
-
-                    if (rationaleMessage != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = rationaleMessage,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = palette.cautionColor
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (!hasSmsPermission) {
-                            GlassCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(16.dp),
-                                elevated = true,
-                                accentHighlight = palette.accentPrimary,
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                                onClick = onRequestSmsPermissions
-                            ) {
-                                Text(
-                                    text = strings.grantSmsMmsPermButton,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = palette.accentPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SettingsSwitchRow(
+                            title = strings.smsMmsContactsPermLabel,
+                            subtitle = if (hasSmsPermission) strings.permGranted else strings.permDemoNotGranted,
+                            checked = hasSmsPermission
+                        ) {
+                            if (!hasSmsPermission) onRequestSmsPermissions() else onOpenSystemAppSettings()
                         }
 
-                        if (!isDefaultSmsApp) {
-                            GlassCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(16.dp),
-                                elevated = true,
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                                onClick = onRequestDefaultSmsRole
-                            ) {
-                                Text(
-                                    text = strings.setDefaultSmsRoleButton,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = palette.textPrimary,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
+                        rationaleMessage?.let { msg ->
+                            Text(
+                                text = msg,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.cautionColor
+                            )
+                        }
+
+                        SettingsSwitchRow(
+                            title = strings.defaultSmsRoleLabel,
+                            subtitle = if (isDefaultSmsApp) strings.roleActive else strings.roleNotSet,
+                            checked = isDefaultSmsApp
+                        ) {
+                            if (!isDefaultSmsApp) onRequestDefaultSmsRole() else onOpenSystemAppSettings()
                         }
 
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                             onClick = onOpenSystemAppSettings
                         ) {
                             Text(
                                 text = strings.openSystemAppSettingsButton,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = palette.textSecondary
+                                color = palette.textSecondary,
+                                modifier = Modifier.align(Alignment.Center)
                             )
                         }
                     }
                 }
             }
         }
+
+        if (showSecurityMeasuresDialog) {
+            SecurityMeasuresDialog(
+                onDismiss = { showSecurityMeasuresDialog = false }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val palette = LocalGlassPalette.current
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevated = checked,
+        accentHighlight = if (checked) palette.accentPrimary else null,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        onClick = { onCheckedChange(!checked) }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (checked) palette.accentPrimary else palette.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = if (palette.isAmoled) Color.Black else Color.White,
+                    checkedTrackColor = palette.accentPrimary,
+                    uncheckedThumbColor = palette.textSecondary,
+                    uncheckedTrackColor = palette.glassSurfaceElevated
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun SwipeDirectionInteractiveCard(
+    title: String,
+    currentAction: SwipeAction,
+    defaultFallbackAction: SwipeAction,
+    strings: AppStrings,
+    onSelectAction: (SwipeAction) -> Unit
+) {
+    val palette = LocalGlassPalette.current
+    val enabled = currentAction != SwipeAction.NONE
+    val selectableActions = remember {
+        SwipeAction.entries.filter { it != SwipeAction.NONE }
     }
 
-    if (showSecurityMeasuresDialog) {
-        SecurityMeasuresDialog(
-            onDismiss = { showSecurityMeasuresDialog = false }
-        )
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevated = enabled,
+        accentHighlight = if (enabled) swipeActionColor(currentAction) else null,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = swipeActionLabel(currentAction, strings),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (enabled) swipeActionColor(currentAction) else palette.textSecondary
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { turnOn ->
+                        if (turnOn) {
+                            onSelectAction(defaultFallbackAction)
+                        } else {
+                            onSelectAction(SwipeAction.NONE)
+                        }
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = if (palette.isAmoled) Color.Black else Color.White,
+                        checkedTrackColor = if (enabled) swipeActionColor(currentAction) else palette.accentPrimary,
+                        uncheckedThumbColor = palette.textSecondary,
+                        uncheckedTrackColor = palette.glassSurfaceElevated
+                    )
+                )
+            }
+
+            AnimatedVisibility(
+                visible = enabled,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                    ) {
+                        selectableActions.forEach { action ->
+                            val selected = action == currentAction
+                            val actColor = swipeActionColor(action)
+                            GlassCard(
+                                shape = RoundedCornerShape(50),
+                                elevated = selected,
+                                accentHighlight = if (selected) actColor else null,
+                                contentPadding = PaddingValues(horizontal = 11.dp, vertical = 6.dp),
+                                onClick = { onSelectAction(action) }
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = swipeActionIcon(action),
+                                        contentDescription = null,
+                                        tint = if (selected) actColor else palette.textSecondary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = swipeActionLabel(action, strings),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (selected) actColor else palette.textSecondary,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExpandableSubSettingItem(
+    title: String,
+    subtitle: String? = null,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val palette = LocalGlassPalette.current
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevated = expanded,
+        accentHighlight = if (expanded) palette.accentPrimary else null,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 11.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (expanded) palette.accentPrimary else palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (!subtitle.isNullOrBlank()) {
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textSecondary,
+                            maxLines = if (expanded) 2 else 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    imageVector = if (expanded) TxturaIcons.ChevronDown else TxturaIcons.ChevronRight,
+                    contentDescription = null,
+                    tint = if (expanded) palette.accentPrimary else palette.textSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    content()
+                }
+            }
+        }
     }
 }
 
@@ -2068,11 +2051,9 @@ private fun SecurityMeasuresDialog(
     val strings = TxturaStrings.current()
     val scrollState = rememberScrollState()
 
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-        titleContentColor = palette.textPrimary,
-        textContentColor = palette.textSecondary,
+        accentBorderColor = palette.safeColor,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -2202,96 +2183,6 @@ private fun ExpandableSettingsSection(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun ThemeOptionRow(
-    mode: TxturaThemeMode,
-    title: String,
-    subtitle: String,
-    activePrefix: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    val palette = LocalGlassPalette.current
-    GlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        elevated = selected,
-        accentHighlight = if (selected) palette.accentPrimary else null,
-        contentPadding = PaddingValues(12.dp),
-        onClick = onClick
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = if (selected) palette.accentPrimary else palette.textPrimary,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.textSecondary
-                )
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(
-                        if (selected) palette.accentPrimary.copy(alpha = 0.2f)
-                        else Color.Transparent
-                    )
-                    .border(
-                        1.dp,
-                        if (selected) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.4f),
-                        RoundedCornerShape(50)
-                    )
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
-            ) {
-                Text(
-                    text = if (selected) "$activePrefix${mode.label}" else mode.label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) palette.accentPrimary else palette.textSecondary,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PermissionStatusRow(
-    label: String,
-    granted: Boolean,
-    grantedText: String,
-    deniedText: String
-) {
-    val palette = LocalGlassPalette.current
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = palette.textPrimary,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            text = if (granted) grantedText else deniedText,
-            style = MaterialTheme.typography.labelMedium,
-            color = if (granted) palette.safeColor else palette.cautionColor,
-            fontWeight = FontWeight.Bold
-        )
     }
 }
 
@@ -2545,6 +2436,7 @@ fun ConversationDetailScreen(
     onOpenChatWallpaperPicker: () -> Unit = {},
     onCallSender: () -> Unit,
     onOpenContact: () -> Unit,
+    onBlockContact: () -> Unit = {},
     onPickMmsPhoto: () -> Unit,
     onClearAttachment: () -> Unit,
     onSendMessage: (String, Uri?) -> Unit,
@@ -2561,6 +2453,10 @@ fun ConversationDetailScreen(
     var messagePendingDelete by remember { mutableStateOf<ChatMessage?>(null) }
     var messagePendingForward by remember { mutableStateOf<ChatMessage?>(null) }
 
+    // Top-right 3-dots overflow dropdown menu & block contact confirmation dialog state
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var showConfirmBlockContactDialog by remember { mutableStateOf(false) }
+
     LaunchedEffect(thread.messages.size) {
         if (thread.messages.isNotEmpty()) {
             listState.animateScrollToItem(thread.messages.size - 1)
@@ -2572,134 +2468,179 @@ fun ConversationDetailScreen(
     val charsPerSegment = if (hasNonAsciiOrEmoji) 70 else 160
     val smsSegments = if (draftText.isEmpty()) 1 else ((draftText.length - 1) / charsPerSegment) + 1
 
-    // Long-press Message Context Menu Dialog (Prosledi, Izbriši, Kopiraj, Hajlajtuj, Prikači)
-    val activeMenuMsg = messageWithOpenMenu
-    if (activeMenuMsg != null) {
-        val palette = LocalGlassPalette.current
-        AlertDialog(
-            onDismissRequest = { messageWithOpenMenu = null },
-            containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-            titleContentColor = palette.textPrimary,
-            textContentColor = palette.textSecondary,
-            title = {
-                Text(
-                    text = strings.messageOptionsTitle,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = palette.textPrimary
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // 1. Prosledi poruku (Forward)
-                    MessageActionMenuOption(
-                        icon = TxturaIcons.Forward,
-                        label = strings.forwardMessageOption,
-                        tint = palette.accentPrimary,
-                        onClick = {
-                            messageWithOpenMenu = null
-                            messagePendingForward = activeMenuMsg
-                        }
-                    )
-                    // 2. Izbriši poruku (Delete)
-                    MessageActionMenuOption(
-                        icon = TxturaIcons.Delete,
-                        label = strings.deleteMessageOption,
-                        tint = palette.dangerColor,
-                        onClick = {
-                            messageWithOpenMenu = null
-                            messagePendingDelete = activeMenuMsg
-                        }
-                    )
-                    // 3. Kopiraj poruku (Copy)
-                    MessageActionMenuOption(
-                        icon = TxturaIcons.CopyKey,
-                        label = strings.copyMessageOption,
-                        tint = palette.safeColor,
-                        onClick = {
-                            messageWithOpenMenu = null
-                            onCopyMessageText(activeMenuMsg.body)
-                        }
-                    )
-                    // 4. Hajlajtuj poruku (Highlight)
-                    MessageActionMenuOption(
-                        icon = TxturaIcons.HighlightStar,
-                        label = if (activeMenuMsg.isHighlighted) strings.unhighlightMessageOption else strings.highlightMessageOption,
-                        tint = palette.cautionColor,
-                        onClick = {
-                            messageWithOpenMenu = null
-                            onToggleHighlightMessage(activeMenuMsg.id)
-                        }
-                    )
-                    // 5. Prikači poruku (Pin)
-                    MessageActionMenuOption(
-                        icon = TxturaIcons.Pin,
-                        label = if (activeMenuMsg.isPinned) strings.unpinMessage else strings.pinMessage,
-                        tint = palette.accentSecondary,
-                        onClick = {
-                            messageWithOpenMenu = null
-                            onTogglePinMessage(activeMenuMsg.id)
-                        }
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { messageWithOpenMenu = null }) {
-                    Text(strings.cancel, color = palette.textSecondary)
-                }
-            }
-        )
-    }
-
-    // Confirm single message deletion
-    val msgToDelete = messagePendingDelete
-    if (msgToDelete != null) {
-        val palette = LocalGlassPalette.current
-        AlertDialog(
-            onDismissRequest = { messagePendingDelete = null },
-            containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-            titleContentColor = palette.textPrimary,
-            textContentColor = palette.textSecondary,
-            title = {
-                Text(strings.confirmDeleteSingleMessageTitle, color = palette.textPrimary)
-            },
-            text = {
-                Text(strings.confirmDeleteSingleMessageBody, color = palette.textPrimary)
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        messagePendingDelete = null
-                        onDeleteMessage(msgToDelete.id)
-                    }
-                ) {
-                    Text(strings.deleteMessageOption, color = palette.dangerColor, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { messagePendingDelete = null }) {
-                    Text(strings.cancel, color = palette.textSecondary)
-                }
-            }
-        )
-    }
-
-    // Forward message recipient picker
-    val msgToForward = messagePendingForward
-    if (msgToForward != null) {
-        NewMessageDialog(
-            title = strings.forwardMessageDialogTitle,
-            availableContacts = availableContacts,
-            onPickContact = {},
-            onDismiss = { messagePendingForward = null },
-            onSelectRecipient = { recipientAddr, recipientName ->
-                messagePendingForward = null
-                onForwardMessage(msgToForward, recipientAddr, recipientName)
-            }
-        )
-    }
-
     GlassBackground(wallpaperConfig = wallpaperConfig) {
         val palette = LocalGlassPalette.current
+
+        // Confirmation dialog before blocking contact from the 3-dots menu
+        if (showConfirmBlockContactDialog) {
+            GlassAlertDialog(
+                onDismissRequest = { showConfirmBlockContactDialog = false },
+                accentBorderColor = palette.dangerColor,
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = TxturaIcons.Block,
+                            contentDescription = null,
+                            tint = palette.dangerColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = strings.confirmBlockContactTitle,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = palette.textPrimary
+                        )
+                    }
+                },
+                text = {
+                    Text(
+                        text = strings.confirmBlockContactMessage(thread.contactName, thread.address),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showConfirmBlockContactDialog = false
+                            onBlockContact()
+                        }
+                    ) {
+                        Text(
+                            text = strings.confirm,
+                            color = palette.dangerColor,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showConfirmBlockContactDialog = false }) {
+                        Text(strings.cancel, color = palette.textSecondary)
+                    }
+                }
+            )
+        }
+
+        // Long-press Message Context Menu Dialog (Prosledi, Izbriši, Kopiraj, Hajlajtuj, Prikači)
+        val activeMenuMsg = messageWithOpenMenu
+        if (activeMenuMsg != null) {
+            GlassAlertDialog(
+                onDismissRequest = { messageWithOpenMenu = null },
+                accentBorderColor = palette.accentPrimary,
+                title = {
+                    Text(
+                        text = strings.messageOptionsTitle,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = palette.textPrimary
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 1. Prosledi poruku (Forward)
+                        MessageActionMenuOption(
+                            icon = TxturaIcons.Forward,
+                            label = strings.forwardMessageOption,
+                            tint = palette.accentPrimary,
+                            onClick = {
+                                messageWithOpenMenu = null
+                                messagePendingForward = activeMenuMsg
+                            }
+                        )
+                        // 2. Izbriši poruku (Delete)
+                        MessageActionMenuOption(
+                            icon = TxturaIcons.Delete,
+                            label = strings.deleteMessageOption,
+                            tint = palette.dangerColor,
+                            onClick = {
+                                messageWithOpenMenu = null
+                                messagePendingDelete = activeMenuMsg
+                            }
+                        )
+                        // 3. Kopiraj poruku (Copy)
+                        MessageActionMenuOption(
+                            icon = TxturaIcons.CopyKey,
+                            label = strings.copyMessageOption,
+                            tint = palette.safeColor,
+                            onClick = {
+                                messageWithOpenMenu = null
+                                onCopyMessageText(activeMenuMsg.body)
+                            }
+                        )
+                        // 4. Hajlajtuj poruku (Highlight)
+                        MessageActionMenuOption(
+                            icon = TxturaIcons.HighlightStar,
+                            label = if (activeMenuMsg.isHighlighted) strings.unhighlightMessageOption else strings.highlightMessageOption,
+                            tint = palette.cautionColor,
+                            onClick = {
+                                messageWithOpenMenu = null
+                                onToggleHighlightMessage(activeMenuMsg.id)
+                            }
+                        )
+                        // 5. Prikači poruku (Pin)
+                        MessageActionMenuOption(
+                            icon = TxturaIcons.Pin,
+                            label = if (activeMenuMsg.isPinned) strings.unpinMessage else strings.pinMessage,
+                            tint = palette.accentSecondary,
+                            onClick = {
+                                messageWithOpenMenu = null
+                                onTogglePinMessage(activeMenuMsg.id)
+                            }
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { messageWithOpenMenu = null }) {
+                        Text(strings.cancel, color = palette.textSecondary)
+                    }
+                }
+            )
+        }
+
+        // Confirm single message deletion
+        val msgToDelete = messagePendingDelete
+        if (msgToDelete != null) {
+            GlassAlertDialog(
+                onDismissRequest = { messagePendingDelete = null },
+                accentBorderColor = palette.dangerColor,
+                title = {
+                    Text(strings.confirmDeleteSingleMessageTitle, color = palette.textPrimary)
+                },
+                text = {
+                    Text(strings.confirmDeleteSingleMessageBody, color = palette.textPrimary)
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            messagePendingDelete = null
+                            onDeleteMessage(msgToDelete.id)
+                        }
+                    ) {
+                        Text(strings.deleteMessageOption, color = palette.dangerColor, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { messagePendingDelete = null }) {
+                        Text(strings.cancel, color = palette.textSecondary)
+                    }
+                }
+            )
+        }
+
+        // Forward message recipient picker
+        val msgToForward = messagePendingForward
+        if (msgToForward != null) {
+            NewMessageDialog(
+                title = strings.forwardMessageDialogTitle,
+                availableContacts = availableContacts,
+                onPickContact = {},
+                onDismiss = { messagePendingForward = null },
+                onSelectRecipient = { recipientAddr, recipientName ->
+                    messagePendingForward = null
+                    onForwardMessage(msgToForward, recipientAddr, recipientName)
+                }
+            )
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -2778,37 +2719,7 @@ fun ConversationDetailScreen(
 
                     Spacer(modifier = Modifier.width(6.dp))
 
-                    GlassIconButton(
-                        icon = TxturaIcons.SparklesTheme,
-                        contentDescription = strings.chatWallpaperTooltip,
-                        tint = palette.accentPrimary,
-                        onClick = onOpenChatWallpaperPicker,
-                        size = 36.dp
-                    )
-
-                    Spacer(modifier = Modifier.width(5.dp))
-
-                    GlassIconButton(
-                        icon = TxturaIcons.Pin,
-                        contentDescription = if (thread.isPinned) strings.unpinContactThread else strings.pinContactThread,
-                        tint = if (thread.isPinned) palette.accentPrimary else palette.textSecondary,
-                        accentHighlight = if (thread.isPinned) palette.accentPrimary else null,
-                        onClick = onTogglePinThread,
-                        size = 36.dp
-                    )
-
-                    Spacer(modifier = Modifier.width(5.dp))
-
-                    GlassIconButton(
-                        icon = TxturaIcons.ContactPerson,
-                        contentDescription = strings.viewContactDetails,
-                        tint = palette.accentPrimary,
-                        onClick = onOpenContact,
-                        size = 36.dp
-                    )
-
-                    Spacer(modifier = Modifier.width(5.dp))
-
+                    // Top-right corner: ONLY Call button and 3-dots menu button next to it
                     GlassIconButton(
                         icon = TxturaIcons.PhoneCall,
                         contentDescription = strings.callSender,
@@ -2817,6 +2728,117 @@ fun ConversationDetailScreen(
                         onClick = onCallSender,
                         size = 36.dp
                     )
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    Box {
+                        GlassIconButton(
+                            icon = TxturaIcons.MoreVert,
+                            contentDescription = strings.moreOptionsTooltip,
+                            tint = palette.accentPrimary,
+                            onClick = { showMoreMenu = true },
+                            size = 36.dp
+                        )
+
+                        val menuShape = RoundedCornerShape(20.dp)
+                        DropdownMenu(
+                            expanded = showMoreMenu,
+                            onDismissRequest = { showMoreMenu = false },
+                            shape = menuShape,
+                            containerColor = palette.popupContainerColor,
+                            tonalElevation = 0.dp,
+                            modifier = Modifier.border(
+                                width = 1.dp,
+                                brush = Brush.linearGradient(listOf(palette.glassBorderTop, palette.glassBorderBottom)),
+                                shape = menuShape
+                            )
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = strings.chatWallpaperTooltip,
+                                        color = palette.textPrimary
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = TxturaIcons.SparklesTheme,
+                                        contentDescription = null,
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onOpenChatWallpaperPicker()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = if (thread.isPinned) strings.unpinContactThread else strings.pinContactThread,
+                                        color = palette.textPrimary
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = TxturaIcons.Pin,
+                                        contentDescription = null,
+                                        tint = if (thread.isPinned) palette.accentPrimary else palette.textSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onTogglePinThread()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = strings.viewContactDetails,
+                                        color = palette.textPrimary
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = TxturaIcons.ContactPerson,
+                                        contentDescription = null,
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    onOpenContact()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = strings.blockContactOption,
+                                        color = palette.dangerColor,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = TxturaIcons.Block,
+                                        contentDescription = null,
+                                        tint = palette.dangerColor,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    showConfirmBlockContactDialog = true
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
@@ -3077,7 +3099,6 @@ private fun MessageActionMenuOption(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubbleItem(
     message: ChatMessage,
@@ -3558,11 +3579,9 @@ fun NewMessageDialog(
         }
     }
 
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = if (palette.isAmoled) Color(0xFF0D1117) else MaterialTheme.colorScheme.surface,
-        titleContentColor = palette.textPrimary,
-        textContentColor = palette.textSecondary,
+        accentBorderColor = palette.accentPrimary,
         title = {
             Column {
                 Text(
@@ -3760,11 +3779,9 @@ fun DefaultSmsRolePromptDialog(
     val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
 
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-        titleContentColor = palette.textPrimary,
-        textContentColor = palette.textSecondary,
+        accentBorderColor = palette.accentPrimary,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -3990,11 +4007,9 @@ fun ConfirmMoveToTrashDialog(
     val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
 
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-        titleContentColor = palette.textPrimary,
-        textContentColor = palette.textSecondary,
+        accentBorderColor = palette.cautionColor,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -4054,11 +4069,9 @@ fun ConfirmRestoreDialog(
     val strings = TxturaStrings.current()
     val dateStr = formatTimestamp(payload.createdAtMillis)
 
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-        titleContentColor = palette.textPrimary,
-        textContentColor = palette.textSecondary,
+        accentBorderColor = palette.accentPrimary,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -4132,7 +4145,6 @@ fun DeletedMessagesScreen(
     onPermanentlyDeleteThread: (Long) -> Unit,
     onEmptyTrash: () -> Unit
 ) {
-    val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
     var pendingPermanentDeleteEntry by remember { mutableStateOf<DeletedConversationEntry?>(null) }
 
@@ -4161,6 +4173,7 @@ fun DeletedMessagesScreen(
         }
 
     GlassBackground(wallpaperConfig = mainWallpaper) {
+        val palette = LocalGlassPalette.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -4474,52 +4487,50 @@ fun DeletedMessagesScreen(
                 }
             }
         }
-    }
 
-    val entryToConfirm = pendingPermanentDeleteEntry
-    if (entryToConfirm != null) {
-        AlertDialog(
-            onDismissRequest = { pendingPermanentDeleteEntry = null },
-            containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-            titleContentColor = palette.textPrimary,
-            textContentColor = palette.textSecondary,
-            title = {
-                Text(
-                    text = strings.confirmPermanentDeleteTitle,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = palette.textPrimary
-                )
-            },
-            text = {
-                Text(
-                    text = strings.confirmPermanentDeleteMessage(entryToConfirm.thread.contactName),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = palette.textPrimary
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onPermanentlyDeleteThread(entryToConfirm.thread.id)
-                        pendingPermanentDeleteEntry = null
+        val entryToConfirm = pendingPermanentDeleteEntry
+        if (entryToConfirm != null) {
+            GlassAlertDialog(
+                onDismissRequest = { pendingPermanentDeleteEntry = null },
+                accentBorderColor = palette.dangerColor,
+                title = {
+                    Text(
+                        text = strings.confirmPermanentDeleteTitle,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = palette.textPrimary
+                    )
+                },
+                text = {
+                    Text(
+                        text = strings.confirmPermanentDeleteMessage(entryToConfirm.thread.contactName),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onPermanentlyDeleteThread(entryToConfirm.thread.id)
+                            pendingPermanentDeleteEntry = null
+                        }
+                    ) {
+                        Text(
+                            text = strings.confirmPermanentDeleteButton,
+                            color = palette.dangerColor,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
-                ) {
-                    Text(
-                        text = strings.confirmPermanentDeleteButton,
-                        color = palette.dangerColor,
-                        fontWeight = FontWeight.Bold
-                    )
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingPermanentDeleteEntry = null }) {
+                        Text(
+                            text = strings.cancel,
+                            color = palette.textSecondary
+                        )
+                    }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingPermanentDeleteEntry = null }) {
-                    Text(
-                        text = strings.cancel,
-                        color = palette.textSecondary
-                    )
-                }
-            }
-        )
+            )
+        }
     }
 }
 
@@ -4543,8 +4554,9 @@ private fun formatTimestamp(millis: Long): String {
 }
 
 /**
- * Displays the 10 curated colorful presets OR the 10 monochrome Light/Dark + 1 accent presets.
- * For Monochrome themes, the swatch preview reflects whether Light or Dark mode is active plus the 1 accent color!
+ * Displays the 10 curated colorful presets OR the 10 monochrome Light/Dark + 1 accent presets,
+ * each with a live miniature preview of its bespoke Txtura surface texture, plus an interactive
+ * Texture Picker bar so the user can keep Auto (theme-matched) or select any texture pattern.
  */
 @Composable
 fun WallpaperPresetSelectorGrid(
@@ -4552,6 +4564,7 @@ fun WallpaperPresetSelectorGrid(
     uiColorMode: UiColorMode = if (currentConfig.preset.isMonochrome) UiColorMode.MONOCHROME else UiColorMode.COLORFUL,
     strings: AppStrings,
     onSelectPreset: (WallpaperPreset) -> Unit,
+    onSelectTexture: (WallpaperTexture) -> Unit = {},
     onSwitchColorMode: (UiColorMode) -> Unit = {}
 ) {
     val palette = LocalGlassPalette.current
@@ -4570,7 +4583,7 @@ fun WallpaperPresetSelectorGrid(
                 shape = RoundedCornerShape(14.dp),
                 elevated = colorfulActive,
                 accentHighlight = if (colorfulActive) palette.accentPrimary else null,
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 9.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 9.dp),
                 onClick = {
                     selectedCategory = UiColorMode.COLORFUL
                     onSwitchColorMode(UiColorMode.COLORFUL)
@@ -4581,6 +4594,9 @@ fun WallpaperPresetSelectorGrid(
                     style = MaterialTheme.typography.labelMedium,
                     color = if (colorfulActive) palette.accentPrimary else palette.textSecondary,
                     fontWeight = if (colorfulActive) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
@@ -4591,7 +4607,7 @@ fun WallpaperPresetSelectorGrid(
                 shape = RoundedCornerShape(14.dp),
                 elevated = monoActive,
                 accentHighlight = if (monoActive) palette.accentPrimary else null,
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 9.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 9.dp),
                 onClick = {
                     selectedCategory = UiColorMode.MONOCHROME
                     onSwitchColorMode(UiColorMode.MONOCHROME)
@@ -4602,6 +4618,9 @@ fun WallpaperPresetSelectorGrid(
                     style = MaterialTheme.typography.labelMedium,
                     color = if (monoActive) palette.accentPrimary else palette.textSecondary,
                     fontWeight = if (monoActive) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
@@ -4613,75 +4632,185 @@ fun WallpaperPresetSelectorGrid(
             WallpaperPreset.monochromePresets
         }
 
-        presets.forEach { preset ->
-            val selected = !currentConfig.isCustomGalleryImage && currentConfig.preset == preset
-            val label = wallpaperPresetTitle(preset, strings)
-            val compAccent = WallpaperHarmonyEngine.presetComplementaryAccent(preset, palette.isDark)
-            val previewColors = if (preset.isMonochrome) {
-                // Monochrome preview shows Light or Dark base depending on active theme + the single accent color
-                val monoBase = if (palette.isDark) Color(0xFF0F141D) else Color(0xFFF1F5F9)
-                val monoMid = if (palette.isDark) Color(0xFF1E2532) else Color(0xFFE2E8F0)
-                listOf(monoBase, monoMid, compAccent.copy(alpha = 0.65f))
-            } else {
-                listOf(
-                    Color(preset.primaryOrbHex),
-                    Color(preset.secondaryOrbHex),
-                    Color(preset.accentOrbHex)
-                )
-            }
-            GlassCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                elevated = selected,
-                accentHighlight = if (selected) compAccent else null,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
-                onClick = { onSelectPreset(preset) }
+        presets.chunked(2).forEach { rowPresets ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            contentAlignment = Alignment.BottomEnd,
-                            modifier = Modifier
-                                .size(width = 44.dp, height = 26.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Brush.linearGradient(colors = previewColors))
-                                .border(
-                                    1.dp,
-                                    if (selected) compAccent else Color.White.copy(alpha = 0.35f),
-                                    RoundedCornerShape(8.dp)
-                                )
-                                .padding(3.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(compAccent)
-                                    .border(1.dp, Color.Black.copy(alpha = 0.55f), CircleShape)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (selected) compAccent else palette.textPrimary,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                rowPresets.forEach { preset ->
+                    val selected = !currentConfig.isCustomGalleryImage && currentConfig.preset == preset
+                    val label = wallpaperPresetTitle(preset, strings)
+                    val matchedTexture = if (currentConfig.texture == WallpaperTexture.AUTO_THEME) {
+                        preset.defaultTexture
+                    } else {
+                        currentConfig.texture
+                    }
+                    val textureLabel = wallpaperTextureTitle(preset.defaultTexture, strings)
+                    val compAccent = WallpaperHarmonyEngine.presetComplementaryAccent(preset, palette.isDark)
+                    val previewColors = if (preset.isMonochrome) {
+                        val monoBase = if (palette.isDark) Color(0xFF0A0E16) else Color(0xFFF1F5F9)
+                        val monoMid = if (palette.isDark) Color(0xFF1A2230) else Color(0xFFE2E8F0)
+                        listOf(monoBase, monoMid, compAccent.copy(alpha = 0.55f))
+                    } else {
+                        listOf(
+                            Color(preset.baseColorHex),
+                            Color(preset.primaryOrbHex),
+                            Color(preset.secondaryOrbHex)
                         )
                     }
-                    if (selected) {
-                        Icon(
-                            imageVector = TxturaIcons.CheckDouble,
-                            contentDescription = null,
-                            tint = compAccent,
-                            modifier = Modifier.size(16.dp)
-                        )
+                    GlassCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp),
+                        elevated = selected,
+                        accentHighlight = if (selected) compAccent else null,
+                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp),
+                        onClick = { onSelectPreset(preset) }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.BottomEnd,
+                                modifier = Modifier
+                                    .size(width = 40.dp, height = 28.dp)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(Brush.linearGradient(colors = previewColors))
+                                    .drawWithCache {
+                                        val pCol = compAccent.copy(alpha = 0.65f)
+                                        val sCol = Color.White.copy(alpha = 0.35f)
+                                        onDrawBehind {
+                                            drawTxturaTexture(
+                                                texture = matchedTexture,
+                                                primaryColor = pCol,
+                                                secondaryColor = sCol,
+                                                accentColor = compAccent.copy(alpha = 0.85f),
+                                                isCompactPreview = true
+                                            )
+                                        }
+                                    }
+                                    .border(
+                                        1.dp,
+                                        if (selected) compAccent else Color.White.copy(alpha = 0.35f),
+                                        RoundedCornerShape(7.dp)
+                                    )
+                                    .padding(2.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(compAccent)
+                                        .border(1.dp, Color.Black.copy(alpha = 0.55f), CircleShape)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (selected) compAccent else palette.textPrimary,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = textureLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                    color = if (selected) compAccent.copy(alpha = 0.85f) else palette.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+                if (rowPresets.size == 1) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+
+        // Interactive Txtura Texture Picker Bar (Auto theme texture or custom texture selection)
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = strings.textureSectionTitle,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = strings.textureSectionSub,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary,
+                        maxLines = 2
+                    )
+                }
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+            ) {
+                WallpaperTexture.entries.forEach { tex ->
+                    val isSelected = currentConfig.texture == tex
+                    val previewTex = if (tex == WallpaperTexture.AUTO_THEME) {
+                        currentConfig.preset.defaultTexture
+                    } else {
+                        tex
+                    }
+                    val texTitle = wallpaperTextureTitle(tex, strings)
+                    GlassCard(
+                        shape = RoundedCornerShape(14.dp),
+                        elevated = isSelected,
+                        accentHighlight = if (isSelected) palette.accentPrimary else null,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+                        onClick = { onSelectTexture(tex) }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 28.dp, height = 20.dp)
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(
+                                        if (palette.isDark) Color(0xFF0E1420) else Color(0xFFE2E8F0)
+                                    )
+                                    .drawWithCache {
+                                        val pCol = palette.accentPrimary.copy(alpha = 0.70f)
+                                        val sCol = palette.textSecondary.copy(alpha = 0.40f)
+                                        onDrawBehind {
+                                            drawTxturaTexture(
+                                                texture = previewTex,
+                                                primaryColor = pCol,
+                                                secondaryColor = sCol,
+                                                accentColor = palette.accentPrimary,
+                                                isCompactPreview = true
+                                            )
+                                        }
+                                    }
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.35f),
+                                        RoundedCornerShape(5.dp)
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(7.dp))
+                            Text(
+                                text = texTitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isSelected) palette.accentPrimary else palette.textPrimary,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1
+                            )
+                        }
                     }
                 }
             }
@@ -4695,6 +4824,7 @@ fun WallpaperPickerDialog(
     currentConfig: WallpaperConfig,
     showResetToMainButton: Boolean = false,
     onSelectPreset: (WallpaperPreset) -> Unit,
+    onSelectTexture: (WallpaperTexture) -> Unit = {},
     onPickFromGallery: () -> Unit,
     onResetToMainWallpaper: () -> Unit = {},
     onDismiss: () -> Unit
@@ -4703,11 +4833,9 @@ fun WallpaperPickerDialog(
     val strings = TxturaStrings.current()
     val scrollState = rememberScrollState()
 
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = if (palette.isAmoled) Color(0xFF0A0F18) else MaterialTheme.colorScheme.surface,
-        titleContentColor = palette.textPrimary,
-        textContentColor = palette.textSecondary,
+        accentBorderColor = palette.accentPrimary,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -4728,7 +4856,7 @@ fun WallpaperPickerDialog(
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier
-                    .height(400.dp)
+                    .height(420.dp)
                     .verticalScroll(scrollState)
             ) {
                 GlassCard(
@@ -4809,7 +4937,8 @@ fun WallpaperPickerDialog(
                 WallpaperPresetSelectorGrid(
                     currentConfig = currentConfig,
                     strings = strings,
-                    onSelectPreset = onSelectPreset
+                    onSelectPreset = onSelectPreset,
+                    onSelectTexture = onSelectTexture
                 )
             }
         },
@@ -4848,5 +4977,33 @@ private fun wallpaperPresetTitle(preset: WallpaperPreset, strings: AppStrings): 
         WallpaperPreset.MONO_NAVY -> strings.wpMonoNavy
         WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmoke
         WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspresso
+    }
+}
+
+private fun wallpaperTextureTitle(texture: WallpaperTexture, strings: AppStrings): String {
+    return when (texture) {
+        WallpaperTexture.AUTO_THEME -> strings.texAutoTheme
+        WallpaperTexture.SILK_WEAVE -> strings.texSilkWeave
+        WallpaperTexture.AURORA_RIBBONS -> strings.texAuroraRibbons
+        WallpaperTexture.VELVET_NAP -> strings.texVelvetNap
+        WallpaperTexture.OCEAN_CAUSTICS -> strings.texOceanCaustics
+        WallpaperTexture.SAND_DUNES -> strings.texSandDunes
+        WallpaperTexture.ORGANIC_BOTANICAL -> strings.texOrganicBotanical
+        WallpaperTexture.CRYSTAL_FACETS -> strings.texCrystalFacets
+        WallpaperTexture.CONSTELLATION_MESH -> strings.texConstellationMesh
+        WallpaperTexture.DAMASK_JACQUARD -> strings.texDamaskJacquard
+        WallpaperTexture.FROST_CRYSTALS -> strings.texFrostCrystals
+        WallpaperTexture.KINTSUGI_MARBLE -> strings.texKintsugiMarble
+        WallpaperTexture.SLATE_STRATA -> strings.texSlateStrata
+        WallpaperTexture.BRUSHED_METAL -> strings.texBrushedMetal
+        WallpaperTexture.LINEN_CANVAS -> strings.texLinenCanvas
+        WallpaperTexture.FLUTED_GLASS -> strings.texFlutedGlass
+        WallpaperTexture.SUEDE_MICROFIBER -> strings.texSuedeMicrofiber
+        WallpaperTexture.CARBON_TWILL -> strings.texCarbonTwill
+        WallpaperTexture.COTTON_PAPER -> strings.texCottonPaper
+        WallpaperTexture.HERRINGBONE_TWILL -> strings.texHerringboneTwill
+        WallpaperTexture.TOPOGRAPHIC_CONTOUR -> strings.texTopographicContour
+        WallpaperTexture.PEBBLED_LEATHER -> strings.texPebbledLeather
+        WallpaperTexture.NONE -> strings.texNone
     }
 }

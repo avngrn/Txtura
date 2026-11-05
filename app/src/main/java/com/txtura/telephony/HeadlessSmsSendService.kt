@@ -31,7 +31,7 @@ class HeadlessSmsSendService : Service() {
                     SmsMmsRepository.sendMessage(
                         context = applicationContext,
                         recipientAddress = cleanRecipient,
-                        rawBody = cleanMessage
+                        rawBody = cleanMessage,
                     )
                 }
             } catch (e: SecurityException) {

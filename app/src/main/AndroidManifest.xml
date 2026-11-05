@@ -1,16 +1,17 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Optional telephony feature so app works on tablets/emulators too -->
     <uses-feature
         android:name="android.hardware.telephony"
         android:required="false" />
 
-    <!-- Core SMS / MMS & Contact Resolution Permissions -->
-    <uses-permission android:name="android.permission.READ_SMS" />
-    <uses-permission android:name="android.permission.SEND_SMS" />
-    <uses-permission android:name="android.permission.RECEIVE_SMS" />
-    <uses-permission android:name="android.permission.RECEIVE_MMS" />
-    <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />
+    <!-- Core SMS / MMS & Contact Resolution Permissions (Txtura is a Default SMS Handler) -->
+    <uses-permission android:name="android.permission.READ_SMS" tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission android:name="android.permission.SEND_SMS" tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission android:name="android.permission.RECEIVE_MMS" tools:ignore="SmsAndCallLogPolicy" />
+    <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" tools:ignore="SmsAndCallLogPolicy" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -84,6 +85,17 @@
                 <data android:scheme="mmsto" />
             </intent-filter>
         </service>
+
+        <!-- FileProvider for exporting/sharing local backup JSON files -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

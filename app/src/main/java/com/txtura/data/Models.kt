@@ -1,6 +1,5 @@
 package com.txtura.data
 
-import android.accounts.AccountManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -46,14 +45,15 @@ enum class ConversationFilter {
             SERVICES,
             UNREAD,
             PINNED,
-            ALL
+            ALL,
         )
 
         fun deserializeOrder(raw: String?): List<ConversationFilter> {
             if (raw.isNullOrBlank()) return defaultOrder
-            val parsed = raw.split(",")
+            val parsed = raw.splitToSequence(",")
                 .mapNotNull { name -> entries.find { it.name == name.trim() } }
                 .distinct()
+                .toList()
             val missing = defaultOrder.filter { it !in parsed }
             return if (parsed.isEmpty()) defaultOrder else (parsed + missing)
         }
@@ -107,8 +107,39 @@ enum class DeletedGroupingMode {
 }
 
 /**
+ * Tactile background textures inspired by the "Txtura" (tekstura) identity.
+ * Each UI theme ([WallpaperPreset]) has its own signature matched texture ([WallpaperPreset.defaultTexture]),
+ * and the user can either keep [AUTO_THEME] or pick any texture style for any theme.
+ */
+enum class WallpaperTexture {
+    AUTO_THEME,
+    SILK_WEAVE,
+    AURORA_RIBBONS,
+    VELVET_NAP,
+    OCEAN_CAUSTICS,
+    SAND_DUNES,
+    ORGANIC_BOTANICAL,
+    CRYSTAL_FACETS,
+    CONSTELLATION_MESH,
+    DAMASK_JACQUARD,
+    FROST_CRYSTALS,
+    KINTSUGI_MARBLE,
+    SLATE_STRATA,
+    BRUSHED_METAL,
+    LINEN_CANVAS,
+    FLUTED_GLASS,
+    SUEDE_MICROFIBER,
+    CARBON_TWILL,
+    COTTON_PAPER,
+    HERRINGBONE_TWILL,
+    TOPOGRAPHIC_CONTOUR,
+    PEBBLED_LEATHER,
+    NONE
+}
+
+/**
  * Curated built-in backgrounds (10 colorful presets + 10 monochrome presets + Default theme).
- * Fully free of harsh neon/cyberpunk tones, utilizing rich, sophisticated, and harmonious palettes.
+ * Every preset includes a bespoke signature texture ([defaultTexture]) that matches its color palette.
  */
 enum class WallpaperPreset(
     val baseColorHex: Long,
@@ -116,31 +147,32 @@ enum class WallpaperPreset(
     val secondaryOrbHex: Long,
     val accentOrbHex: Long,
     val isMonochrome: Boolean = false,
+    val defaultTexture: WallpaperTexture = WallpaperTexture.SILK_WEAVE
 ) {
-    // 10 Curated Colorful Presets (Rich, harmonious, non-neon)
-    DEFAULT(0xFF070A12, 0xFF1D4ED8, 0xFF4338CA, 0xFF38BDF8),
-    AURORA_BOREALIS(0xFF041416, 0xFF0D9488, 0xFF0284C7, 0xFF14B8A6),
-    VELVET_PLUM(0xFF120616, 0xFF7E22CE, 0xFF9333EA, 0xFFA855F7),
-    MIDNIGHT_OCEAN(0xFF030D1A, 0xFF1D4ED8, 0xFF0284C7, 0xFF38BDF8),
-    SUNSET_HORIZON(0xFF180A0B, 0xFFBE123C, 0xFFC2410C, 0xFFF97316),
-    EMERALD_FOREST(0xFF03140C, 0xFF047857, 0xFF059669, 0xFF10B981),
-    ROYAL_AMETHYST(0xFF100618, 0xFF6D28D9, 0xFF7C3AED, 0xFF8B5CF6),
-    STARLIGHT_GALAXY(0xFF040816, 0xFF2563EB, 0xFF475569, 0xFF60A5FA),
-    CRIMSON_VELVET(0xFF17050A, 0xFF9F1239, 0xFFBE123C, 0xFFE11D48),
-    ARCTIC_FROST(0xFF05131C, 0xFF0284C7, 0xFF0369A1, 0xFF38BDF8),
-    OBSIDIAN_GOLD(0xFF110C04, 0xFFB45309, 0xFF92400E, 0xFFD97706),
+    // 10 Curated Colorful Presets + Default (with bespoke matching textures)
+    DEFAULT(0xFF070A12, 0xFF1D4ED8, 0xFF4338CA, 0xFF38BDF8, false, WallpaperTexture.SILK_WEAVE),
+    AURORA_BOREALIS(0xFF041416, 0xFF0D9488, 0xFF0284C7, 0xFF14B8A6, false, WallpaperTexture.AURORA_RIBBONS),
+    VELVET_PLUM(0xFF120616, 0xFF7E22CE, 0xFF9333EA, 0xFFA855F7, false, WallpaperTexture.VELVET_NAP),
+    MIDNIGHT_OCEAN(0xFF030D1A, 0xFF1D4ED8, 0xFF0284C7, 0xFF38BDF8, false, WallpaperTexture.OCEAN_CAUSTICS),
+    SUNSET_HORIZON(0xFF180A0B, 0xFFBE123C, 0xFFC2410C, 0xFFF97316, false, WallpaperTexture.SAND_DUNES),
+    EMERALD_FOREST(0xFF03140C, 0xFF047857, 0xFF059669, 0xFF10B981, false, WallpaperTexture.ORGANIC_BOTANICAL),
+    ROYAL_AMETHYST(0xFF100618, 0xFF6D28D9, 0xFF7C3AED, 0xFF8B5CF6, false, WallpaperTexture.CRYSTAL_FACETS),
+    STARLIGHT_GALAXY(0xFF040816, 0xFF2563EB, 0xFF475569, 0xFF60A5FA, false, WallpaperTexture.CONSTELLATION_MESH),
+    CRIMSON_VELVET(0xFF17050A, 0xFF9F1239, 0xFFBE123C, 0xFFE11D48, false, WallpaperTexture.DAMASK_JACQUARD),
+    ARCTIC_FROST(0xFF05131C, 0xFF0284C7, 0xFF0369A1, 0xFF38BDF8, false, WallpaperTexture.FROST_CRYSTALS),
+    OBSIDIAN_GOLD(0xFF110C04, 0xFFB45309, 0xFF92400E, 0xFFD97706, false, WallpaperTexture.KINTSUGI_MARBLE),
 
-    // 10 Refined Monochrome Presets (Light/Dark base + 1 distinct accent color)
-    MONO_SLATE(0xFF0B0F17, 0xFF334155, 0xFF475569, 0xFF64748B, true),
-    MONO_SAPPHIRE(0xFF050B18, 0xFF1E3A8A, 0xFF1D4ED8, 0xFF2563EB, true),
-    MONO_SAGE(0xFF06120D, 0xFF14532D, 0xFF166534, 0xFF15803D, true),
-    MONO_CHAMPAGNE(0xFF131008, 0xFF785E2F, 0xFF8C713B, 0xFFA1824A, true),
-    MONO_PLUM(0xFF140714, 0xFF581C87, 0xFF6B21A8, 0xFF7E22CE, true),
-    MONO_GRAPHITE(0xFF0A0A0A, 0xFF262626, 0xFF404040, 0xFF525252, true),
-    MONO_ROSE(0xFF15080C, 0xFF831843, 0xFF9D174D, 0xFFBE185D, true),
-    MONO_NAVY(0xFF040915, 0xFF172554, 0xFF1E3A8A, 0xFF1E40AF, true),
-    MONO_SMOKE(0xFF0F0E0E, 0xFF0D9488, 0xFF0F766E, 0xFF14B8A6, true),
-    MONO_ESPRESSO(0xFF110A06, 0xFF9A3412, 0xFFC2410C, 0xFFEA580C, true);
+    // 10 Refined Monochrome Presets (Light/Dark base + 1 distinct accent color + bespoke tactile texture)
+    MONO_SLATE(0xFF0B0F17, 0xFF334155, 0xFF475569, 0xFF64748B, true, WallpaperTexture.SLATE_STRATA),
+    MONO_SAPPHIRE(0xFF050B18, 0xFF1E3A8A, 0xFF1D4ED8, 0xFF2563EB, true, WallpaperTexture.BRUSHED_METAL),
+    MONO_SAGE(0xFF06120D, 0xFF14532D, 0xFF166534, 0xFF15803D, true, WallpaperTexture.LINEN_CANVAS),
+    MONO_CHAMPAGNE(0xFF131008, 0xFF785E2F, 0xFF8C713B, 0xFFA1824A, true, WallpaperTexture.FLUTED_GLASS),
+    MONO_PLUM(0xFF140714, 0xFF581C87, 0xFF6B21A8, 0xFF7E22CE, true, WallpaperTexture.SUEDE_MICROFIBER),
+    MONO_GRAPHITE(0xFF0A0A0A, 0xFF262626, 0xFF404040, 0xFF525252, true, WallpaperTexture.CARBON_TWILL),
+    MONO_ROSE(0xFF15080C, 0xFF831843, 0xFF9D174D, 0xFFBE185D, true, WallpaperTexture.COTTON_PAPER),
+    MONO_NAVY(0xFF040915, 0xFF172554, 0xFF1E3A8A, 0xFF1E40AF, true, WallpaperTexture.HERRINGBONE_TWILL),
+    MONO_SMOKE(0xFF0F0E0E, 0xFF0D9488, 0xFF0F766E, 0xFF14B8A6, true, WallpaperTexture.TOPOGRAPHIC_CONTOUR),
+    MONO_ESPRESSO(0xFF110A06, 0xFF9A3412, 0xFFC2410C, 0xFFEA580C, true, WallpaperTexture.PEBBLED_LEATHER);
 
     companion object {
         val colorfulPresets: List<WallpaperPreset>
@@ -152,40 +184,60 @@ enum class WallpaperPreset(
 }
 
 /**
- * Represents a chosen wallpaper (either one of the 10 built-in presets, Default, or a custom gallery image URI).
+ * Represents a chosen wallpaper (either one of the built-in presets, Default, or a custom gallery image URI)
+ * together with its tactile surface texture ([texture]).
  */
 data class WallpaperConfig(
     val preset: WallpaperPreset = WallpaperPreset.DEFAULT,
-    val customImageUri: String? = null
+    val customImageUri: String? = null,
+    val texture: WallpaperTexture = WallpaperTexture.AUTO_THEME
 ) {
     val isCustomGalleryImage: Boolean
         get() = !customImageUri.isNullOrBlank()
 
+    val resolvedTexture: WallpaperTexture
+        get() = if (texture == WallpaperTexture.AUTO_THEME) preset.defaultTexture else texture
+
     fun serialize(): String {
-        return if (!customImageUri.isNullOrBlank()) {
+        val base = if (!customImageUri.isNullOrBlank()) {
             "custom:$customImageUri"
         } else {
             "preset:${preset.name}"
+        }
+        return if (texture == WallpaperTexture.AUTO_THEME) {
+            base
+        } else {
+            "$base|tex:${texture.name}"
         }
     }
 
     companion object {
         fun deserialize(raw: String?): WallpaperConfig {
             if (raw.isNullOrBlank()) return WallpaperConfig()
+            val parts = raw.split("|tex:", limit = 2)
+            val basePart = parts[0]
+            val parsedTexture = parts.getOrNull(1)?.let { texName ->
+                WallpaperTexture.entries.find { it.name == texName.trim() }
+            } ?: WallpaperTexture.AUTO_THEME
+
             return when {
-                raw.startsWith("custom:") -> {
-                    val uriStr = raw.removePrefix("custom:").takeIf { it.isNotBlank() }
+                basePart.startsWith("custom:") -> {
+                    val uriStr = basePart.removePrefix("custom:").takeIf { it.isNotBlank() }
                     if (uriStr != null) {
-                        WallpaperConfig(preset = WallpaperPreset.DEFAULT, customImageUri = uriStr)
+                        WallpaperConfig(
+                            preset = WallpaperPreset.DEFAULT,
+                            customImageUri = uriStr,
+                            texture = parsedTexture
+                        )
                     } else {
-                        WallpaperConfig()
+                        WallpaperConfig(texture = parsedTexture)
                     }
                 }
-                raw.startsWith("preset:") -> {
-                    val name = raw.removePrefix("preset:")
+                basePart.startsWith("preset:") -> {
+                    val name = basePart.removePrefix("preset:")
                     val targetName = if (name == "CYBER_NEBULA") "VELVET_PLUM" else name
                     val found = WallpaperPreset.entries.find { it.name == targetName } ?: WallpaperPreset.DEFAULT
-                    WallpaperConfig(preset = found, customImageUri = null)
+                    WallpaperConfig(preset = found, customImageUri = null, texture = parsedTexture)
                 }
                 else -> WallpaperConfig()
             }
@@ -229,11 +281,9 @@ data class ConversationThread(
     val unreadCount: Int = 0,
     val isPinned: Boolean = false
 ) {
-    val lastMessage: ChatMessage? = messages.maxByOrNull { it.timestampMillis }
+    val lastMessage: ChatMessage? = messages.maxByOrNull(ChatMessage::timestampMillis)
 
     val pinnedMessages: List<ChatMessage> = messages.filter { it.isPinned }
-
-    val highlightedMessages: List<ChatMessage> = messages.filter { it.isHighlighted }
 
     val highestRiskLevel: SecurityRiskLevel =
         messages.maxOfOrNull { it.securityAnalysis.riskLevel } ?: SecurityRiskLevel.SAFE
@@ -331,29 +381,6 @@ object BackupManager {
         } catch (_: Exception) {
             false
         }
-    }
-
-    /**
-     * Attempts to query the primary Google Account registered on the device.
-     * Returns null safely if accounts are restricted or permissions are absent.
-     */
-    fun getConnectedGoogleAccount(context: Context): String? {
-        return try {
-            val accountManager = AccountManager.get(context)
-            val accounts = accountManager.getAccountsByType("com.google")
-            accounts.firstOrNull()?.name
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Creates an Intent to open the Android System Google Account Backup settings.
-     */
-    fun createSystemBackupSettingsIntent(): Intent {
-        val intent = Intent("android.settings.BACKUP_SETTINGS")
-        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        return intent
     }
 
     /**
@@ -509,8 +536,8 @@ object BackupManager {
         val uiColorMode = UiColorMode.entries.find { it.name == uiColorModeStr } ?: UiColorMode.COLORFUL
         val iconShapeStr = settingsObj.optString("launcherIconShape", LauncherIconShape.ROUNDED_SQUARE.name)
         val launcherIconShape = LauncherIconShape.entries.find { it.name == iconShapeStr } ?: LauncherIconShape.ROUNDED_SQUARE
-        val uiOpacity = settingsObj.optDouble("uiOpacity", 1.0).toFloat().coerceIn(0.25f, 1.35f)
-        val categoryOrder = ConversationFilter.deserializeOrder(settingsObj.optString("categoryOrder", null))
+        val uiOpacity = settingsObj.optDouble("uiOpacity", 1.0).toFloat().coerceIn(0.0f, 1.0f)
+        val categoryOrder = ConversationFilter.deserializeOrder(settingsObj.optString("categoryOrder", ""))
 
         val contactWpMap = mutableMapOf<String, WallpaperConfig>()
         val contactWpObj = settingsObj.optJSONObject("contactWallpapers")

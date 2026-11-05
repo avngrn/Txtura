@@ -82,7 +82,7 @@ object SmsMmsRepository {
     fun hasReadSmsPermission(context: Context): Boolean {
         return ContextCompat.checkSelfPermission(
             context,
-            Manifest.permission.READ_SMS
+            Manifest.permission.READ_SMS,
         ) == PackageManager.PERMISSION_GRANTED
     }
 
@@ -92,7 +92,7 @@ object SmsMmsRepository {
     fun hasSendSmsPermission(context: Context): Boolean {
         return ContextCompat.checkSelfPermission(
             context,
-            Manifest.permission.SEND_SMS
+            Manifest.permission.SEND_SMS,
         ) == PackageManager.PERMISSION_GRANTED
     }
 
@@ -102,8 +102,8 @@ object SmsMmsRepository {
     fun isDefaultSmsApp(context: Context): Boolean {
         return try {
             val roleManager = context.getSystemService(RoleManager::class.java)
-            roleManager?.isRoleHeld(RoleManager.ROLE_SMS) == true ||
-                Telephony.Sms.getDefaultSmsPackage(context) == context.packageName
+            (roleManager?.isRoleHeld(RoleManager.ROLE_SMS) == true) ||
+                (Telephony.Sms.getDefaultSmsPackage(context) == context.packageName)
         } catch (e: SecurityException) {
             Log.w(TAG, "Unable to query default SMS role", e)
             false
@@ -153,7 +153,7 @@ object SmsMmsRepository {
         val serializedDeleted = synchronized(deletedThreadTimestamps) {
             deletedThreadTimestamps.entries
                 .asSequence()
-                .map { "${it.key}|${it.value}" }
+                .map { (key, value) -> "$key|$value" }
                 .toSet()
         }
         prefs.edit {
@@ -192,7 +192,7 @@ object SmsMmsRepository {
      * Blocks multiple sender addresses and removes their active conversations from the inbox.
      */
     fun blockSenders(context: Context, addresses: Collection<String>) {
-        val cleaned = addresses.map { it.trim() }.filter { it.isNotBlank() }
+        val cleaned = addresses.asSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
         if (cleaned.isEmpty()) return
 
         synchronized(blockedAddresses) {
@@ -770,17 +770,17 @@ object SmsMmsRepository {
         }
 
     /**
-     * Finds an existing conversation thread with [rawRecipient] (restoring from Trash if needed)
+     * Finds an existing conversation thread with [recipientAddress] (restoring from Trash if needed)
      * or creates a new conversation thread if no previous chat exists with that person,
      * returning the thread ID so the chat screen can open immediately.
      */
     fun getOrCreateConversationWithRecipient(
         context: Context,
-        rawRecipient: String,
+        recipientAddress: String,
         preferredName: String? = null
     ): Long {
-        val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(rawRecipient)
-            .ifBlank { rawRecipient.trim().take(24) }
+        val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(recipientAddress)
+            .ifBlank { recipientAddress.trim().take(24) }
 
         // 1. Check active threads
         val existingActive = _threads.value.find {
@@ -987,9 +987,7 @@ object SmsMmsRepository {
     ) {
         val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(senderAddress)
             .ifBlank { senderAddress.take(24) }
-        if (context != null) {
-            loadPersistedPins(context)
-        }
+        context?.let(::loadPersistedPins)
         if (isSenderBlocked(cleanAddress)) {
             Log.i(TAG, "Dropped incoming message from blocked sender: $cleanAddress")
             return
@@ -1447,16 +1445,19 @@ object SmsMmsRepository {
     }
 
     fun arePhoneNumbersEqual(a: String, b: String): Boolean {
-        if (a.equals(b, ignoreCase = true)) return true
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
-                PhoneNumberUtils.areSamePhoneNumber(a, b, Locale.getDefault().country.ifBlank { "RS" })
-            } catch (_: Exception) {
-                normalizeAddressKey(a) == normalizeAddressKey(b)
+        return when {
+            a.equals(b, ignoreCase = true) -> true
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                try {
+                    PhoneNumberUtils.areSamePhoneNumber(a, b, Locale.getDefault().country.ifBlank { "RS" })
+                } catch (_: Exception) {
+                    normalizeAddressKey(a) == normalizeAddressKey(b)
+                }
             }
-        } else {
-            @Suppress("DEPRECATION")
-            PhoneNumberUtils.compare(a, b)
+            else -> {
+                @Suppress("DEPRECATION")
+                PhoneNumberUtils.compare(a, b)
+            }
         }
     }
 
