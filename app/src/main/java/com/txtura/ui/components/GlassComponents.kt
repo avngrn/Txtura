@@ -82,7 +82,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -176,15 +175,17 @@ fun GlassBackground(
         else -> Color(preset.baseColorHex)
     }
 
-    // Bilateral frosted blur (zamućivanje) when moving the slider in either direction from the 50% midpoint
-    val distFromMid = abs(uiOpacity.coerceIn(0f, 1f) - 0.5f) * 2f
-    val frostBlurRadius = (2f + distFromMid * 18f).dp
+    // Background blur and smoked frost:
+    // When uiOpacity = 1.00 (100% Providno): minimum blur (0dp), crystal-clear view through glass
+    // When uiOpacity = 0.00 (0% Providno): maximum frosted blur (22dp) and dense smoked frost
+    val frostSolidity = (1.0f - uiOpacity.coerceIn(0f, 1f)).coerceIn(0f, 1f)
+    val frostBlurRadius = (frostSolidity * 22f).dp
     val frostVeilColor = when {
         !palette.isDark -> lerp(Color(0xFF94A3B8), palette.accentPrimary.copy(alpha = 1f), 0.22f)
         palette.isAmoled -> lerp(Color(0xFF06090F), palette.orbPrimary.copy(alpha = 1f), 0.28f)
         else -> lerp(Color(0xFF0A101B), palette.orbPrimary.copy(alpha = 1f), 0.30f)
     }
-    val frostVeilAlpha = (0.04f + distFromMid * 0.24f).coerceIn(0.04f, 0.28f)
+    val frostVeilAlpha = (frostSolidity * 0.32f).coerceIn(0.0f, 0.32f)
 
     val texPrimary = when {
         customBitmap != null -> palette.accentPrimary.copy(alpha = 0.28f)
@@ -946,9 +947,13 @@ fun GlassCard(
     onLongClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val palette = LocalGlassPalette.current
-    val baseSurface = if (elevated) palette.glassSurfaceElevated else palette.glassSurface
-    val topBorder = accentHighlight?.copy(alpha = 0.55f) ?: palette.glassBorderTop
+    val baseSurface = if (elevated) {
+        LocalGlassPalette.current.glassSurfaceElevated
+    } else {
+        LocalGlassPalette.current.glassSurface
+    }
+    val topBorder = accentHighlight?.copy(alpha = 0.55f) ?: LocalGlassPalette.current.glassBorderTop
+    val bottomBorder = LocalGlassPalette.current.glassBorderBottom
 
     val surfaceBrush = remember(baseSurface) {
         Brush.linearGradient(
@@ -961,11 +966,11 @@ fun GlassCard(
         )
     }
 
-    val borderBrush = remember(topBorder, palette.glassBorderBottom) {
+    val borderBrush = remember(topBorder, bottomBorder) {
         Brush.linearGradient(
             colors = listOf(
                 topBorder,
-                palette.glassBorderBottom,
+                bottomBorder,
             ),
             start = Offset.Zero,
             end = Offset(500f, 500f),
@@ -973,13 +978,13 @@ fun GlassCard(
     }
 
     val clickableModifier = when {
-        onClick != null && onLongClick != null -> Modifier.combinedClickable(
+        (onClick != null) && (onLongClick != null) -> Modifier.combinedClickable(
             onClick = onClick,
-            onLongClick = onLongClick
+            onLongClick = onLongClick,
         )
         onLongClick != null -> Modifier.combinedClickable(
             onClick = {},
-            onLongClick = onLongClick
+            onLongClick = onLongClick,
         )
         onClick != null -> Modifier.clickable(onClick = onClick)
         else -> Modifier
@@ -1002,6 +1007,7 @@ fun GlassIconButton(
     contentDescription: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
     tint: Color = LocalGlassPalette.current.textPrimary,
     accentHighlight: Color? = null,
     size: Dp = 42.dp,
@@ -1013,6 +1019,7 @@ fun GlassIconButton(
         accentHighlight = accentHighlight,
         contentPadding = PaddingValues(0.dp),
         onClick = onClick,
+        onLongClick = onLongClick,
     ) {
         Icon(
             imageVector = icon,
@@ -1042,7 +1049,7 @@ fun GlassModernSlider(
     val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0.0001f)
     val normalized = ((value - valueRange.start) / span).coerceIn(0f, 1f)
 
-    var isDragging by remember { mutableStateOf(false) }
+    var isDragging by remember { mutableStateOf(value = false) }
     val thumbScale by animateFloatAsState(
         targetValue = if (isDragging) 1.18f else 1f,
         animationSpec = tween(durationMillis = 150),
@@ -1072,14 +1079,13 @@ fun GlassModernSlider(
                     },
                     onDragEnd = { isDragging = false },
                     onDragCancel = { isDragging = false },
-                    onHorizontalDrag = { change, _ ->
-                        change.consume()
-                        val pad = 10.dp.toPx()
-                        val usable = (size.width - pad * 2f).coerceAtLeast(1f)
-                        val frac = ((change.position.x - pad) / usable).coerceIn(0f, 1f)
-                        currentOnValueChange(valueRange.start + frac * span)
-                    },
-                )
+                ) { change, _ ->
+                    change.consume()
+                    val pad = 10.dp.toPx()
+                    val usable = (size.width - pad * 2f).coerceAtLeast(1f)
+                    val frac = ((change.position.x - pad) / usable).coerceIn(0f, 1f)
+                    currentOnValueChange(valueRange.start + frac * span)
+                }
             },
     ) {
         val trackStart = 10.dp.toPx()
@@ -2009,24 +2015,80 @@ object TxturaIcons {
     }
 
     /**
-     * Vertical 3-dots (More Options) icon for overflow dropdown menu in chat header.
+     * Vertical 3-dots (More Options) icon for overflow dropdown menu in chat header,
+     * geometrically centered at x = 12f, y = 5f / 12f / 19f inside the 24x24 viewport.
      */
     val MoreVert: ImageVector by lazy {
         ImageVector.Builder("MoreVert", 24.dp, 24.dp, 24f, 24f).apply {
             path(
+                fill = SolidColor(Color.White),
+                pathFillType = PathFillType.NonZero,
+            ) {
+                val r = 1.65f
+                for (cy in listOf(5.5f, 12f, 18.5f)) {
+                    moveTo(12f, cy - r)
+                    arcTo(
+                        horizontalEllipseRadius = r,
+                        verticalEllipseRadius = r,
+                        theta = 0f,
+                        isMoreThanHalf = true,
+                        isPositiveArc = true,
+                        x1 = 12f,
+                        y1 = cy + r,
+                    )
+                    arcTo(
+                        horizontalEllipseRadius = r,
+                        verticalEllipseRadius = r,
+                        theta = 0f,
+                        isMoreThanHalf = true,
+                        isPositiveArc = true,
+                        x1 = 12f,
+                        y1 = cy - r,
+                    )
+                    close()
+                }
+            }
+        }.build()
+    }
+
+    /**
+     * Circular clock/timer icon used for scheduling and countdown timers.
+     */
+    val ClockTimer: ImageVector by lazy {
+        ImageVector.Builder("ClockTimer", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                fill = SolidColor(Color.Transparent),
                 stroke = SolidColor(Color.White),
-                strokeLineWidth = 2.6f,
+                strokeLineWidth = 2f,
                 strokeLineCap = StrokeCap.Round,
                 strokeLineJoin = StrokeJoin.Round,
             ) {
-                moveTo(12f, 5f)
-                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = true, isPositiveArc = true, 12f, 5.1f)
-                moveTo(12f, 12f)
-                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = true, isPositiveArc = true, 12f, 12.1f)
-                moveTo(12f, 19f)
-                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = true, isPositiveArc = true, 12f, 19.1f)
+                moveTo(12f, 3f)
+                arcTo(
+                    horizontalEllipseRadius = 9f,
+                    verticalEllipseRadius = 9f,
+                    theta = 0f,
+                    isMoreThanHalf = true,
+                    isPositiveArc = true,
+                    x1 = 12f,
+                    y1 = 21f,
+                )
+                arcTo(
+                    horizontalEllipseRadius = 9f,
+                    verticalEllipseRadius = 9f,
+                    theta = 0f,
+                    isMoreThanHalf = true,
+                    isPositiveArc = true,
+                    x1 = 12f,
+                    y1 = 3f,
+                )
+                close()
+                moveTo(12f, 7.5f)
+                lineTo(12f, 12f)
+                lineTo(15.2f, 14.2f)
             }
         }.build()
     }
 }
+
 

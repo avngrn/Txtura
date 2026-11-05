@@ -55,8 +55,9 @@
             android:name=".telephony.SmsDeliverReceiver"
             android:exported="true"
             android:permission="android.permission.BROADCAST_SMS">
-            <intent-filter>
+            <intent-filter android:priority="999">
                 <action android:name="android.provider.Telephony.SMS_DELIVER" />
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
             </intent-filter>
         </receiver>
 
@@ -85,6 +86,11 @@
                 <data android:scheme="mmsto" />
             </intent-filter>
         </service>
+
+        <!-- Internal BroadcastReceiver for Notification Direct Reply and 2FA Code Copy actions -->
+        <receiver
+            android:name=".telephony.NotificationActionReceiver"
+            android:exported="false" />
 
         <!-- FileProvider for exporting/sharing local backup JSON files -->
         <provider

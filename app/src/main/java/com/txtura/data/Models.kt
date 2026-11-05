@@ -36,7 +36,6 @@ enum class ConversationFilter {
     PEOPLE,
     SERVICES,
     UNREAD,
-    PINNED,
     ALL;
 
     companion object {
@@ -44,7 +43,6 @@ enum class ConversationFilter {
             PEOPLE,
             SERVICES,
             UNREAD,
-            PINNED,
             ALL,
         )
 
@@ -59,7 +57,7 @@ enum class ConversationFilter {
         }
 
         fun serializeOrder(order: List<ConversationFilter>): String {
-            return order.distinct().joinToString(",") { it.name }
+            return order.asSequence().distinct().joinToString(",") { it.name }
         }
     }
 }
@@ -139,7 +137,7 @@ enum class WallpaperPreset(
     val secondaryOrbHex: Long,
     val accentOrbHex: Long,
     val isMonochrome: Boolean = false,
-    val defaultTexture: WallpaperTexture = WallpaperTexture.SILK_WEAVE
+    val defaultTexture: WallpaperTexture = WallpaperTexture.SILK_WEAVE,
 ) {
     // 10 Curated Colorful Presets + Default (with bespoke matching textures)
     DEFAULT(0xFF070A12, 0xFF1D4ED8, 0xFF4338CA, 0xFF38BDF8, false, WallpaperTexture.SILK_WEAVE),
@@ -275,7 +273,7 @@ data class ConversationThread(
 ) {
     val lastMessage: ChatMessage? = messages.maxByOrNull(ChatMessage::timestampMillis)
 
-    val pinnedMessages: List<ChatMessage> = messages.filter { it.isPinned }
+    val pinnedMessages: List<ChatMessage> = messages.filter(ChatMessage::isPinned)
 
     val highestRiskLevel: SecurityRiskLevel =
         messages.maxOfOrNull { it.securityAnalysis.riskLevel } ?: SecurityRiskLevel.SAFE
@@ -303,6 +301,19 @@ data class DeletedConversationEntry(
         return (retentionDays - elapsedDays).coerceAtLeast(0)
     }
 }
+
+/**
+ * Represents an outgoing SMS/MMS message scheduled to be sent at a future timestamp.
+ */
+data class ScheduledSmsMessage(
+    val id: Long,
+    val threadId: Long,
+    val recipientAddress: String,
+    val body: String,
+    val attachmentUri: Uri? = null,
+    val scheduledAtMillis: Long,
+)
+
 
 data class AppSettingsSnapshot(
     val themeMode: TxturaThemeMode,

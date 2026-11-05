@@ -26,7 +26,7 @@ data class SecurityAnalysisResult(
  * SpamAssassin/rspamd URI scoring, and CISA/NIST Smishing & AI Scam indicators.
  *
  * Key design principles:
- * 1. Benign HTTPS links to normal websites (e.g. youtube.com, google.com, news, official domains)
+ * 1. Benign HTTPS links to normal websites (e.g. YouTube.com, google.com, news, official domains)
  *    are classified as [SecurityRiskLevel.SAFE] (zero false-positive fatigue).
  * 2. Detects IDN Homograph / Punycode (`xn--`), mixed Cyrillic/Latin spoofing, and brand typosquatting.
  * 3. Detects Malware / APK / EXE dropper links sent via SMS (FluBot, SpyNote, Medusa banking trojans).
@@ -154,10 +154,30 @@ object MessageSecurityAnalyzer {
         "wallet", "password", "passcode", "confirm", "verifikacija", "prijava", "kartica"
     )
 
+    // Matches standard prefixed 2FA codes (e.g., G-123456, FB-12345)
+    private val prefixedOtpRegex = Regex(
+        pattern = """\b(?:G|FB|IG|WA|MS|A|U|V)-(\d{4,8})\b"""
+    )
+
     // Matches 4-8 digit OTP codes preceded or followed by verification context
     private val otpContextRegex = Regex(
-        pattern = """(?i)(?:kod|code|otp|verifikacioni|verification|pin|lozinka|token)\s*(?:je|is|:|-)?\s*\b(\d{4,8})\b|\b(\d{4,8})\b\s*(?:je vaš|is your|kod za|verification code)"""
+        pattern = """(?i)(?:kod|code|otp|2fa|verifikac\w*|verification|verify|pin|lozink\w*|passcode|token|sigurnosn\w*|security|potvrd\w*|confirm\w*|aktivac\w*|jednokratn\w*)\b[^\d\n]{0,40}?\b(\d{4,8})\b|\b(\d{4,8})\b[^\d\n]{0,35}?\b(?:je vaš|is your|kod|code|otp|2fa|verification|za prijavu|to verify|to sign in)"""
     )
+
+    // Matches hyphenated 6-digit codes (e.g., 123-456) when verification keywords are present
+    private val hyphenatedOtpRegex = Regex(
+        pattern = """\b(\d{3})-(\d{3})\b"""
+    )
+
+    // Keywords indicating the SMS is a 2FA / authentication / verification code message
+    private val otpHintKeywords = listOf(
+        "kod", "code", "otp", "2fa", "verifikac", "verification", "verify",
+        "pin", "lozink", "passcode", "token", "sigurnosn", "security",
+        "potvrd", "confirm", "aktivac", "jednokratn", "one-time", "prijav", "login", "<#>"
+    )
+
+    // Any 4-8 digit standalone token (excluding years like 2024-2029 unless no other code is present)
+    private val standaloneDigitsRegex = Regex("""\b(\d{4,8})\b""")
 
     // Pre-compiled control character stripper (avoids regex compilation per message)
     private val controlCharsRegex = Regex("[\u202A-\u202E\u2066-\u2069\u0000]")
@@ -272,16 +292,54 @@ object MessageSecurityAnalyzer {
             else -> SecurityRiskLevel.SAFE
         }
 
-        val otpMatch = otpContextRegex.find(body)
-        val otpCode = otpMatch?.let { match ->
-            match.groups[1]?.value ?: match.groups[2]?.value
-        }
+        val otpCode = extractOtpOrVerificationCode(body, lowerBody)
 
         return SecurityAnalysisResult(
             riskLevel = finalRisk,
             reasons = reasons.distinct(),
             extractedOtpCode = otpCode
         )
+    }
+
+    /**
+     * Extracts 2FA, OTP, or standard verification codes from an SMS message body.
+     */
+    private fun extractOtpOrVerificationCode(body: String, lowerBody: String): String? {
+        // 1. Check standard prefixed codes like G-123456
+        prefixedOtpRegex.find(body)?.groupValues?.getOrNull(1)?.let { return it }
+
+        // 2. Check direct contextual patterns
+        otpContextRegex.find(body)?.let { match ->
+            val matched = match.groups[1]?.value ?: match.groups[2]?.value
+            if (matched != null) return matched
+        }
+
+        val hasOtpKeyword = otpHintKeywords.any { lowerBody.contains(it) }
+        if (hasOtpKeyword) {
+            // 3. Check hyphenated 6-digit codes like 123-456 in a verification message
+            hyphenatedOtpRegex.find(body)?.let { match ->
+                val p1 = match.groupValues.getOrNull(1).orEmpty()
+                val p2 = match.groupValues.getOrNull(2).orEmpty()
+                if (p1.isNotEmpty() && p2.isNotEmpty()) {
+                    return p1 + p2
+                }
+            }
+            // 4. Fallback to first 4-8 digit number in a message that contains 2FA/code keywords
+            standaloneDigitsRegex.findAll(body)
+                .map { it.value }
+                .firstOrNull { candidate ->
+                    candidate.length != 4 || candidate.toIntOrNull() !in 1990..2035
+                }
+                ?.let { return it }
+        }
+
+        // 5. If the entire trimmed SMS is just a 4-8 digit code
+        val trimmed = body.trim()
+        if (standaloneDigitsRegex.matches(trimmed)) {
+            return trimmed
+        }
+
+        return null
     }
 
     private fun extractAndParseUrls(text: String): List<ParsedUrl> {

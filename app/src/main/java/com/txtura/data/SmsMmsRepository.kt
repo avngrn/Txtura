@@ -1,6 +1,8 @@
 package com.txtura.data
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.role.RoleManager
 import android.content.ContentValues
@@ -8,6 +10,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.sqlite.SQLiteException
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
@@ -15,14 +19,24 @@ import android.provider.Telephony
 import android.telephony.PhoneNumberUtils
 import android.telephony.SmsManager
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import com.txtura.MainActivity
+import com.txtura.R
 import com.txtura.security.MessageSecurityAnalyzer
+import com.txtura.security.SecurityAnalysisResult
+import com.txtura.security.SecurityRiskLevel
+import com.txtura.telephony.NotificationActionReceiver
 import com.txtura.ui.i18n.TxturaStrings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,12 +46,22 @@ import kotlinx.coroutines.withContext
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.Duration.Companion.milliseconds
 
 object SmsMmsRepository {
 
     private const val TAG = "SmsMmsRepository"
     const val ACTION_SMS_SENT = "com.txtura.action.SMS_SENT"
     const val ACTION_SMS_DELIVERED = "com.txtura.action.SMS_DELIVERED"
+    const val ACTION_OPEN_THREAD_NOTIFICATION = "com.txtura.action.OPEN_THREAD_NOTIFICATION"
+    const val ACTION_NOTIFICATION_DIRECT_REPLY = "com.txtura.action.NOTIFICATION_DIRECT_REPLY"
+    const val ACTION_NOTIFICATION_COPY_OTP = "com.txtura.action.NOTIFICATION_COPY_OTP"
+    const val EXTRA_NOTIFICATION_THREAD_ID = "extra_notification_thread_id"
+    const val EXTRA_NOTIFICATION_ADDRESS = "extra_notification_address"
+    const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
+    const val EXTRA_NOTIFICATION_OTP_CODE = "extra_notification_otp_code"
+    const val KEY_NOTIFICATION_REPLY_TEXT = "key_txtura_notification_reply_text"
+    private const val CHANNEL_ID_MESSAGES = "txtura_sms_messages_channel"
 
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -76,6 +100,10 @@ object SmsMmsRepository {
     private val _blockedSenders = MutableStateFlow<List<String>>(emptyList())
     val blockedSenders: StateFlow<List<String>> = _blockedSenders.asStateFlow()
 
+    private val _scheduledMessages = MutableStateFlow<List<ScheduledSmsMessage>>(emptyList())
+    val scheduledMessages: StateFlow<List<ScheduledSmsMessage>> = _scheduledMessages.asStateFlow()
+    private val scheduledJobs: MutableMap<Long, Job> = Collections.synchronizedMap(mutableMapOf())
+
     /**
      * Dynamically checks if READ_SMS is granted at invocation time (never cached in fields).
      */
@@ -112,6 +140,40 @@ object SmsMmsRepository {
 
     fun initializePersistedState(context: Context) {
         loadPersistedPins(context)
+        ensureNotificationChannel(context)
+    }
+
+    /**
+     * Ensures the high-importance SMS/MMS notification channel exists with default sound and vibration.
+     */
+    fun ensureNotificationChannel(context: Context) {
+        val nm = context.getSystemService(NotificationManager::class.java) ?: return
+        val isSr = TxturaStrings.isSerbianLocale()
+        val channelName = if (isSr) "SMS i MMS Poruke" else "SMS & MMS Messages"
+        val channelDesc = if (isSr) {
+            "Obaveštenja za nove primljene SMS i MMS poruke"
+        } else {
+            "Notifications for incoming SMS and MMS messages"
+        }
+        val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val audioAttrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
+        val channel = NotificationChannel(
+            CHANNEL_ID_MESSAGES,
+            channelName,
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = channelDesc
+            enableLights(true)
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0L, 220L, 120L, 220L)
+            setSound(defaultSoundUri, audioAttrs)
+            setShowBadge(true)
+        }
+        nm.createNotificationChannel(channel)
     }
 
     private fun loadPersistedPins(context: Context) {
@@ -538,7 +600,7 @@ object SmsMmsRepository {
 
     private fun queryMmsPartsSafely(
         context: Context,
-        mmsId: Long
+        mmsId: Long,
     ): Pair<String, MmsAttachment?> {
         val partUri = "content://mms/part".toUri()
         var textBody = ""
@@ -976,8 +1038,60 @@ object SmsMmsRepository {
     }
 
     /**
+     * Schedules an SMS/MMS message to be sent automatically at [scheduledAtMillis].
+     */
+    fun scheduleMessage(
+        context: Context,
+        threadId: Long,
+        recipientAddress: String,
+        rawBody: String,
+        attachmentUri: Uri?,
+        scheduledAtMillis: Long,
+    ): ScheduledSmsMessage {
+        val appContext = context.applicationContext
+        val scheduledId = nextId.getAndIncrement()
+        val entry = ScheduledSmsMessage(
+            id = scheduledId,
+            threadId = threadId,
+            recipientAddress = recipientAddress.trim(),
+            body = rawBody.trim(),
+            attachmentUri = attachmentUri,
+            scheduledAtMillis = scheduledAtMillis,
+        )
+        _scheduledMessages.update { current ->
+            (current + entry).sortedBy { it.scheduledAtMillis }
+        }
+        val job = ioScope.launch {
+            val waitMillis = (scheduledAtMillis - System.currentTimeMillis()).coerceAtLeast(0L)
+            delay(waitMillis.milliseconds)
+            val stillScheduled = _scheduledMessages.value.any { it.id == scheduledId }
+            if (stillScheduled) {
+                _scheduledMessages.update { list -> list.filterNot { it.id == scheduledId } }
+                scheduledJobs.remove(scheduledId)
+                sendMessage(
+                    context = appContext,
+                    recipientAddress = entry.recipientAddress,
+                    rawBody = entry.body,
+                    attachmentUri = entry.attachmentUri,
+                )
+            }
+        }
+        scheduledJobs[scheduledId] = job
+        return entry
+    }
+
+    /**
+     * Cancels a previously scheduled SMS/MMS message before its scheduled time arrives.
+     */
+    fun cancelScheduledMessage(scheduledId: Long) {
+        scheduledJobs.remove(scheduledId)?.cancel()
+        _scheduledMessages.update { list -> list.filterNot { it.id == scheduledId } }
+    }
+
+    /**
      * Called by SmsDeliverReceiver or MmsWapPushReceiver when a new message arrives.
-     * Drops messages from blocked senders.
+     * Drops messages from blocked senders, persists to the system Telephony provider when
+     * Txtura is the Default SMS App, and posts a high-importance system notification.
      */
     fun onIncomingMessageReceived(
         context: Context? = null,
@@ -985,8 +1099,20 @@ object SmsMmsRepository {
         rawBody: String,
         isMms: Boolean = false
     ) {
-        val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(senderAddress)
-            .ifBlank { senderAddress.take(24) }
+        val trimmedSender = senderAddress.trim()
+        val hasLetters = trimmedSender.any { it.isLetter() }
+        val cleanAddress = if (hasLetters) {
+            trimmedSender.filter { ch ->
+                ch.isLetterOrDigit() || (ch in "+-_. ")
+            }
+                .trim()
+                .take(28)
+                .ifBlank { trimmedSender.take(24) }
+        } else {
+            MessageSecurityAnalyzer.sanitizePhoneNumber(trimmedSender)
+                .ifBlank { trimmedSender.take(24) }
+        }
+
         context?.let(::loadPersistedPins)
         if (isSenderBlocked(cleanAddress)) {
             Log.i(TAG, "Dropped incoming message from blocked sender: $cleanAddress")
@@ -997,7 +1123,7 @@ object SmsMmsRepository {
         val now = System.currentTimeMillis()
         val msgId = nextId.incrementAndGet()
 
-        if (context != null && !isMms) {
+        if ((context != null) && !isMms) {
             persistMessageToSystemProviderIfDefault(
                 context = context,
                 address = cleanAddress,
@@ -1010,13 +1136,17 @@ object SmsMmsRepository {
 
         val resolvedName = context?.let { resolveContactNameSafely(it, cleanAddress) } ?: cleanAddress
         val resolvedPhotoUri = context?.let { resolveContactPhotoUriSafely(it, cleanAddress) }
+        val securityResult = MessageSecurityAnalyzer.analyzeMessage(cleanBody)
+        var targetThreadId = 0L
 
         _threads.update { current ->
-            val existing = current.find {
+            val existingIndex = current.indexOfFirst {
                 arePhoneNumbersEqual(it.address, cleanAddress) ||
                     it.address.equals(cleanAddress, ignoreCase = true)
             }
-            val threadId = existing?.id ?: nextId.incrementAndGet()
+            val existingId = if (existingIndex >= 0) current[existingIndex].id else null
+            val threadId = existingId ?: nextId.incrementAndGet()
+            targetThreadId = threadId
             val incomingMessage = ChatMessage(
                 id = msgId,
                 threadId = threadId,
@@ -1026,12 +1156,12 @@ object SmsMmsRepository {
                 isIncoming = true,
                 type = if (isMms) MessageType.MMS else MessageType.SMS,
                 status = DeliveryStatus.DELIVERED,
-                securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(cleanBody)
+                securityAnalysis = securityResult
             )
 
-            val updated = if (existing != null) {
+            val updated = if (existingId != null) {
                 current.map { thread ->
-                    if (thread.id == existing.id) {
+                    if (thread.id == existingId) {
                         thread.copy(
                             messages = thread.messages + incomingMessage,
                             unreadCount = thread.unreadCount + 1
@@ -1056,6 +1186,156 @@ object SmsMmsRepository {
             }
             sortThreads(updated)
         }
+
+        context?.let { ctx ->
+            postIncomingMessageNotification(
+                context = ctx,
+                threadId = targetThreadId,
+                senderName = resolvedName,
+                senderAddress = cleanAddress,
+                messageBody = cleanBody,
+                securityAnalysis = securityResult,
+            )
+        }
+    }
+
+    private fun postIncomingMessageNotification(
+        context: Context,
+        threadId: Long,
+        senderName: String,
+        senderAddress: String,
+        messageBody: String,
+        securityAnalysis: SecurityAnalysisResult,
+    ) {
+        ensureNotificationChannel(context)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasNotifPerm = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasNotifPerm) {
+                Log.w(TAG, "POST_NOTIFICATIONS permission not granted; cannot display SMS notification")
+                return
+            }
+        }
+
+        val isSr = TxturaStrings.isSerbianLocale()
+        val titleText = when (securityAnalysis.riskLevel) {
+            SecurityRiskLevel.SUSPICIOUS -> "⚠️ $senderName"
+            SecurityRiskLevel.CAUTION -> "🛡️ $senderName"
+            SecurityRiskLevel.SAFE -> senderName
+        }
+
+        val expandedBody = buildString {
+            append(messageBody)
+            securityAnalysis.extractedOtpCode?.let { otp ->
+                append("\n")
+                append(if (isSr) "🔑 Kod: $otp" else "🔑 Code: $otp")
+            }
+            if (securityAnalysis.riskLevel == SecurityRiskLevel.SUSPICIOUS) {
+                append("\n")
+                append(
+                    if (isSr) "⚠️ Upozorenje: Mogući fišing ili rizičan link"
+                    else "⚠️ Warning: Potential phishing or risky link"
+                )
+            }
+        }
+
+        val notificationId = (normalizeAddressKey(senderAddress).hashCode() and 0x7FFFFFFF).coerceAtLeast(1001)
+
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            action = ACTION_OPEN_THREAD_NOTIFICATION
+            putExtra(EXTRA_NOTIFICATION_THREAD_ID, threadId)
+            putExtra(EXTRA_NOTIFICATION_ADDRESS, senderAddress)
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val locStrings = TxturaStrings.forLocale()
+
+        // 1. Direct Reply action from Notification (without opening the app)
+        val remoteInput = RemoteInput.Builder(KEY_NOTIFICATION_REPLY_TEXT)
+            .setLabel(locStrings.notificationReplyHint)
+            .build()
+        val replyIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+            action = ACTION_NOTIFICATION_DIRECT_REPLY
+            putExtra(EXTRA_NOTIFICATION_THREAD_ID, threadId)
+            putExtra(EXTRA_NOTIFICATION_ADDRESS, senderAddress)
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        val replyFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val replyPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId + 10_000,
+            replyIntent,
+            replyFlags,
+        )
+        val replyAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_stat_message,
+            locStrings.notificationReplyAction,
+            replyPendingIntent,
+        )
+            .addRemoteInput(remoteInput)
+            .setAllowGeneratedReplies(true)
+            .setShowsUserInterface(false)
+            .build()
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
+            .setSmallIcon(R.drawable.ic_stat_message)
+            .setContentTitle(titleText)
+            .setContentText(messageBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentIntent(contentPendingIntent)
+            .addAction(replyAction)
+
+        // 2. Copy 2FA / OTP Code action from Notification if a code is detected
+        val extractedOtp = securityAnalysis.extractedOtpCode
+        if (!extractedOtp.isNullOrBlank()) {
+            val copyOtpIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = ACTION_NOTIFICATION_COPY_OTP
+                putExtra(EXTRA_NOTIFICATION_THREAD_ID, threadId)
+                putExtra(EXTRA_NOTIFICATION_ADDRESS, senderAddress)
+                putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+                putExtra(EXTRA_NOTIFICATION_OTP_CODE, extractedOtp)
+            }
+            val copyOtpPendingIntent = PendingIntent.getBroadcast(
+                context,
+                notificationId + 20_000,
+                copyOtpIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val copyOtpAction = NotificationCompat.Action.Builder(
+                R.drawable.ic_stat_message,
+                locStrings.notificationCopyCodeAction(extractedOtp),
+                copyOtpPendingIntent,
+            )
+                .setShowsUserInterface(false)
+                .build()
+            builder.addAction(copyOtpAction)
+        }
+
+        val notification = builder.build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Unable to post incoming SMS notification", e)
+        }
     }
 
     /**
@@ -1070,10 +1350,27 @@ object SmsMmsRepository {
      */
     fun markThreadsRead(context: Context, threadIds: Set<Long>) {
         if (threadIds.isEmpty()) return
+        val affectedAddresses = mutableListOf<String>()
         _threads.update { list ->
-            list.map { if (it.id in threadIds) it.copy(unreadCount = 0) else it }
+            list.map {
+                if (it.id in threadIds) {
+                    affectedAddresses.add(it.address)
+                    it.copy(unreadCount = 0)
+                } else {
+                    it
+                }
+            }
         }
         val appCtx = context.applicationContext
+        try {
+            val nm = NotificationManagerCompat.from(appCtx)
+            affectedAddresses.forEach { addr ->
+                val notifId = (normalizeAddressKey(addr).hashCode() and 0x7FFFFFFF).coerceAtLeast(1001)
+                nm.cancel(notifId)
+            }
+        } catch (_: Exception) {
+            // Ignore notification cancel issues
+        }
         ioScope.launch {
             if (isDefaultSmsApp(appCtx)) {
                 try {
@@ -1100,7 +1397,7 @@ object SmsMmsRepository {
      * Marks all conversations as read.
      */
     fun markAllThreadsRead(context: Context) {
-        val allIds = _threads.value.map { it.id }.toSet()
+        val allIds = _threads.value.asSequence().map { it.id }.toSet()
         markThreadsRead(context, allIds)
     }
 

@@ -1,3 +1,5 @@
+@file:Suppress("SpellCheckingInspection")
+
 package com.txtura.ui.screens
 
 import android.graphics.BitmapFactory
@@ -7,9 +9,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -91,6 +95,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import android.widget.Toast
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import com.txtura.data.BackupRestorePayload
 import com.txtura.data.ChatMessage
 import com.txtura.data.ContactPickerItem
@@ -99,6 +110,7 @@ import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedConversationEntry
 import com.txtura.data.DeletedGroupingMode
 import com.txtura.data.MainListLayoutMode
+import com.txtura.data.ScheduledSmsMessage
 import com.txtura.data.SwipeAction
 import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
@@ -120,13 +132,17 @@ import com.txtura.ui.theme.LocalGlassPalette
 import com.txtura.ui.theme.TxturaThemeMode
 import com.txtura.ui.theme.WallpaperHarmonyEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.milliseconds
 
 private enum class BatchSelectionAction {
     DELETE,
@@ -181,7 +197,7 @@ fun ConversationsListScreen(
     val serviceThreadById = remember(threads) {
         threads.associateBy(
             keySelector = ConversationThread::id,
-            valueTransform = ::isServiceThread
+            valueTransform = ::isServiceThread,
         )
     }
 
@@ -190,13 +206,12 @@ fun ConversationsListScreen(
             val matchesSearch = searchQuery.isBlank() ||
                 thread.contactName.contains(searchQuery, ignoreCase = true) ||
                 thread.address.contains(searchQuery, ignoreCase = true) ||
-                thread.messages.any { msg -> msg.body.contains(searchQuery, ignoreCase = true) }
+                thread.messages.any { it.body.contains(searchQuery, ignoreCase = true) }
 
             val matchesFilter = when (selectedFilter) {
                 ConversationFilter.PEOPLE -> isStandardPersonThread(thread, serviceThreadById[thread.id] == true)
                 ConversationFilter.SERVICES -> serviceThreadById[thread.id] == true
                 ConversationFilter.UNREAD -> thread.unreadCount > 0
-                ConversationFilter.PINNED -> thread.isPinned || thread.pinnedMessages.isNotEmpty()
                 ConversationFilter.ALL -> true
             }
             matchesSearch && matchesFilter
@@ -615,8 +630,6 @@ fun ConversationsListScreen(
                                             selectedThreadIds += thread.id
                                         },
                                         onTogglePin = { onTogglePin(thread.id) },
-                                        onDelete = { onRequestDeleteThread(thread) },
-                                        onCallSender = { onCallSender(thread.address) },
                                         onOpenContact = { onOpenContact(thread.address, thread.contactName) },
                                         onCopyOtp = onCopyOtp
                                     )
@@ -807,7 +820,7 @@ private fun isStandardPersonThread(thread: ConversationThread, isService: Boolea
     if (address.any { it.isLetter() }) return false
     val digitCount = address.count { it.isDigit() }
     // Standard phone numbers (local or international E.164) have 8 to 15 digits
-    return digitCount in 8..15
+    return (digitCount in 8..15)
 }
 
 private fun isServiceThread(thread: ConversationThread): Boolean {
@@ -817,13 +830,9 @@ private fun isServiceThread(thread: ConversationThread): Boolean {
     // 1. Alphanumeric sender ID (e.g. "BANK-OTP", "INFO", "YETTEL", "GOOGLE", "DEXPRESS")
     if (address.any { it.isLetter() }) return true
 
-    // 2. Shortcode (typically 3 to 7 digits, e.g. 1999, 9800, 2222)
-    if ((cleanDigits.length in 3..7) && !address.startsWith("+")) {
-        return true
-    }
-
-    // 3. Extracted OTP / 2FA verification codes
-    return thread.messages.any { it.securityAnalysis.extractedOtpCode != null }
+    // 2. Shortcode (typically 3 to 7 digits, e.g. 1999, 9800, 2222) or 3. Extracted OTP / 2FA verification codes
+    return ((cleanDigits.length in 3..7) && !address.startsWith("+")) ||
+        thread.messages.any { it.securityAnalysis.extractedOtpCode != null }
 }
 
 fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
@@ -831,7 +840,6 @@ fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
         ConversationFilter.PEOPLE -> strings.filterPeople
         ConversationFilter.SERVICES -> strings.filterServices
         ConversationFilter.UNREAD -> strings.filterUnread
-        ConversationFilter.PINNED -> strings.filterPinned
         ConversationFilter.ALL -> strings.filterAll
     }
 }
@@ -891,16 +899,16 @@ fun SettingsScreen(
     val retentionOptions = listOf(7, 15, 30, 60, 90)
 
     // Level 1: Main Category expansion state
-    var expandedAppearance by remember { mutableStateOf(false) }
-    var expandedMessagesAndSwipe by remember { mutableStateOf(false) }
-    var expandedBlockedSenders by remember { mutableStateOf(false) }
-    var expandedBackup by remember { mutableStateOf(false) }
-    var expandedPermissions by remember { mutableStateOf(false) }
+    var expandedAppearance by remember { mutableStateOf(value = false) }
+    var expandedMessagesAndSwipe by remember { mutableStateOf(value = false) }
+    var expandedBlockedSenders by remember { mutableStateOf(value = false) }
+    var expandedBackup by remember { mutableStateOf(value = false) }
+    var expandedPermissions by remember { mutableStateOf(value = false) }
 
     // Optional expandable sub-panel for the 10-theme + Gallery wallpaper picker so Appearance stays compact
-    var showWallpaperGrid by remember { mutableStateOf(false) }
+    var showWallpaperGrid by remember { mutableStateOf(value = false) }
 
-    var showSecurityMeasuresDialog by remember { mutableStateOf(false) }
+    var showSecurityMeasuresDialog by remember { mutableStateOf(value = false) }
     var newBlockedSenderInput by remember { mutableStateOf("") }
 
     GlassBackground(wallpaperConfig = mainWallpaper) {
@@ -1215,13 +1223,12 @@ fun SettingsScreen(
                         SettingsSwitchRow(
                             title = strings.layoutModeCompact,
                             subtitle = if (isCompactMode) strings.mainLayoutModeSub else strings.layoutModeDefault,
-                            checked = isCompactMode,
-                            onCheckedChange = { compact ->
-                                onSelectListLayoutMode(
-                                    if (compact) MainListLayoutMode.COMPACT else MainListLayoutMode.DEFAULT
-                                )
-                            }
-                        )
+                            checked = isCompactMode
+                        ) { compact ->
+                            onSelectListLayoutMode(
+                                if (compact) MainListLayoutMode.COMPACT else MainListLayoutMode.DEFAULT
+                            )
+                        }
 
                         // 1G. On/Off Prekidač: Prikaz slika kontakata
                         SettingsSwitchRow(
@@ -1342,18 +1349,96 @@ fun SettingsScreen(
                             }
                         }
 
-                        // 2D. On/Off Prekidač za grupisanje obrisanih poruka (Po kontaktu vs Po datumu)
-                        val groupByContact = deletedGroupingMode == DeletedGroupingMode.BY_CONTACT
-                        SettingsSwitchRow(
-                            title = strings.groupingModeTitle,
-                            subtitle = if (groupByContact) strings.groupByContactLabel else strings.groupByDateLabel,
-                            checked = groupByContact,
-                            onCheckedChange = { byContact ->
-                                onSelectDeletedGroupingMode(
-                                    if (byContact) DeletedGroupingMode.BY_CONTACT else DeletedGroupingMode.BY_DATE
+                        // 2D. Izbor grupisanja obrisanih poruka (Po vremenu brisanja vs Po kontaktu)
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(14.dp)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    text = strings.groupingModeTitle,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.SemiBold
                                 )
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    DeletedGroupingMode.entries.forEach { mode ->
+                                        val isSelected = deletedGroupingMode == mode
+                                        val optionLabel = when (mode) {
+                                            DeletedGroupingMode.BY_DATE -> strings.groupByDateLabel
+                                            DeletedGroupingMode.BY_CONTACT -> strings.groupByContactLabel
+                                        }
+                                        val optionIcon = when (mode) {
+                                            DeletedGroupingMode.BY_DATE -> TxturaIcons.ClockTimer
+                                            DeletedGroupingMode.BY_CONTACT -> TxturaIcons.ContactPerson
+                                        }
+
+                                        GlassCard(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(14.dp),
+                                            elevated = isSelected,
+                                            accentHighlight = if (isSelected) palette.accentPrimary else null,
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                                            onClick = { onSelectDeletedGroupingMode(mode) }
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.Center,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Box(
+                                                    contentAlignment = Alignment.Center,
+                                                    modifier = Modifier
+                                                        .size(16.dp)
+                                                        .clip(CircleShape)
+                                                        .background(
+                                                            if (isSelected) {
+                                                                palette.accentPrimary.copy(alpha = 0.22f)
+                                                            } else {
+                                                                Color.Transparent
+                                                            }
+                                                        )
+                                                        .border(
+                                                            width = 1.5.dp,
+                                                            color = if (isSelected) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.6f),
+                                                            shape = CircleShape
+                                                        )
+                                                ) {
+                                                    if (isSelected) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(8.dp)
+                                                                .clip(CircleShape)
+                                                                .background(palette.accentPrimary)
+                                                        )
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.width(7.dp))
+                                                Icon(
+                                                    imageVector = optionIcon,
+                                                    contentDescription = null,
+                                                    tint = if (isSelected) palette.accentPrimary else palette.textSecondary,
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(5.dp))
+                                                OverflowTooltipText(
+                                                    text = optionLabel,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = if (isSelected) palette.accentPrimary else palette.textSecondary,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                        )
+                        }
 
                         // 2E. Direktno dugme za otvaranje Korpe (Obrisane poruke)
                         GlassCard(
@@ -2088,8 +2173,6 @@ private fun ConversationThreadCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
     onTogglePin: () -> Unit,
-    onDelete: () -> Unit,
-    onCallSender: () -> Unit,
     onOpenContact: () -> Unit,
     onCopyOtp: (String) -> Unit
 ) {
@@ -2114,7 +2197,7 @@ private fun ConversationThreadCard(
         accentHighlight = borderAccent,
         contentPadding = PaddingValues(
             horizontal = if (isCompact) 10.dp else 14.dp,
-            vertical = if (isCompact) 5.dp else 11.dp
+            vertical = if (isCompact) 6.dp else 11.dp
         ),
         onClick = onClick,
         onLongClick = onLongClick
@@ -2133,121 +2216,87 @@ private fun ConversationThreadCard(
                     Spacer(modifier = Modifier.width(if (isCompact) 8.dp else 12.dp))
                 }
 
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Top Row: Contact Name + Pin icon right next to the sender name
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = thread.contactName,
-                                style = if (isCompact) {
-                                    MaterialTheme.typography.bodyLarge
-                                } else {
-                                    MaterialTheme.typography.titleMedium
-                                },
-                                color = palette.textPrimary,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (thread.isPinned) {
-                                Spacer(modifier = Modifier.width(5.dp))
-                                Icon(
-                                    imageVector = TxturaIcons.Pin,
-                                    contentDescription = strings.pinContactThread,
-                                    tint = palette.accentPrimary,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                            }
-                        }
-
                         Text(
-                            text = lastMsg?.timestampMillis?.let { formatTimestamp(it) } ?: "",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (thread.unreadCount > 0) palette.accentPrimary else palette.textSecondary
+                            text = thread.contactName,
+                            style = if (isCompact) {
+                                MaterialTheme.typography.bodyLarge
+                            } else {
+                                MaterialTheme.typography.titleMedium
+                            },
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        Icon(
+                            imageVector = TxturaIcons.Pin,
+                            contentDescription = if (thread.isPinned) strings.unpinContactThread else strings.pinContactThread,
+                            tint = if (thread.isPinned) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.72f),
+                            modifier = Modifier
+                                .size(15.dp)
+                                .clickable(onClick = onTogglePin)
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(if (isCompact) 1.dp else 4.dp))
+                    Spacer(modifier = Modifier.height(if (isCompact) 2.dp else 4.dp))
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                    // Bottom Row: Message preview across available width
+                    Text(
+                        text = lastMsg?.body ?: "",
+                        style = if (isCompact) {
+                            MaterialTheme.typography.labelMedium
+                        } else {
+                            MaterialTheme.typography.bodyMedium
+                        },
+                        color = if (thread.unreadCount > 0) palette.textPrimary else palette.textSecondary,
+                        fontWeight = if (thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = if (isCompact) 1 else 2,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = lastMsg?.body ?: "",
-                            style = if (isCompact) {
-                                MaterialTheme.typography.labelMedium
-                            } else {
-                                MaterialTheme.typography.bodyMedium
-                            },
-                            color = if (thread.unreadCount > 0) palette.textPrimary else palette.textSecondary,
-                            fontWeight = if (thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = if (isCompact) 1 else 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
+                    )
+                }
 
-                        if (thread.unreadCount > 0) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(19.dp)
-                                    .clip(CircleShape)
-                                    .background(palette.accentPrimary)
-                            ) {
-                                Text(
-                                    text = thread.unreadCount.toString(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (palette.isAmoled) Color.Black else Color.White,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
+                Spacer(modifier = Modifier.width(10.dp))
 
-                        Spacer(modifier = Modifier.width(10.dp))
+                // Right side: Message arrival timestamp vertically centered relative to the message window
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Text(
+                        text = lastMsg?.timestampMillis?.let { formatTimestamp(it) } ?: "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (thread.unreadCount > 0) palette.accentPrimary else palette.textSecondary,
+                        fontWeight = if (thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal
+                    )
 
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    if (thread.unreadCount > 0) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(19.dp)
+                                .clip(CircleShape)
+                                .background(palette.accentPrimary)
                         ) {
-                            Icon(
-                                imageVector = TxturaIcons.Pin,
-                                contentDescription = if (thread.isPinned) strings.unpinContactThread else strings.pinContactThread,
-                                tint = if (thread.isPinned) palette.accentPrimary else palette.textSecondary,
-                                modifier = Modifier
-                                    .size(15.dp)
-                                    .clickable(onClick = onTogglePin)
-                            )
-                            Icon(
-                                imageVector = TxturaIcons.PhoneCall,
-                                contentDescription = strings.callSender,
-                                tint = palette.safeColor,
-                                modifier = Modifier
-                                    .size(15.dp)
-                                    .clickable(onClick = onCallSender)
-                            )
-                            Icon(
-                                imageVector = TxturaIcons.ContactPerson,
-                                contentDescription = strings.viewContactDetails,
-                                tint = palette.textSecondary,
-                                modifier = Modifier
-                                    .size(15.dp)
-                                    .clickable(onClick = onOpenContact)
-                            )
-                            Icon(
-                                imageVector = TxturaIcons.Delete,
-                                contentDescription = strings.deleteThread,
-                                tint = palette.textSecondary,
-                                modifier = Modifier
-                                    .size(15.dp)
-                                    .clickable(onClick = onDelete)
+                            Text(
+                                text = thread.unreadCount.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (palette.isAmoled) Color.Black else Color.White,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
@@ -2309,6 +2358,14 @@ private fun ConversationThreadCard(
     }
 }
 
+private data class PendingDelayedMessage(
+    val id: Long,
+    val body: String,
+    val attachmentUri: Uri?,
+    val startedAtMillis: Long,
+    val durationMillis: Long = 6_000L,
+)
+
 @Composable
 fun ConversationDetailScreen(
     thread: ConversationThread,
@@ -2318,6 +2375,7 @@ fun ConversationDetailScreen(
     wallpaperConfig: WallpaperConfig = WallpaperConfig(),
     pendingAttachmentUri: Uri?,
     availableContacts: List<ContactPickerItem> = emptyList(),
+    scheduledMessages: List<ScheduledSmsMessage> = emptyList(),
     onBack: () -> Unit,
     onTogglePinThread: () -> Unit,
     onTogglePinMessage: (Long) -> Unit,
@@ -2332,13 +2390,53 @@ fun ConversationDetailScreen(
     onPickMmsPhoto: () -> Unit,
     onClearAttachment: () -> Unit,
     onSendMessage: (String, Uri?) -> Unit,
+    onScheduleMessage: (String, Uri?, Long) -> Unit = { _, _, _ -> },
+    onCancelScheduledMessage: (Long) -> Unit = {},
     onCopyOtp: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val strings = TxturaStrings.current()
     var draftText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val pinnedMessages = thread.pinnedMessages
     val currentZoom by rememberUpdatedState(bubbleZoomScale)
+
+    // 6-second delayed send countdown state (triggered on Send button tap)
+    var pendingDelayedSend by remember { mutableStateOf<PendingDelayedMessage?>(null) }
+    var delayedRemainingMillis by remember { mutableLongStateOf(0L) }
+    val currentOnSendMessage by rememberUpdatedState(onSendMessage)
+    val currentPendingDelayed by rememberUpdatedState(pendingDelayedSend)
+
+    // Schedule message dialog state (triggered on Send button long-press)
+    var showScheduleMessageDialog by remember { mutableStateOf(false) }
+
+    // Tick the 6-second countdown timer and automatically send when it reaches 0
+    LaunchedEffect(pendingDelayedSend?.id) {
+        val activeDelayed = pendingDelayedSend ?: return@LaunchedEffect
+        while (true) {
+            val elapsed = System.currentTimeMillis() - activeDelayed.startedAtMillis
+            val remaining = (activeDelayed.durationMillis - elapsed).coerceAtLeast(0L)
+            delayedRemainingMillis = remaining
+            if (remaining <= 0L) {
+                break
+            }
+            delay(50.milliseconds)
+        }
+        if (pendingDelayedSend?.id == activeDelayed.id) {
+            pendingDelayedSend = null
+            delayedRemainingMillis = 0L
+            currentOnSendMessage(activeDelayed.body, activeDelayed.attachmentUri)
+        }
+    }
+
+    // If user leaves the conversation while a 6s countdown was NOT canceled, dispatch the message so it isn't lost
+    DisposableEffect(Unit) {
+        onDispose {
+            currentPendingDelayed?.let { uncancelled ->
+                currentOnSendMessage(uncancelled.body, uncancelled.attachmentUri)
+            }
+        }
+    }
 
     // Message long-press context menu state
     var messageWithOpenMenu by remember { mutableStateOf<ChatMessage?>(null) }
@@ -2529,6 +2627,29 @@ fun ConversationDetailScreen(
                 onSelectRecipient = { recipientAddr, recipientName ->
                     messagePendingForward = null
                     onForwardMessage(msgToForward, recipientAddr, recipientName)
+                }
+            )
+        }
+
+        // Schedule Message Dialog (opened when holding/long-pressing the Send button)
+        if (showScheduleMessageDialog) {
+            ScheduleMessageDialog(
+                initialMessageText = draftText,
+                hasAttachment = pendingAttachmentUri != null,
+                strings = strings,
+                onDismiss = { showScheduleMessageDialog = false },
+                onConfirmSchedule = { messageBody, scheduledAtMillis ->
+                    showScheduleMessageDialog = false
+                    onScheduleMessage(messageBody, pendingAttachmentUri, scheduledAtMillis)
+                    draftText = ""
+                    onClearAttachment()
+                    val formattedTime = SimpleDateFormat("dd.MM. HH:mm", Locale.getDefault())
+                        .format(Date(scheduledAtMillis))
+                    Toast.makeText(
+                        context,
+                        strings.messageScheduledToast(formattedTime),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             )
         }
@@ -2786,6 +2907,68 @@ fun ConversationDetailScreen(
                 }
             }
 
+            // Scheduled Messages Banner
+            if (scheduledMessages.isNotEmpty()) {
+                val scheduleFormat = remember { SimpleDateFormat("dd.MM. HH:mm", Locale.getDefault()) }
+                GlassCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    accentHighlight = palette.accentSecondary,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = TxturaIcons.ClockTimer,
+                                contentDescription = null,
+                                tint = palette.accentSecondary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "${strings.scheduledMessagesBannerTitle} (${scheduledMessages.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.accentSecondary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        scheduledMessages.take(3).forEach { scheduledItem ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OverflowTooltipText(
+                                    text = "${scheduleFormat.format(Date(scheduledItem.scheduledAtMillis))} • ${scheduledItem.body.ifBlank { "📸 MMS" }}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textPrimary,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Icon(
+                                    imageVector = TxturaIcons.Close,
+                                    contentDescription = strings.cancelScheduledMessageTooltip,
+                                    tint = palette.textSecondary,
+                                    modifier = Modifier
+                                        .size(15.dp)
+                                        .clickable {
+                                            onCancelScheduledMessage(scheduledItem.id)
+                                            Toast.makeText(
+                                                context,
+                                                strings.messageSendCancelledToast,
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Messages Thread with two-finger Pinch-to-Zoom and Long-Press Context Menu on each bubble
             LazyColumn(
                 state = listState,
@@ -2935,24 +3118,551 @@ fun ConversationDetailScreen(
                         Spacer(modifier = Modifier.width(10.dp))
 
                         val canSend = draftText.isNotBlank() || pendingAttachmentUri != null
-                        GlassIconButton(
-                            icon = TxturaIcons.Send,
-                            contentDescription = strings.send,
-                            tint = if (canSend) palette.accentPrimary else palette.textSecondary,
-                            onClick = {
-                                if (canSend) {
-                                    onSendMessage(draftText, pendingAttachmentUri)
-                                    draftText = ""
-                                }
-                            },
-                            size = 42.dp
-                        )
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // 6-second countdown timer icon placed directly LEFT of the Send icon
+                            AnimatedVisibility(
+                                visible = pendingDelayedSend != null,
+                                enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
+                                exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End)
+                            ) {
+                                val activeDelayed = pendingDelayedSend
+                                val totalMs = activeDelayed?.durationMillis ?: 6_000L
+                                val secondsLeft = ceil(delayedRemainingMillis / 1000.0).toInt().coerceIn(1, 6)
+                                val fraction = (delayedRemainingMillis.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
+
+                                SendCountdownTimerButton(
+                                    secondsLeft = secondsLeft,
+                                    progressFraction = fraction,
+                                    contentDescription = strings.cancelDelayedSendTooltip,
+                                    onCancel = {
+                                        val cancelled = pendingDelayedSend
+                                        pendingDelayedSend = null
+                                        delayedRemainingMillis = 0L
+                                        if (cancelled != null && draftText.isEmpty() && cancelled.body.isNotEmpty()) {
+                                            draftText = cancelled.body
+                                        }
+                                        Toast.makeText(
+                                            context,
+                                            strings.messageSendCancelledToast,
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                )
+                            }
+
+                            GlassIconButton(
+                                icon = TxturaIcons.Send,
+                                contentDescription = strings.send,
+                                tint = if (canSend) palette.accentPrimary else palette.textSecondary,
+                                onClick = {
+                                    if (canSend) {
+                                        // Flush any already-counting message before starting the new 6s timer
+                                        pendingDelayedSend?.let { prev ->
+                                            onSendMessage(prev.body, prev.attachmentUri)
+                                        }
+                                        val msgBodyToSend = draftText
+                                        draftText = ""
+                                        delayedRemainingMillis = 6_000L
+                                        pendingDelayedSend = PendingDelayedMessage(
+                                            id = System.nanoTime(),
+                                            body = msgBodyToSend,
+                                            attachmentUri = pendingAttachmentUri,
+                                            startedAtMillis = System.currentTimeMillis(),
+                                            durationMillis = 6_000L
+                                        )
+                                        if (pendingAttachmentUri != null) {
+                                            onClearAttachment()
+                                        }
+                                    }
+                                },
+                                onLongClick = {
+                                    showScheduleMessageDialog = true
+                                },
+                                size = 42.dp
+                            )
+                        }
                     }
                 }
             }
         }
     }
 }
+
+/**
+ * Circular 6-second countdown timer icon displayed directly to the left of the Send button.
+ * Tapping this icon cancels the pending message and displays "Slanje poruke otkazano."
+ */
+@Composable
+private fun SendCountdownTimerButton(
+    secondsLeft: Int,
+    progressFraction: Float,
+    contentDescription: String,
+    onCancel: () -> Unit,
+) {
+    val palette = LocalGlassPalette.current
+    GlassCard(
+        modifier = Modifier
+            .size(42.dp)
+            .drawBehind {
+                val strokeWidthPx = 2.6.dp.toPx()
+                val inset = strokeWidthPx / 2f + 2.dp.toPx()
+                val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
+                // Background track ring
+                drawArc(
+                    color = palette.cautionColor.copy(alpha = 0.22f),
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    topLeft = Offset(inset, inset),
+                    size = arcSize,
+                    style = Stroke(width = strokeWidthPx, cap = StrokeCap.Round)
+                )
+                // Active remaining time ring
+                drawArc(
+                    color = palette.cautionColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f * progressFraction,
+                    useCenter = false,
+                    topLeft = Offset(inset, inset),
+                    size = arcSize,
+                    style = Stroke(width = strokeWidthPx, cap = StrokeCap.Round)
+                )
+            },
+        shape = CircleShape,
+        elevated = true,
+        accentHighlight = palette.cautionColor,
+        contentPadding = PaddingValues(0.dp),
+        onClick = onCancel
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Icon(
+                imageVector = TxturaIcons.ClockTimer,
+                contentDescription = contentDescription,
+                tint = palette.cautionColor,
+                modifier = Modifier.size(13.dp)
+            )
+            Text(
+                text = "${secondsLeft}s",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.sp,
+                    lineHeight = 10.sp,
+                    fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.textPrimary
+            )
+        }
+    }
+}
+
+/**
+ * Glassmorphic dialog for scheduling a message when long-pressing the Send button.
+ * Allows entering any exact future date and time manually via numeric input (day, month, year, hour, minute)
+ * or picking a quick preset, without any day/time restrictions.
+ */
+@Composable
+private fun ScheduleMessageDialog(
+    initialMessageText: String,
+    hasAttachment: Boolean,
+    strings: AppStrings,
+    onDismiss: () -> Unit,
+    onConfirmSchedule: (messageBody: String, scheduledAtMillis: Long) -> Unit,
+) {
+    val palette = LocalGlassPalette.current
+    val context = LocalContext.current
+    var messageText by remember { mutableStateOf(initialMessageText) }
+
+    val defaultCal = remember {
+        Calendar.getInstance().apply {
+            add(Calendar.HOUR_OF_DAY, 1)
+        }
+    }
+    var dayInput by remember { mutableStateOf(defaultCal[Calendar.DAY_OF_MONTH].toString()) }
+    var monthInput by remember { mutableStateOf((defaultCal[Calendar.MONTH] + 1).toString()) }
+    var yearInput by remember { mutableStateOf(defaultCal[Calendar.YEAR].toString()) }
+    var hourInput by remember {
+        mutableStateOf(String.format(Locale.ROOT, "%02d", defaultCal[Calendar.HOUR_OF_DAY]))
+    }
+    var minuteInput by remember {
+        mutableStateOf(String.format(Locale.ROOT, "%02d", defaultCal[Calendar.MINUTE]))
+    }
+
+    val canSchedule = messageText.isNotBlank() || hasAttachment
+
+    fun parseAndComputeTimestamp(): Long? {
+        val d = dayInput.trim().toIntOrNull() ?: return null
+        val m = monthInput.trim().toIntOrNull() ?: return null
+        val y = yearInput.trim().toIntOrNull() ?: return null
+        val h = hourInput.trim().toIntOrNull() ?: return null
+        val min = minuteInput.trim().toIntOrNull() ?: return null
+
+        if (y !in 2024..2100) return null
+        if (m !in 1..12) return null
+        if (h !in 0..23) return null
+        if (min !in 0..59) return null
+
+        val cal = Calendar.getInstance()
+        cal.isLenient = false
+        return try {
+            cal[Calendar.YEAR] = y
+            cal[Calendar.MONTH] = m - 1
+            val maxDayInMonth = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+            if (d !in 1..maxDayInMonth) return null
+            cal[Calendar.DAY_OF_MONTH] = d
+            cal[Calendar.HOUR_OF_DAY] = h
+            cal[Calendar.MINUTE] = min
+            cal[Calendar.SECOND] = 0
+            cal[Calendar.MILLISECOND] = 0
+            val computed = cal.timeInMillis
+            if (computed > System.currentTimeMillis() + 10_000L) computed else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    GlassAlertDialog(
+        onDismissRequest = onDismiss,
+        accentBorderColor = palette.accentPrimary,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = TxturaIcons.ClockTimer,
+                    contentDescription = null,
+                    tint = palette.accentPrimary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = strings.scheduleMessageTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = palette.textPrimary
+                )
+            }
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = strings.scheduleMessageSubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.textSecondary
+                )
+
+                // Editable message text box inside the schedule dialog
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(12.dp)
+                ) {
+                    Box {
+                        if (messageText.isEmpty()) {
+                            Text(
+                                text = strings.writeSmsPlaceholder,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textSecondary
+                            )
+                        }
+                        BasicTextField(
+                            value = messageText,
+                            onValueChange = { messageText = it },
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = palette.textPrimary
+                            ),
+                            cursorBrush = SolidColor(palette.accentPrimary),
+                            maxLines = 4,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                // Quick Preset Buttons (2x2 grid)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    GlassCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp),
+                        accentHighlight = palette.accentPrimary,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                        onClick = {
+                            if (canSchedule) {
+                                onConfirmSchedule(
+                                    messageText,
+                                    System.currentTimeMillis() + 15L * 60_000L
+                                )
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = strings.schedulePresetIn15Min,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+
+                    GlassCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp),
+                        accentHighlight = palette.accentPrimary,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                        onClick = {
+                            if (canSchedule) {
+                                onConfirmSchedule(
+                                    messageText,
+                                    System.currentTimeMillis() + 60L * 60_000L
+                                )
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = strings.schedulePresetIn1Hour,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    GlassCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp),
+                        accentHighlight = palette.accentSecondary,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                        onClick = {
+                            if (canSchedule) {
+                                val cal = Calendar.getInstance().apply {
+                                    set(Calendar.HOUR_OF_DAY, 20)
+                                    set(Calendar.MINUTE, 0)
+                                    set(Calendar.SECOND, 0)
+                                    set(Calendar.MILLISECOND, 0)
+                                    if (timeInMillis <= System.currentTimeMillis()) {
+                                        add(Calendar.DAY_OF_YEAR, 1)
+                                    }
+                                }
+                                onConfirmSchedule(messageText, cal.timeInMillis)
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = strings.schedulePresetTonight20,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+
+                    GlassCard(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp),
+                        accentHighlight = palette.accentSecondary,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                        onClick = {
+                            if (canSchedule) {
+                                val cal = Calendar.getInstance().apply {
+                                    add(Calendar.DAY_OF_YEAR, 1)
+                                    set(Calendar.HOUR_OF_DAY, 9)
+                                    set(Calendar.MINUTE, 0)
+                                    set(Calendar.SECOND, 0)
+                                    set(Calendar.MILLISECOND, 0)
+                                }
+                                onConfirmSchedule(messageText, cal.timeInMillis)
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = strings.schedulePresetTomorrow09,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
+
+                // Exact Date & Time manual numeric inputs
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(14.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = strings.scheduleCustomTimeTitle,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.textPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            val parsedTs = parseAndComputeTimestamp()
+                            if (parsedTs != null) {
+                                val fmt = remember { SimpleDateFormat("dd.MM.yyyy. HH:mm", Locale.ROOT) }
+                                Text(
+                                    text = fmt.format(Date(parsedTs)),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.accentPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // Row 1: Date (Day, Month, Year)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ScheduleNumericInputField(
+                                value = dayInput,
+                                onValueChange = { dayInput = it.take(2).filter(Char::isDigit) },
+                                label = strings.scheduleDayLabel,
+                                placeholder = "01",
+                                modifier = Modifier.weight(1f)
+                            )
+                            ScheduleNumericInputField(
+                                value = monthInput,
+                                onValueChange = { monthInput = it.take(2).filter(Char::isDigit) },
+                                label = strings.scheduleMonthLabel,
+                                placeholder = "01",
+                                modifier = Modifier.weight(1f)
+                            )
+                            ScheduleNumericInputField(
+                                value = yearInput,
+                                onValueChange = { yearInput = it.take(4).filter(Char::isDigit) },
+                                label = strings.scheduleYearLabel,
+                                placeholder = "2026",
+                                modifier = Modifier.weight(1.35f)
+                            )
+                        }
+
+                        // Row 2: Time (Hour, Minute)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            ScheduleNumericInputField(
+                                value = hourInput,
+                                onValueChange = { hourInput = it.take(2).filter(Char::isDigit) },
+                                label = strings.scheduleHourLabel,
+                                placeholder = "12",
+                                modifier = Modifier.weight(1f)
+                            )
+                            ScheduleNumericInputField(
+                                value = minuteInput,
+                                onValueChange = { minuteInput = it.take(2).filter(Char::isDigit) },
+                                label = strings.scheduleMinuteLabel,
+                                placeholder = "00",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSchedule,
+                onClick = {
+                    if (canSchedule) {
+                        val timestamp = parseAndComputeTimestamp()
+                        if (timestamp != null) {
+                            onConfirmSchedule(messageText, timestamp)
+                        } else {
+                            Toast.makeText(
+                                context,
+                                strings.scheduleInvalidDateTime,
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
+            ) {
+                Text(
+                    text = strings.scheduleConfirmButton,
+                    color = if (canSchedule) palette.accentPrimary else palette.textSecondary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.cancel, color = palette.textSecondary)
+            }
+        }
+    )
+}
+
+/**
+ * Compact numeric entry box for day, month, year, hour, or minute in [ScheduleMessageDialog].
+ */
+@Composable
+private fun ScheduleNumericInputField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+) {
+    val palette = LocalGlassPalette.current
+    GlassCard(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                color = palette.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Box {
+                if (value.isEmpty()) {
+                    Text(
+                        text = placeholder,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.textSecondary.copy(alpha = 0.5f)
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.titleMedium.copy(
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    cursorBrush = SolidColor(palette.accentPrimary),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun MessageActionMenuOption(

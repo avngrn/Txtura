@@ -1,3 +1,5 @@
+@file:Suppress("SpellCheckingInspection")
+
 package com.txtura
 
 import android.Manifest
@@ -325,6 +327,7 @@ class MainActivity : ComponentActivity() {
             val threads by SmsMmsRepository.threads.collectAsState()
             val deletedThreads by SmsMmsRepository.deletedThreads.collectAsState()
             val blockedSenders by SmsMmsRepository.blockedSenders.collectAsState()
+            val scheduledMessages by SmsMmsRepository.scheduledMessages.collectAsState()
 
             // Query permissions dynamically (never cache permission state in fields)
             val hasSmsPerm = rememberDynamicSmsPermissionState(permissionRefreshTick)
@@ -526,6 +529,9 @@ class MainActivity : ComponentActivity() {
                         }
                         val contactKey = contactWallpaperKey(selectedThread.address)
                         val activeChatWallpaper = contactWallpapers[contactKey] ?: mainWallpaper
+                        val threadScheduledMessages = scheduledMessages.filter {
+                            it.threadId == selectedThread.id
+                        }
 
                         ConversationDetailScreen(
                             thread = selectedThread,
@@ -538,6 +544,7 @@ class MainActivity : ComponentActivity() {
                             wallpaperConfig = activeChatWallpaper,
                             pendingAttachmentUri = pendingMmsUri,
                             availableContacts = availableContacts,
+                            scheduledMessages = threadScheduledMessages,
                             onBack = {
                                 activeThreadId = null
                                 pendingMmsUri = null
@@ -624,6 +631,20 @@ class MainActivity : ComponentActivity() {
                                 )
                                 pendingMmsUri = null
                             },
+                            onScheduleMessage = { text, attachment, scheduledAtMillis ->
+                                SmsMmsRepository.scheduleMessage(
+                                    context = this@MainActivity,
+                                    threadId = selectedThread.id,
+                                    recipientAddress = selectedThread.address,
+                                    rawBody = text,
+                                    attachmentUri = attachment,
+                                    scheduledAtMillis = scheduledAtMillis
+                                )
+                                pendingMmsUri = null
+                            },
+                            onCancelScheduledMessage = { scheduledId ->
+                                SmsMmsRepository.cancelScheduledMessage(scheduledId)
+                            },
                             onCopyOtp = ::copyOtpConfidentially
                         )
                     }
@@ -695,9 +716,8 @@ class MainActivity : ComponentActivity() {
                                     locStrings.allMessagesMarkedReadToast,
                                     Toast.LENGTH_SHORT
                                 ).show()
-                            },
-                            onOpenSettings = { showSettingsScreen = true }
-                        )
+                            }
+                        ) { showSettingsScreen = true }
                     }
                 }
 
@@ -817,8 +837,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Confirmation dialog before restoring conversations and settings from a backup
-                val restoreTarget = pendingRestorePayload
-                if (restoreTarget != null) {
+                pendingRestorePayload?.let { restoreTarget ->
                     ConfirmRestoreDialog(
                         payload = restoreTarget,
                         onConfirm = {
@@ -1062,7 +1081,7 @@ class MainActivity : ComponentActivity() {
                     file,
                     targetGoogleDriveOnly = false
                 ),
-                TxturaStrings.forLocale().shareBackupButton
+                TxturaStrings.forLocale().shareBackupButton,
             )
             startActivity(chooser)
         }
@@ -1136,6 +1155,15 @@ class MainActivity : ComponentActivity() {
             } else if (!SmsMmsRepository.isDefaultSmsApp(this)) {
                 showDefaultSmsRolePrompt = true
             }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Ensure POST_NOTIFICATIONS is requested on Android 13+ so incoming SMS notifications are shown
+            val hasNotifPerm = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasNotifPerm) {
+                smsPermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+            }
         }
     }
 
@@ -1149,9 +1177,34 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncomingSmsIntentSafely(incoming: Intent?) {
-        val validated = MessageSecurityAnalyzer.validateIncomingSmsIntent(this, incoming) ?: return
-        prefilledRecipient = validated.recipientAddress
-        prefilledBody = validated.prefilledBody.orEmpty()
+        if (incoming == null) return
+
+        // 1. Handle tapping an incoming SMS/MMS notification created by Txtura itself
+        if (incoming.action == SmsMmsRepository.ACTION_OPEN_THREAD_NOTIFICATION) {
+            val notifAddress = incoming.getStringExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ADDRESS).orEmpty()
+            val notifThreadId = incoming.getLongExtra(SmsMmsRepository.EXTRA_NOTIFICATION_THREAD_ID, -1L)
+            showSettingsScreen = false
+            showDeletedMessagesScreen = false
+            showNewMessageDialog = false
+            if (notifAddress.isNotBlank()) {
+                val resolvedId = SmsMmsRepository.getOrCreateConversationWithRecipient(
+                    context = this,
+                    recipientAddress = notifAddress,
+                )
+                activeThreadId = resolvedId
+                SmsMmsRepository.markThreadRead(this, resolvedId)
+            } else if (notifThreadId > 0L) {
+                activeThreadId = notifThreadId
+                SmsMmsRepository.markThreadRead(this, notifThreadId)
+            }
+            return
+        }
+
+        // 2. Validate external SEND / SENDTO / VIEW SMS intents
+        val (validatedRecipient, validatedBody) =
+            MessageSecurityAnalyzer.validateIncomingSmsIntent(this, incoming) ?: return
+        prefilledRecipient = validatedRecipient
+        prefilledBody = validatedBody.orEmpty()
         if (prefilledRecipient.isNotBlank() && prefilledBody.isBlank()) {
             val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                 context = this,
@@ -1275,7 +1328,7 @@ class MainActivity : ComponentActivity() {
         val strings = TxturaStrings.forLocale()
         try {
             val roleManager = getSystemService(RoleManager::class.java)
-            if (roleManager != null && roleManager.isRoleAvailable(RoleManager.ROLE_SMS)) {
+            if ((roleManager != null) && roleManager.isRoleAvailable(RoleManager.ROLE_SMS)) {
                 if (!roleManager.isRoleHeld(RoleManager.ROLE_SMS)) {
                     val roleIntent = roleManager.createRequestRoleIntent(RoleManager.ROLE_SMS)
                     defaultSmsRoleLauncher.launch(roleIntent)

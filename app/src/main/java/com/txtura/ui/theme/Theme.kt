@@ -76,17 +76,17 @@ data class GlassPalette(
                 !isDark -> lerp(
                     lerp(Color(0xFFDCE5F2), orbRgb, 0.22f),
                     accentRgb,
-                    0.10f
+                    0.10f,
                 )
                 isAmoled -> lerp(
                     lerp(Color(0xFF080B11), orbRgb, 0.28f),
                     accentRgb,
-                    0.12f
+                    0.12f,
                 )
                 else -> lerp(
                     lerp(backgroundBase.copy(alpha = 1f), orbRgb, 0.30f),
                     surfaceRgb,
-                    0.18f
+                    0.18f,
                 )
             }
             val distFromCenter = kotlin.math.abs(uiOpacity.coerceIn(0f, 1f) - 0.5f) * 2f
@@ -203,8 +203,8 @@ object WallpaperHarmonyEngine {
                     )
                     val sat = hsv[1]
                     val value = hsv[2]
-                    val weight = (sat * 0.75f + value * 0.25f).toDouble()
-                    if (sat > 0.12f && value in 0.12f..0.95f) {
+                    val weight = ((sat * 0.75f) + (value * 0.25f)).toDouble()
+                    if ((sat > 0.12f) && (value in 0.12f..0.95f)) {
                         val rad = Math.toRadians(hsv[0].toDouble())
                         sumX += cos(rad) * weight
                         sumY += sin(rad) * weight
@@ -286,10 +286,10 @@ object WallpaperHarmonyEngine {
     }
 
     /**
-     * Modulates glass surfaces around the 50% (0.50f) balanced midpoint so that moving the slider
-     * in either direction produces deep smoked/frosted glass (zamućivanje) rather than bleaching (izbeljivanje):
-     * - Left (0.50 -> 0.00): translucent smoked crystal frost with enhanced background blur
-     * - Right (0.50 -> 1.00): deep frosted obsidian/slate glass with rich smoked density and blur
+     * Maps `uiOpacity` (0.00 = 0% providno / najzamucenije, 1.00 = 100% potpuno providno staklo):
+     * - 1.00 (100% Providno): ultra-transparent, crystal-clear glass, minimal surfaces and blur
+     * - 0.00 (0% Providno / Najzamucenije): deep frosted obsidian/slate smoked glass with rich blur and opacity
+     * - 0.50 (Podrazumevano): balanced elegant frosted glass
      */
     private fun applyOpacityMultiplier(palette: GlassPalette, uiOpacity: Float, uiColorMode: UiColorMode): GlassPalette {
         val clamped = uiOpacity.coerceIn(0.0f, 1.0f)
@@ -299,54 +299,32 @@ object WallpaperHarmonyEngine {
             else -> lerp(Color(0xFF0C121D), palette.orbPrimary.copy(alpha = 1f), 0.30f)
         }
 
-        val leftFrost = ((0.5f - clamped) / 0.5f).coerceIn(0f, 1f)
-        val rightFrost = ((clamped - 0.5f) / 0.5f).coerceIn(0f, 1f)
-        val bilateralFrost = kotlin.math.max(leftFrost, rightFrost)
+        // solidity: 1.0 when uiOpacity is 0.0 (najzamucenije / najpunije), 0.0 when uiOpacity is 1.0 (potpuno providno)
+        val solidity = (1.0f - clamped).coerceIn(0f, 1f)
 
-        val baseSurfRgb = lerp(palette.glassSurface.copy(alpha = 1f), frostDepthTone, 0.25f * bilateralFrost)
-        val baseElevRgb = lerp(palette.glassSurfaceElevated.copy(alpha = 1f), frostDepthTone, 0.22f * bilateralFrost)
-        val baseIncRgb = lerp(palette.incomingBubbleSurface.copy(alpha = 1f), frostDepthTone, 0.24f * bilateralFrost)
+        val baseSurfRgb = lerp(palette.glassSurface.copy(alpha = 1f), frostDepthTone, 0.30f * solidity)
+        val baseElevRgb = lerp(palette.glassSurfaceElevated.copy(alpha = 1f), frostDepthTone, 0.26f * solidity)
+        val baseIncRgb = lerp(palette.incomingBubbleSurface.copy(alpha = 1f), frostDepthTone, 0.28f * solidity)
 
         val surfAlpha = if (palette.isDark) {
-            when {
-                clamped < 0.5f -> lerpFloat(0.42f, 0.28f, leftFrost)
-                else -> lerpFloat(0.42f, 0.76f, rightFrost)
-            }
+            lerpFloat(0.18f, 0.88f, solidity)
         } else {
-            when {
-                clamped < 0.5f -> lerpFloat(0.68f, 0.50f, leftFrost)
-                else -> lerpFloat(0.68f, 0.86f, rightFrost)
-            }
+            lerpFloat(0.36f, 0.92f, solidity)
         }
 
         val elevAlpha = if (palette.isDark) {
-            when {
-                clamped < 0.5f -> lerpFloat(0.54f, 0.38f, leftFrost)
-                else -> lerpFloat(0.54f, 0.84f, rightFrost)
-            }
+            lerpFloat(0.24f, 0.94f, solidity)
         } else {
-            when {
-                clamped < 0.5f -> lerpFloat(0.76f, 0.58f, leftFrost)
-                else -> lerpFloat(0.76f, 0.90f, rightFrost)
-            }
+            lerpFloat(0.42f, 0.96f, solidity)
         }
 
         val incAlpha = if (palette.isDark) {
-            when {
-                clamped < 0.5f -> lerpFloat(0.44f, 0.30f, leftFrost)
-                else -> lerpFloat(0.44f, 0.78f, rightFrost)
-            }
+            lerpFloat(0.20f, 0.90f, solidity)
         } else {
-            when {
-                clamped < 0.5f -> lerpFloat(0.72f, 0.54f, leftFrost)
-                else -> lerpFloat(0.72f, 0.88f, rightFrost)
-            }
+            lerpFloat(0.38f, 0.94f, solidity)
         }
 
-        val bubbleAlphaFactor = when {
-            clamped < 0.5f -> lerpFloat(0.88f, 0.74f, leftFrost)
-            else -> lerpFloat(0.88f, 0.95f, rightFrost)
-        }
+        val bubbleAlphaFactor = lerpFloat(0.65f, 0.98f, solidity)
 
         return palette.copy(
             glassSurface = baseSurfRgb.copy(alpha = surfAlpha),

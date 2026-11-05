@@ -15,8 +15,17 @@ import com.txtura.data.SmsMmsRepository
 class SmsDeliverReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        if ((intent.action != Telephony.Sms.Intents.SMS_DELIVER_ACTION) &&
-            (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION)
+        val action = intent.action
+        if ((action != Telephony.Sms.Intents.SMS_DELIVER_ACTION) &&
+            (action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION)
+        ) {
+            return
+        }
+
+        // When Txtura is the Default SMS App, Android delivers both SMS_DELIVER_ACTION and
+        // SMS_RECEIVED_ACTION. Process SMS_DELIVER_ACTION and skip duplicate SMS_RECEIVED_ACTION.
+        if ((action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) &&
+            SmsMmsRepository.isDefaultSmsApp(context)
         ) {
             return
         }
@@ -25,9 +34,13 @@ class SmsDeliverReceiver : BroadcastReceiver() {
             val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
             if (messages.isNullOrEmpty()) return
 
-            val groupedBySender = messages.groupBy { it.displayOriginatingAddress ?: "Unknown" }
+            val groupedBySender = messages.groupBy {
+                it.displayOriginatingAddress ?: it.originatingAddress ?: "Unknown"
+            }
             for ((sender, parts) in groupedBySender) {
-                val fullBody = parts.joinToString(separator = "") { it.displayMessageBody.orEmpty() }
+                val fullBody = parts.joinToString(separator = "") {
+                    it.displayMessageBody ?: it.messageBody.orEmpty()
+                }
                 if (fullBody.isNotBlank()) {
                     SmsMmsRepository.onIncomingMessageReceived(
                         context = context.applicationContext,

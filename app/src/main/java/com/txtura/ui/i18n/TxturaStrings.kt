@@ -21,7 +21,6 @@ class AppStrings(val isSerbian: Boolean) {
     val filterPeople: String = s("People", "Osobe")
     val filterServices: String = s("Service Messages", "Servisne poruke")
     val filterUnread: String = s("Unread", "Nepročitano")
-    val filterPinned: String = s("Pinned", "Zakačeno")
     val filterAll: String = s("All Messages", "Sve poruke")
     val newMessage: String = s("New Message", "Nova poruka")
     val markAllReadTooltip: String = s("Mark all as read", "Označi sve kao pročitano")
@@ -37,7 +36,6 @@ class AppStrings(val isSerbian: Boolean) {
     val unpinMessage: String = s("Unpin message", "Otkači poruku")
     val pinnedMessagesTitle: String = s("Pinned messages", "Prikačene poruke")
     val highlightedMessagesTitle: String = s("Highlighted", "Hajlajtovano")
-    val deleteThread: String = s("Delete conversation", "Obriši razgovor")
     val callSender: String = s("Call sender", "Pozovi pošiljaoca")
     val viewContactDetails: String = s("Contact details", "Podaci o kontaktu")
     val pickFromContacts: String = s("Pick contact", "Izaberi iz kontakata")
@@ -303,7 +301,7 @@ class AppStrings(val isSerbian: Boolean) {
         if (isSerbian) "$days dana" else "$days days"
     }
     val groupingModeTitle: String = s("Sort & group deleted messages by", "Grupisanje i sortiranje obrisanih poruka")
-    val groupByDateLabel: String = s("By Deletion Date", "Po datumu brisanja")
+    val groupByDateLabel: String = s("By Deletion Time", "Po vremenu brisanja")
     val groupByContactLabel: String = s("By Contact", "Po kontaktu")
     val confirmDeleteTitle: String = s("Move to Deleted Messages?", "Premesti u obrisane poruke?")
     val confirmDeleteMessage: (String, Int) -> String = { name, days ->
@@ -333,9 +331,11 @@ class AppStrings(val isSerbian: Boolean) {
     val deletedOnPrefix: String = s("Deleted: ", "Obrisano: ")
     val messagesCountLabel: (Int) -> String = { count ->
         if (isSerbian) {
+            val rem10 = count % 10
+            val rem100 = count % 100
             when {
-                ((count % 10) == 1) && ((count % 100) != 11) -> "$count poruka"
-                ((count % 10) in 2..4) && ((count % 100) !in 12..14) -> "$count poruke"
+                (rem10 == 1) && (rem100 != 11) -> "$count poruka"
+                (rem10 in 2..4) && (rem100 !in 12..14) -> "$count poruke"
                 else -> "$count poruka"
             }
         } else {
@@ -381,7 +381,7 @@ class AppStrings(val isSerbian: Boolean) {
         "Aktivna sopstvena slika iz galerije",
     )
     val useMainWallpaperDefault: String = s("Use Main Window Wallpaper", "Koristi pozadinu glavnog prozora")
-    val wpDefault: String = s("Default Obsidian Glass", "Podrazumevana Obsidijan Glass podloga")
+    val wpDefault: String = s("Obsidian Glass", "Obsidijan Glass podloga")
     val wpAurora: String = s("Aurora Borealis", "Polarna svetlost")
     val wpVelvetPlum: String = s("Velvet Plum", "Kraljevska šljiva")
     val wpMidnightOcean: String = s("Midnight Ocean", "Ponoćni okean")
@@ -392,100 +392,100 @@ class AppStrings(val isSerbian: Boolean) {
     val wpCrimsonVelvet: String = s("Crimson Velvet", "Grimizni somot")
     val wpArcticFrost: String = s("Arctic Frost", "Arktički led")
     val wpObsidianGold: String = s("Obsidian & Gold", "Obsidijan i zlato")
-    val wpMonoSlate: String = s("Monochrome + Slate Accent", "Monohrom + Titanijum akcenat")
-    val wpMonoSapphire: String = s("Monochrome + Sapphire Accent", "Monohrom + Safirno plavi akcenat")
-    val wpMonoSage: String = s("Monochrome + Emerald Accent", "Monohrom + Smaragdno zeleni akcenat")
-    val wpMonoChampagne: String = s("Monochrome + Gold Accent", "Monohrom + Zlatni akcenat")
-    val wpMonoPlum: String = s("Monochrome + Amethyst Accent", "Monohrom + Ametist ljubičasti akcenat")
-    val wpMonoGraphite: String = s("Monochrome + Silver/Onyx Accent", "Monohrom + Srebrni/Oniks akcenat")
-    val wpMonoRose: String = s("Monochrome + Rose Accent", "Monohrom + Ružičasti akcenat")
-    val wpMonoNavy: String = s("Monochrome + Indigo Accent", "Monohrom + Indigo teget akcenat")
-    val wpMonoSmoke: String = s("Monochrome + Teal Accent", "Monohrom + Tirkizni akcenat")
-    val wpMonoEspresso: String = s("Monochrome + Copper Accent", "Monohrom + Bakarni akcenat")
+    val wpMonoSlate: String = s("With Titanium Accent", "Sa titanijumskim akcentom")
+    val wpMonoSapphire: String = s("With Sapphire Accent", "Sa safirnim akcentom")
+    val wpMonoSage: String = s("With Emerald Accent", "Sa smaragdnim akcentom")
+    val wpMonoChampagne: String = s("With Gold Accent", "Sa zlatnim akcentom")
+    val wpMonoPlum: String = s("With Amethyst Accent", "Sa ametistnim akcentom")
+    val wpMonoGraphite: String = s("With Silver Accent", "Sa srebrnim akcentom")
+    val wpMonoRose: String = s("With Rose Accent", "Sa ružičastim akcentom")
+    val wpMonoNavy: String = s("With Indigo Accent", "Sa indigo akcentom")
+    val wpMonoSmoke: String = s("With Teal Accent", "Sa tirkiznim akcentom")
+    val wpMonoEspresso: String = s("With Copper Accent", "Sa bakarnim akcentom")
 
     val wpDefaultDesc: String = s(
-        "Deep obsidian & royal sapphire glow with silk weave texture",
-        "Duboki obsidijan i kraljevski safir sa svilenim tkanjem",
+        "Obsidian & royal sapphire",
+        "Obsidijan i kraljevski safir",
     )
     val wpAuroraDesc: String = s(
-        "Northern emerald & violet shimmer with rose accent",
-        "Severni smaragdni i ljubičasti sjaj sa ružičastim akcentom",
+        "Emerald, violet & rose glow",
+        "Smaragdni i ljubičasti sjaj",
     )
     val wpVelvetPlumDesc: String = s(
-        "Rich plum & royal purple depth with sky-blue accent",
-        "Bogata šljiva i kraljevska ljubičasta sa nebesko plavim akcentom",
+        "Deep plum with sky-blue accent",
+        "Tamna šljiva i nebesko plava",
     )
     val wpMidnightOceanDesc: String = s(
-        "Abyssal cobalt & ocean cyan waves with warm amber accent",
-        "Duboki kobalt i okeanski talasi sa toplim ćilibarskim akcentom",
+        "Ocean cobalt with amber accent",
+        "Okeanski kobalt i ćilibar",
     )
     val wpSunsetHorizonDesc: String = s(
-        "Crimson dusk & warm horizon glow with turquoise accent",
-        "Grimizni sumrak i topli horizont sa tirkiznim akcentom",
+        "Warm dusk with turquoise accent",
+        "Grimizni sumrak i tirkiz",
     )
     val wpEmeraldForestDesc: String = s(
-        "Lush forest emerald & jade mist with coral rose accent",
-        "Smaragdna šuma i žad magla sa koralno ružičastim akcentom",
+        "Forest emerald with coral accent",
+        "Šumski smaragd i koral",
     )
     val wpRoyalAmethystDesc: String = s(
-        "Crystalline amethyst & violet prism with golden accent",
-        "Kristalni ametist i ljubičasta prizma sa zlatnim akcentom",
+        "Violet prism with gold accent",
+        "Ljubičasta prizma i zlato",
     )
     val wpStarlightGalaxyDesc: String = s(
-        "Cosmic indigo & slate nebula with starlight blue accent",
-        "Kosmički indigo i zvezdana maglina sa svetloplavim akcentom",
+        "Cosmic indigo & starlight blue",
+        "Kosmički indigo i svetloplava",
     )
     val wpCrimsonVelvetDesc: String = s(
-        "Deep ruby & burgundy damask with emerald-teal accent",
-        "Duboki rubin i bordo brokat sa smaragdno-tirkiznim akcentom",
+        "Deep ruby with emerald accent",
+        "Duboki rubin i smaragd",
     )
     val wpArcticFrostDesc: String = s(
-        "Glacial ice & polar cyan crystals with soft rose accent",
-        "Glečerski led i polarni kristali sa nežnim ružičastim akcentom",
+        "Polar ice with soft rose accent",
+        "Polarni led i nežna ružičasta",
     )
     val wpObsidianGoldDesc: String = s(
-        "Volcanic obsidian & kintsugi gold veins with azure accent",
-        "Vulkanski obsidijan i zlatne žile mermera sa azurnim akcentom",
+        "Volcanic black & gold veins",
+        "Vulkanska crna i zlatne niti",
     )
     val wpMonoSlateDesc: String = s(
-        "Light/Dark monochrome base with brushed slate-titanium accent",
-        "Svetla/tamna monohromatska baza sa sivo-titanijumskim akcentom",
+        "Cool brushed titanium tone",
+        "Hladni ton brušenog titanijuma",
     )
     val wpMonoSapphireDesc: String = s(
-        "Light/Dark monochrome base with crisp sapphire blue accent",
-        "Svetla/tamna monohromatska baza sa čistim safirno plavim akcentom",
+        "Clear royal sapphire blue",
+        "Čista kraljevska safirno plava",
     )
     val wpMonoSageDesc: String = s(
-        "Light/Dark monochrome base with calm sage-emerald accent",
-        "Svetla/tamna monohromatska baza sa smirenim smaragdnim akcentom",
+        "Calm sage & emerald green",
+        "Smirena žalfija i smaragdno zelena",
     )
     val wpMonoChampagneDesc: String = s(
-        "Light/Dark monochrome base with warm champagne gold accent",
-        "Svetla/tamna monohromatska baza sa toplim šampanj-zlatnim akcentom",
+        "Warm champagne gold sheen",
+        "Topli odsjaj šampanj-zlata",
     )
     val wpMonoPlumDesc: String = s(
-        "Light/Dark monochrome base with soft amethyst purple accent",
-        "Svetla/tamna monohromatska baza sa nežnim ametist ljubičastim akcentom",
+        "Soft royal amethyst purple",
+        "Nežna ametist ljubičasta",
     )
     val wpMonoGraphiteDesc: String = s(
-        "Light/Dark monochrome base with pure graphite & silver accent",
-        "Svetla/tamna monohromatska baza sa grafitno-srebrnim akcentom",
+        "Pure graphite & metallic silver",
+        "Čisti grafit i metalik srebrna",
     )
     val wpMonoRoseDesc: String = s(
-        "Light/Dark monochrome base with velvet rose-crimson accent",
-        "Svetla/tamna monohromatska baza sa baršunasto ružičastim akcentom",
+        "Velvet rose & crimson tone",
+        "Baršunasta ružičasta i grimiz",
     )
     val wpMonoNavyDesc: String = s(
-        "Light/Dark monochrome base with deep royal indigo accent",
-        "Svetla/tamna monohromatska baza sa kraljevskim indigo-teget akcentom",
+        "Deep royal indigo & navy",
+        "Duboka kraljevska indigo-teget",
     )
     val wpMonoSmokeDesc: String = s(
-        "Light/Dark monochrome base with modern ocean-teal accent",
-        "Svetla/tamna monohromatska baza sa modernim tirkiznim akcentom",
+        "Modern ocean turquoise",
+        "Moderna okeanska tirkizna",
     )
     val wpMonoEspressoDesc: String = s(
-        "Light/Dark monochrome base with warm roasted copper accent",
-        "Svetla/tamna monohromatska baza sa toplim bakarno-narandžastim akcentom",
+        "Warm roasted copper & bronze",
+        "Topli ton bakra i bronze",
     )
 
     // Txtura Tactile Background Textures
@@ -571,6 +571,55 @@ class AppStrings(val isSerbian: Boolean) {
         }
     }
     val confirmRestoreButton: String = s("Restore Data", "Vrati podatke")
+
+    // Delayed 6s send & scheduled message strings
+    val messageSendCancelledToast: String = s(
+        "Message sending cancelled.",
+        "Slanje poruke otkazano.",
+    )
+    val cancelDelayedSendTooltip: String = s(
+        "Cancel sending",
+        "Otkaži slanje",
+    )
+    val scheduleMessageTitle: String = s(
+        "Schedule Message",
+        "Isplaniraj slanje poruke",
+    )
+    val scheduleMessageSubtitle: String = s(
+        "Choose when this message should be sent automatically:",
+        "Odaberite kada želite da se poruka automatski pošalje:",
+    )
+    val schedulePresetIn15Min: String = s("In 15 minutes", "Za 15 minuta")
+    val schedulePresetIn1Hour: String = s("In 1 hour", "Za 1 sat")
+    val schedulePresetTonight20: String = s("Tonight at 20:00", "Večeras u 20:00")
+    val schedulePresetTomorrow09: String = s("Tomorrow at 09:00", "Sutra u 09:00")
+    val scheduleCustomTimeTitle: String = s("Exact date & time", "Tačan datum i vreme")
+    val scheduleDayLabel: String = s("Day", "Dan")
+    val scheduleMonthLabel: String = s("Month", "Mesec")
+    val scheduleYearLabel: String = s("Year", "Godina")
+    val scheduleHourLabel: String = s("Hour (0-23)", "Sat (0-23)")
+    val scheduleMinuteLabel: String = s("Minute (0-59)", "Minut (0-59)")
+    val scheduleConfirmButton: String = s("Schedule send", "Zakaži slanje")
+    val scheduledMessagesBannerTitle: String = s("Scheduled messages", "Planirane poruke")
+    val cancelScheduledMessageTooltip: String = s(
+        "Cancel scheduled message",
+        "Otkaži planiranu poruku",
+    )
+    val scheduleInvalidDateTime: String = s(
+        "Please enter a valid future date and time.",
+        "Unesite važeći datum i vreme u budućnosti.",
+    )
+    val messageScheduledToast: (String) -> String = { timeStr ->
+        if (isSerbian) "Poruka je zakazana za $timeStr." else "Message scheduled for $timeStr."
+    }
+
+    // Notification Direct Reply & Copy 2FA Code actions
+    val notificationReplyAction: String = s("Reply", "Odgovori")
+    val notificationReplyHint: String = s("Write a reply...", "Napiši odgovor...")
+    val notificationReplySentToast: String = s("Reply sent.", "Odgovor je poslat.")
+    val notificationCopyCodeAction: (String) -> String = { code ->
+        if (isSerbian) "Kopiraj kod ($code)" else "Copy code ($code)"
+    }
 }
 
 private val EnglishStrings = AppStrings(isSerbian = false)
