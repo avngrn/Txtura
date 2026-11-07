@@ -85,7 +85,6 @@ enum class SwipeAction {
     DELETE,
     CALL,
     MARK_READ,
-    OPEN_CONTACT,
     NONE
 }
 
@@ -189,7 +188,7 @@ enum class WallpaperPreset(
 data class WallpaperConfig(
     val preset: WallpaperPreset = WallpaperPreset.DEFAULT,
     val customImageUri: String? = null,
-    val texture: WallpaperTexture = WallpaperTexture.AUTO_THEME
+    val texture: WallpaperTexture = WallpaperTexture.AUTO_THEME,
 ) {
     val isCustomGalleryImage: Boolean
         get() = !customImageUri.isNullOrBlank()
@@ -226,7 +225,7 @@ data class WallpaperConfig(
                         WallpaperConfig(
                             preset = WallpaperPreset.DEFAULT,
                             customImageUri = uriStr,
-                            texture = parsedTexture
+                            texture = parsedTexture,
                         )
                     } else {
                         WallpaperConfig(texture = parsedTexture)
@@ -286,7 +285,9 @@ data class ConversationThread(
     val pinnedMessages: List<ChatMessage> = messages.filter(ChatMessage::isPinned)
 
     val highestRiskLevel: SecurityRiskLevel =
-        messages.maxOfOrNull { it.securityAnalysis.riskLevel } ?: SecurityRiskLevel.SAFE
+        messages.maxOfOrNull { (_, _, _, _, _, _, _, _, _, _, _, securityAnalysis) ->
+            securityAnalysis.riskLevel
+        } ?: SecurityRiskLevel.SAFE
 }
 
 data class ContactPickerItem(
@@ -338,7 +339,9 @@ data class AppSettingsSnapshot(
     val bubbleZoomScale: Float,
     val uiColorMode: UiColorMode = UiColorMode.COLORFUL,
     val uiOpacity: Float = 0.50f,
-    val categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder
+    val categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder,
+    val recallMessagesEnabled: Boolean = true,
+    val identifyMaliciousWebsites: Boolean = true,
 )
 
 data class BackupRestorePayload(
@@ -355,7 +358,8 @@ data class BackupRestorePayload(
     val deletedThreads: List<DeletedConversationEntry>
 ) {
     val totalMessagesCount: Int
-        get() = threads.sumOf { it.messages.size } + deletedThreads.sumOf { it.thread.messages.size }
+        get() = threads.sumOf { (_, _, _, _, _, _, messages) -> messages.size } +
+            deletedThreads.sumOf { (thread, _) -> thread.messages.size }
 }
 
 object BackupManager {
@@ -428,6 +432,8 @@ object BackupManager {
         settingsObj.put("uiColorMode", settings.uiColorMode.name)
         settingsObj.put("uiOpacity", settings.uiOpacity.toDouble())
         settingsObj.put("categoryOrder", ConversationFilter.serializeOrder(settings.categoryOrder))
+        settingsObj.put("recallMessagesEnabled", settings.recallMessagesEnabled)
+        settingsObj.put("identifyMaliciousWebsites", settings.identifyMaliciousWebsites)
 
         val contactWpObj = JSONObject()
         settings.contactWallpapers.forEach { (addr, wp) ->
@@ -548,6 +554,8 @@ object BackupManager {
         val uiColorMode = UiColorMode.entries.find { it.name == uiColorModeStr } ?: UiColorMode.COLORFUL
         val uiOpacity = settingsObj.optDouble("uiOpacity", 0.50).toFloat().coerceIn(0.0f, 1.0f)
         val categoryOrder = ConversationFilter.deserializeOrder(settingsObj.optString("categoryOrder", ""))
+        val recallMessagesEnabled = settingsObj.optBoolean("recallMessagesEnabled", true)
+        val identifyMaliciousWebsites = settingsObj.optBoolean("identifyMaliciousWebsites", true)
 
         val contactWpMap = mutableMapOf<String, WallpaperConfig>()
         val contactWpObj = settingsObj.optJSONObject("contactWallpapers")
@@ -573,7 +581,9 @@ object BackupManager {
             bubbleZoomScale = bubbleZoom,
             uiColorMode = uiColorMode,
             uiOpacity = uiOpacity,
-            categoryOrder = categoryOrder
+            categoryOrder = categoryOrder,
+            recallMessagesEnabled = recallMessagesEnabled,
+            identifyMaliciousWebsites = identifyMaliciousWebsites
         )
 
         // 2. Pins, Highlights, Blocked & Metadata

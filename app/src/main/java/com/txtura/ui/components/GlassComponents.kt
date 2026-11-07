@@ -11,6 +11,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -99,10 +101,10 @@ fun GlassBackground(
     wallpaperConfig: WallpaperConfig = WallpaperConfig(),
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val (isDark, isAmoled) = LocalGlassPalette.current
-    val currentPalette = LocalGlassPalette.current
-    val uiOpacity = currentPalette.uiOpacity
-    val uiColorMode = currentPalette.uiColorMode
+    val isDark = LocalGlassPalette.current.isDark
+    val isAmoled = LocalGlassPalette.current.isAmoled
+    val uiOpacity = LocalGlassPalette.current.uiOpacity
+    val uiColorMode = LocalGlassPalette.current.uiColorMode
     val context = LocalContext.current
     val customPath = wallpaperConfig.customImageUri
 
@@ -164,7 +166,7 @@ fun GlassBackground(
     }
 
     val preset = wallpaperConfig.preset
-    val isMinimalist = preset.isMinimalist || uiColorMode == UiColorMode.MINIMALIST
+    val isMinimalist = preset.isMinimalist || (uiColorMode == UiColorMode.MINIMALIST)
     val isMono = (preset.isMonochrome || (uiColorMode == UiColorMode.MONOCHROME)) && !isMinimalist
     val activeTexture = wallpaperConfig.resolvedTexture
     val bgBase = when {
@@ -173,8 +175,8 @@ fun GlassBackground(
         isMono -> palette.backgroundBase
         preset == WallpaperPreset.DEFAULT -> palette.backgroundBase
         !palette.isDark -> lerp(Color(0xFFE2EAF4), Color(preset.primaryOrbHex), 0.18f)
-        isAmoled -> Color.Black
-        else -> Color(preset.baseColorHex)
+        palette.isAmoled -> Color.Black
+        else -> palette.backgroundBase
     }
 
     // Background blur and smoked frost:
@@ -184,8 +186,8 @@ fun GlassBackground(
     val frostBlurRadius = (frostSolidity * 22f).dp
     val frostVeilColor = when {
         !palette.isDark -> lerp(Color(0xFF94A3B8), palette.accentPrimary.copy(alpha = 1f), 0.22f)
-        palette.isAmoled -> lerp(Color(0xFF06090F), palette.orbPrimary.copy(alpha = 1f), 0.28f)
-        else -> lerp(Color(0xFF0A101B), palette.orbPrimary.copy(alpha = 1f), 0.30f)
+        palette.isAmoled -> Color.Black
+        else -> lerp(Color(0xFF1A2538), palette.orbPrimary.copy(alpha = 1f), 0.30f)
     }
     val frostVeilAlpha = (frostSolidity * 0.32f).coerceIn(0.0f, 0.32f)
 
@@ -240,8 +242,11 @@ fun GlassBackground(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(
-                                    if (palette.isDark) Color.Black.copy(alpha = 0.45f)
-                                    else Color(0xFFCBD5E1).copy(alpha = 0.32f),
+                                    when {
+                                        !palette.isDark -> Color(0xFFCBD5E1).copy(alpha = 0.32f)
+                                        palette.isAmoled -> Color.Black.copy(alpha = 0.52f)
+                                        else -> Color(0xFF182232).copy(alpha = 0.42f)
+                                    },
                                 ),
                         )
                     } else {
@@ -252,14 +257,14 @@ fun GlassBackground(
 
                             if (preset == WallpaperPreset.DEFAULT || isMono) {
                                 val topCenter = Offset(w * 0.85f, h * 0.12f)
-                                val topRadius = (w * 0.72f).coerceAtLeast(1f)
+                                val topRadius = (w * (if (palette.isAmoled) 0.60f else 0.78f)).coerceAtLeast(1f)
                                 val topBrush = Brush.radialGradient(
                                     colors = listOf(palette.orbPrimary, Color.Transparent),
                                     center = topCenter,
                                     radius = topRadius,
                                 )
                                 val bottomCenter = Offset(w * 0.15f, h * 0.78f)
-                                val bottomRadius = (w * 0.68f).coerceAtLeast(1f)
+                                val bottomRadius = (w * (if (palette.isAmoled) 0.56f else 0.74f)).coerceAtLeast(1f)
                                 val bottomBrush = Brush.radialGradient(
                                     colors = listOf(palette.orbSecondary, Color.Transparent),
                                     center = bottomCenter,
@@ -268,12 +273,19 @@ fun GlassBackground(
                                 drawCircle(brush = topBrush, radius = topRadius, center = topCenter)
                                 drawCircle(brush = bottomBrush, radius = bottomRadius, center = bottomCenter)
                             } else {
-                                val c1 = Color(preset.primaryOrbHex).copy(alpha = if (palette.isDark) 0.38f else 0.28f)
-                                val c2 = Color(preset.secondaryOrbHex).copy(alpha = if (palette.isDark) 0.34f else 0.24f)
-                                val c3 = Color(preset.accentOrbHex).copy(alpha = if (palette.isDark) 0.28f else 0.20f)
+                                val c1 = Color(preset.primaryOrbHex).copy(
+                                    alpha = if (!palette.isDark) 0.28f else if (palette.isAmoled) 0.26f else 0.42f
+                                )
+                                val c2 = Color(preset.secondaryOrbHex).copy(
+                                    alpha = if (!palette.isDark) 0.24f else if (palette.isAmoled) 0.22f else 0.38f
+                                )
+                                val c3 = Color(preset.accentOrbHex).copy(
+                                    alpha = if (!palette.isDark) 0.20f else if (palette.isAmoled) 0.18f else 0.32f
+                                )
 
+                                val radiusScale = if (palette.isAmoled) 0.72f else 0.90f
                                 val center1 = Offset(w * 0.82f, h * 0.14f)
-                                val radius1 = (w * 0.85f).coerceAtLeast(1f)
+                                val radius1 = (w * radiusScale).coerceAtLeast(1f)
                                 val brush1 = Brush.radialGradient(
                                     colors = listOf(c1, Color.Transparent),
                                     center = center1,
@@ -281,7 +293,7 @@ fun GlassBackground(
                                 )
 
                                 val center2 = Offset(w * 0.15f, h * 0.48f)
-                                val radius2 = (w * 0.78f).coerceAtLeast(1f)
+                                val radius2 = (w * (radiusScale * 0.92f)).coerceAtLeast(1f)
                                 val brush2 = Brush.radialGradient(
                                     colors = listOf(c2, Color.Transparent),
                                     center = center2,
@@ -289,7 +301,7 @@ fun GlassBackground(
                                 )
 
                                 val center3 = Offset(w * 0.75f, h * 0.86f)
-                                val radius3 = (w * 0.75f).coerceAtLeast(1f)
+                                val radius3 = (w * (radiusScale * 0.88f)).coerceAtLeast(1f)
                                 val brush3 = Brush.radialGradient(
                                     colors = listOf(c3, Color.Transparent),
                                     center = center3,
@@ -363,13 +375,13 @@ fun DrawScope.drawTxturaTexture(
                     color = col,
                     start = Offset(d, 0f),
                     end = Offset(d + h * 0.65f, h),
-                    strokeWidth = strokeBase
+                    strokeWidth = strokeBase,
                 )
                 drawLine(
                     color = secondaryColor,
                     start = Offset(d + h * 0.65f, 0f),
                     end = Offset(d, h),
-                    strokeWidth = strokeBase * 0.85f
+                    strokeWidth = strokeBase * 0.85f,
                 )
                 d += step
                 idx++
@@ -946,6 +958,7 @@ fun GlassCard(
     elevated: Boolean = false,
     accentHighlight: Color? = null,
     contentPadding: PaddingValues = PaddingValues(16.dp),
+    interactionSource: MutableInteractionSource? = null,
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
@@ -981,15 +994,35 @@ fun GlassCard(
     }
 
     val clickableModifier = when {
-        (onClick != null) && (onLongClick != null) -> Modifier.combinedClickable(
-            onClick = onClick,
-            onLongClick = onLongClick,
-        )
-        onLongClick != null -> Modifier.combinedClickable(
-            onClick = {},
-            onLongClick = onLongClick,
-        )
-        onClick != null -> Modifier.clickable(onClick = onClick)
+        (onClick != null) && (onLongClick != null) -> {
+            val resolvedSource = interactionSource ?: remember { MutableInteractionSource() }
+            Modifier.combinedClickable(
+                interactionSource = resolvedSource,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
+        }
+        onLongClick != null -> {
+            val resolvedSource = interactionSource ?: remember { MutableInteractionSource() }
+            Modifier.combinedClickable(
+                interactionSource = resolvedSource,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                onClick = {},
+                onLongClick = onLongClick,
+            )
+        }
+        onClick != null -> {
+            if (interactionSource != null) {
+                Modifier.clickable(
+                    interactionSource = interactionSource,
+                    indication = androidx.compose.foundation.LocalIndication.current,
+                    onClick = onClick,
+                )
+            } else {
+                Modifier.clickable(onClick = onClick)
+            }
+        }
         else -> Modifier
     }
 
@@ -1065,7 +1098,7 @@ fun GlassModernSlider(
             .height(28.dp)
             .pointerInput(valueRange) {
                 detectTapGestures { offset ->
-                    val pad = 10.dp.toPx()
+                    val pad = 14.dp.toPx()
                     val usable = (size.width - pad * 2f).coerceAtLeast(1f)
                     val frac = ((offset.x - pad) / usable).coerceIn(0f, 1f)
                     currentOnValueChange(valueRange.start + frac * span)
@@ -1075,7 +1108,7 @@ fun GlassModernSlider(
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
                         isDragging = true
-                        val pad = 10.dp.toPx()
+                        val pad = 14.dp.toPx()
                         val usable = (size.width - pad * 2f).coerceAtLeast(1f)
                         val frac = ((offset.x - pad) / usable).coerceIn(0f, 1f)
                         currentOnValueChange(valueRange.start + frac * span)
@@ -1084,14 +1117,14 @@ fun GlassModernSlider(
                     onDragCancel = { isDragging = false },
                 ) { change, _ ->
                     change.consume()
-                    val pad = 10.dp.toPx()
+                    val pad = 14.dp.toPx()
                     val usable = (size.width - pad * 2f).coerceAtLeast(1f)
                     val frac = ((change.position.x - pad) / usable).coerceIn(0f, 1f)
                     currentOnValueChange(valueRange.start + frac * span)
                 }
             },
     ) {
-        val trackStart = 10.dp.toPx()
+        val trackStart = 14.dp.toPx()
         val trackEnd = (size.width - trackStart).coerceAtLeast(trackStart + 1f)
         val trackWidth = trackEnd - trackStart
         val centerY = size.height * 0.5f
@@ -1250,6 +1283,7 @@ fun GlassTooltipIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     tint: Color = LocalGlassPalette.current.accentPrimary,
+    pressedTint: Color = tint,
     size: Dp = 44.dp,
 ) {
     val palette = LocalGlassPalette.current
@@ -1258,6 +1292,9 @@ fun GlassTooltipIconButton(
     val glassBorderBottom = palette.glassBorderBottom
     val tooltipState = rememberTooltipState()
     val scope = rememberCoroutineScope()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val activeTint = if (isPressed) pressedTint else tint
 
     @Suppress("DEPRECATION")
     val positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider()
@@ -1307,6 +1344,8 @@ fun GlassTooltipIconButton(
                 .background(brush = surfaceBrush, shape = CircleShape)
                 .border(width = 1.dp, brush = borderBrush, shape = CircleShape)
                 .combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = androidx.compose.foundation.LocalIndication.current,
                     onClick = onClick,
                     onLongClick = {
                         scope.launch { tooltipState.show() }
@@ -1316,7 +1355,7 @@ fun GlassTooltipIconButton(
             Icon(
                 imageVector = icon,
                 contentDescription = tooltipText,
-                tint = tint,
+                tint = activeTint,
                 modifier = Modifier
                     .size(22.dp)
                     .align(Alignment.Center),
@@ -1541,6 +1580,32 @@ object TxturaIcons {
         }.build()
     }
 
+    val DeselectAll: ImageVector by lazy {
+        ImageVector.Builder("DeselectAll", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(7f, 4f)
+                lineTo(18f, 4f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 20f, 6f)
+                lineTo(20f, 17f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 18f, 19f)
+                lineTo(7f, 19f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 5f, 17f)
+                lineTo(5f, 6f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 7f, 4f)
+                close()
+                moveTo(3f, 9f)
+                lineTo(3f, 19f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = false, 5f, 21f)
+                lineTo(15f, 21f)
+            }
+        }.build()
+    }
+
     val Check: ImageVector by lazy {
         ImageVector.Builder("Check", 24.dp, 24.dp, 24f, 24f).apply {
             path(
@@ -1706,27 +1771,55 @@ object TxturaIcons {
         }.build()
     }
 
-    val SparklesTheme: ImageVector by lazy {
-        ImageVector.Builder("SparklesTheme", 24.dp, 24.dp, 24f, 24f).apply {
+    val SparklesTheme: ImageVector
+        get() = ImageVector.Builder("SparklesTheme", 24.dp, 24.dp, 24f, 24f).apply {
+            // Artist color palette outer contour with thumb cutout
             path(
                 stroke = SolidColor(Color.White),
-                strokeLineWidth = 2f,
+                strokeLineWidth = 1.9f,
                 strokeLineCap = StrokeCap.Round,
                 strokeLineJoin = StrokeJoin.Round,
                 pathFillType = PathFillType.NonZero,
             ) {
-                moveTo(12f, 3f)
-                lineTo(14.5f, 9.5f)
-                lineTo(21f, 12f)
-                lineTo(14.5f, 14.5f)
-                lineTo(12f, 21f)
-                lineTo(9.5f, 14.5f)
-                lineTo(3f, 12f)
-                lineTo(9.5f, 9.5f)
+                moveTo(12f, 2.5f)
+                curveTo(6.75f, 2.5f, 2.5f, 6.75f, 2.5f, 12f)
+                curveTo(2.5f, 17.25f, 6.75f, 21.5f, 12f, 21.5f)
+                curveTo(13.65f, 21.5f, 14.9f, 20.3f, 14.9f, 18.7f)
+                curveTo(14.9f, 17.95f, 14.6f, 17.3f, 14.15f, 16.8f)
+                curveTo(13.7f, 16.3f, 13.45f, 15.7f, 13.45f, 15.0f)
+                curveTo(13.45f, 13.6f, 14.6f, 12.5f, 16.0f, 12.5f)
+                horizontalLineTo(17.6f)
+                curveTo(19.75f, 12.5f, 21.5f, 10.75f, 21.5f, 8.6f)
+                curveTo(21.5f, 5.1f, 17.25f, 2.5f, 12f, 2.5f)
+                close()
+            }
+            // Four paint color wells on the palette
+            path(
+                fill = SolidColor(Color.White),
+                pathFillType = PathFillType.NonZero,
+            ) {
+                // Dot 1 (bottom-left)
+                moveTo(6.6f, 11.8f)
+                arcTo(1.25f, 1.25f, 0f, true, true, 6.6f, 14.3f)
+                arcTo(1.25f, 1.25f, 0f, true, true, 6.6f, 11.8f)
+                close()
+                // Dot 2 (top-left)
+                moveTo(8.3f, 7.1f)
+                arcTo(1.25f, 1.25f, 0f, true, true, 8.3f, 9.6f)
+                arcTo(1.25f, 1.25f, 0f, true, true, 8.3f, 7.1f)
+                close()
+                // Dot 3 (top-center)
+                moveTo(12.8f, 5.7f)
+                arcTo(1.25f, 1.25f, 0f, true, true, 12.8f, 8.2f)
+                arcTo(1.25f, 1.25f, 0f, true, true, 12.8f, 5.7f)
+                close()
+                // Dot 4 (top-right)
+                moveTo(16.9f, 7.6f)
+                arcTo(1.25f, 1.25f, 0f, true, true, 16.9f, 10.1f)
+                arcTo(1.25f, 1.25f, 0f, true, true, 16.9f, 7.6f)
                 close()
             }
         }.build()
-    }
 
     val CopyKey: ImageVector by lazy {
         ImageVector.Builder("CopyKey", 24.dp, 24.dp, 24f, 24f).apply {
@@ -1937,21 +2030,6 @@ object TxturaIcons {
         }.build()
     }
 
-    val ChevronDown: ImageVector by lazy {
-        ImageVector.Builder("ChevronDown", 24.dp, 24.dp, 24f, 24f).apply {
-            path(
-                stroke = SolidColor(Color.White),
-                strokeLineWidth = 2.2f,
-                strokeLineCap = StrokeCap.Round,
-                strokeLineJoin = StrokeJoin.Round,
-            ) {
-                moveTo(6f, 9f)
-                lineTo(12f, 15f)
-                lineTo(18f, 9f)
-            }
-        }.build()
-    }
-
     val ChevronRight: ImageVector by lazy {
         ImageVector.Builder("ChevronRight", 24.dp, 24.dp, 24f, 24f).apply {
             path(
@@ -2089,6 +2167,48 @@ object TxturaIcons {
                 moveTo(12f, 7.5f)
                 lineTo(12f, 12f)
                 lineTo(15.2f, 14.2f)
+            }
+        }.build()
+    }
+
+    val PermissionsKey: ImageVector by lazy {
+        ImageVector.Builder("PermissionsKey", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                fill = SolidColor(Color.Transparent),
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // Circular key bow at (7.5, 15.5) with radius 4.5
+                moveTo(7.5f, 11f)
+                arcTo(
+                    horizontalEllipseRadius = 4.5f,
+                    verticalEllipseRadius = 4.5f,
+                    theta = 0f,
+                    isMoreThanHalf = true,
+                    isPositiveArc = true,
+                    x1 = 7.5f,
+                    y1 = 20f,
+                )
+                arcTo(
+                    horizontalEllipseRadius = 4.5f,
+                    verticalEllipseRadius = 4.5f,
+                    theta = 0f,
+                    isMoreThanHalf = true,
+                    isPositiveArc = true,
+                    x1 = 7.5f,
+                    y1 = 11f,
+                )
+                close()
+                // Key shaft from bow edge to top-right
+                moveTo(10.68f, 12.32f)
+                lineTo(21f, 2f)
+                // Key teeth
+                moveTo(18f, 5f)
+                lineTo(20.5f, 7.5f)
+                moveTo(15f, 8f)
+                lineTo(17.5f, 10.5f)
             }
         }.build()
     }

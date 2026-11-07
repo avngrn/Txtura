@@ -1,3 +1,5 @@
+@file:Suppress("SpellCheckingInspection")
+
 package com.txtura.data
 
 import android.Manifest
@@ -55,8 +57,11 @@ object SmsMmsRepository {
     const val ACTION_SMS_DELIVERED = "com.txtura.action.SMS_DELIVERED"
     const val ACTION_OPEN_THREAD_NOTIFICATION = "com.txtura.action.OPEN_THREAD_NOTIFICATION"
     const val ACTION_NOTIFICATION_DIRECT_REPLY = "com.txtura.action.NOTIFICATION_DIRECT_REPLY"
+    const val ACTION_NOTIFICATION_MARK_READ = "com.txtura.action.NOTIFICATION_MARK_READ"
+    const val ACTION_NOTIFICATION_HIGHLIGHT_MSG = "com.txtura.action.NOTIFICATION_HIGHLIGHT_MSG"
     const val ACTION_NOTIFICATION_COPY_OTP = "com.txtura.action.NOTIFICATION_COPY_OTP"
     const val EXTRA_NOTIFICATION_THREAD_ID = "extra_notification_thread_id"
+    const val EXTRA_NOTIFICATION_MESSAGE_ID = "extra_notification_message_id"
     const val EXTRA_NOTIFICATION_ADDRESS = "extra_notification_address"
     const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
     const val EXTRA_NOTIFICATION_OTP_CODE = "extra_notification_otp_code"
@@ -147,6 +152,76 @@ object SmsMmsRepository {
     fun initializePersistedState(context: Context) {
         loadPersistedPins(context)
         ensureNotificationChannel(context)
+        scanAllThreadsForMaliciousWebsitesOnline(context)
+    }
+
+    /**
+     * Asynchronously inspects URLs in a specific message against online malware & phishing threat intelligence
+     * when online website identification is enabled, updating the message's security analysis in-place.
+     */
+    fun verifyMessageUrlsOnlineAsync(
+        context: Context,
+        threadId: Long,
+        messageId: Long,
+        body: String,
+    ) {
+        if (!MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled) return
+        if (!MessageSecurityAnalyzer.hasUrlsToInspect(body)) return
+        val appCtx = context.applicationContext
+        ioScope.launch {
+            val updatedAnalysis = MessageSecurityAnalyzer.inspectMessageUrlsOnline(appCtx, body)
+                ?: return@launch
+            _threads.update { current ->
+                current.map { thread ->
+                    if (thread.id == threadId) {
+                        thread.copy(
+                            messages = thread.messages.map { msg ->
+                                if (msg.id == messageId) {
+                                    msg.copy(securityAnalysis = updatedAnalysis)
+                                } else {
+                                    msg
+                                }
+                            },
+                        )
+                    } else {
+                        thread
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Scans all active conversation messages that contain links using online malicious website verification.
+     */
+    fun scanAllThreadsForMaliciousWebsitesOnline(context: Context) {
+        if (!MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled) return
+        val appCtx = context.applicationContext
+        ioScope.launch {
+            val snapshot = _threads.value
+            for ((threadId, _, _, _, _, _, messages) in snapshot) {
+                for ((msgId, _, _, body, _, _, _, _, _, _, _, securityAnalysis) in messages) {
+                    if (MessageSecurityAnalyzer.hasUrlsToInspect(body)) {
+                        val updatedAnalysis = MessageSecurityAnalyzer.inspectMessageUrlsOnline(appCtx, body)
+                        if ((updatedAnalysis != null) && (updatedAnalysis != securityAnalysis)) {
+                            _threads.update { current ->
+                                current.map { t ->
+                                    if (t.id == threadId) {
+                                        t.copy(
+                                            messages = t.messages.map { m ->
+                                                if (m.id == msgId) m.copy(securityAnalysis = updatedAnalysis) else m
+                                            }
+                                        )
+                                    } else {
+                                        t
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -216,7 +291,7 @@ object SmsMmsRepository {
                 if (parts.size == 2) {
                     val id = parts[0].toLongOrNull()
                     val ts = parts[1].toLongOrNull()
-                    if (id != null && ts != null) {
+                    if ((id != null) && (ts != null)) {
                         deletedThreadTimestamps[id] = ts
                     }
                 }
@@ -278,9 +353,9 @@ object SmsMmsRepository {
 
         // Default heuristic:
         val cleanDigits = clean.filter { it.isDigit() }
-        if (clean.any { it.isLetter() }) return true
-        if ((cleanDigits.length in 3..7) && !clean.startsWith("+")) return true
-        return messages.any { it.securityAnalysis.extractedOtpCode != null }
+        return clean.any { it.isLetter() } ||
+            ((cleanDigits.length in 3..7) && !clean.startsWith("+")) ||
+            messages.any { it.securityAnalysis.extractedOtpCode != null }
     }
 
     /**
@@ -525,7 +600,7 @@ object SmsMmsRepository {
                 val initials = computeInitials(resolvedName)
                 val threadId = sortedMsgs.first().threadId.takeIf { it > 0L }
                     ?: (primaryAddress.hashCode().toLong() and 0x7FFFFFFFL)
-                val isContactPinned = isAddressPinned(primaryAddress) || sortedMsgs.any { it.isPinned }
+                val isContactPinned = isAddressPinned(primaryAddress)
                 val unread = unreadCountByThread[threadId] ?: 0
 
                 ConversationThread(
@@ -563,7 +638,50 @@ object SmsMmsRepository {
             }
         }
 
-        _threads.value = sortThreads(activeList)
+        // Preserve in-memory conversations (or recently arrived/sent messages) not yet in Telephony DB
+        val previousInMemoryThreads = _threads.value.filter { it.id > 10L }
+        val mergedActiveList = activeList.asSequence().map { deviceThread ->
+            val matchingInMemory = previousInMemoryThreads.find { prev ->
+                prev.id == deviceThread.id ||
+                    arePhoneNumbersEqual(prev.address, deviceThread.address) ||
+                    prev.address.equals(deviceThread.address, ignoreCase = true) ||
+                    normalizeAddressKey(prev.address) == normalizeAddressKey(deviceThread.address)
+            }
+            if (matchingInMemory != null) {
+                val missingMessages = matchingInMemory.messages.filter { memMsg ->
+                    deviceThread.messages.none { dbMsg ->
+                        dbMsg.body == memMsg.body &&
+                            kotlin.math.abs(dbMsg.timestampMillis - memMsg.timestampMillis) < 15_000L
+                    }
+                }
+                if (missingMessages.isNotEmpty()) {
+                    val combinedMsgs = (deviceThread.messages + missingMessages.map { it.copy(threadId = deviceThread.id) })
+                        .sortedBy { it.timestampMillis }
+                    deviceThread.copy(messages = combinedMsgs)
+                } else {
+                    deviceThread
+                }
+            } else {
+                deviceThread
+            }
+        }.toMutableList()
+
+        for (inMemoryThread in previousInMemoryThreads) {
+            if (isSenderBlocked(inMemoryThread.address) || (inMemoryThread.id in deletedThreadTimestamps)) {
+                continue
+            }
+            val alreadyInDeviceList = mergedActiveList.any { dev ->
+                dev.id == inMemoryThread.id ||
+                    arePhoneNumbersEqual(dev.address, inMemoryThread.address) ||
+                    dev.address.equals(inMemoryThread.address, ignoreCase = true) ||
+                    normalizeAddressKey(dev.address) == normalizeAddressKey(inMemoryThread.address)
+            }
+            if (!alreadyInDeviceList) {
+                mergedActiveList.add(inMemoryThread)
+            }
+        }
+
+        _threads.value = sortThreads(mergedActiveList)
         _deletedThreads.update { existingTrash ->
             (existingTrash + trashedFromDevice)
                 .associateBy { it.thread.id }
@@ -573,6 +691,7 @@ object SmsMmsRepository {
                 .sortedByDescending { it.deletedAtMillis }
                 .toList()
         }
+        scanAllThreadsForMaliciousWebsitesOnline(context)
     }
 
     /**
@@ -909,6 +1028,36 @@ object SmsMmsRepository {
             result.values.toList()
         }
 
+    fun sanitizeSenderOrRecipientAddress(rawAddress: String): String {
+        val trimmed = rawAddress.trim()
+        val hasLetters = trimmed.any { it.isLetter() }
+        return if (hasLetters) {
+            trimmed.filter { ch ->
+                ch.isLetterOrDigit() || (ch in "+-_. ")
+            }
+                .trim()
+                .take(28)
+                .ifBlank { trimmed.take(24) }
+        } else {
+            MessageSecurityAnalyzer.sanitizePhoneNumber(trimmed)
+                .ifBlank { trimmed.take(24) }
+        }
+    }
+
+    fun findThreadByAddress(
+        threads: List<ConversationThread>,
+        rawAddress: String
+    ): ConversationThread? {
+        val cleanAddress = sanitizeSenderOrRecipientAddress(rawAddress)
+        if (cleanAddress.isBlank()) return null
+        return threads.find {
+            arePhoneNumbersEqual(it.address, cleanAddress) ||
+                it.address.equals(cleanAddress, ignoreCase = true) ||
+                it.contactName.equals(cleanAddress, ignoreCase = true) ||
+                normalizeAddressKey(it.address) == normalizeAddressKey(cleanAddress)
+        }
+    }
+
     /**
      * Finds an existing conversation thread with [recipientAddress] (restoring from Trash if needed)
      * or creates a new conversation thread if no previous chat exists with that person,
@@ -919,15 +1068,10 @@ object SmsMmsRepository {
         recipientAddress: String,
         preferredName: String? = null
     ): Long {
-        val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(recipientAddress)
-            .ifBlank { recipientAddress.trim().take(24) }
+        val cleanAddress = sanitizeSenderOrRecipientAddress(recipientAddress)
 
         // 1. Check active threads
-        val existingActive = _threads.value.find {
-            arePhoneNumbersEqual(it.address, cleanAddress) ||
-                it.address.equals(cleanAddress, ignoreCase = true) ||
-                it.contactName.equals(cleanAddress, ignoreCase = true)
-        }
+        val existingActive = findThreadByAddress(_threads.value, cleanAddress)
         if (existingActive != null) {
             markThreadRead(context, existingActive.id)
             return existingActive.id
@@ -936,7 +1080,8 @@ object SmsMmsRepository {
         // 2. Check soft-deleted threads (restore if user starts a chat with them)
         val existingDeleted = _deletedThreads.value.find {
             arePhoneNumbersEqual(it.thread.address, cleanAddress) ||
-                it.thread.address.equals(cleanAddress, ignoreCase = true)
+                it.thread.address.equals(cleanAddress, ignoreCase = true) ||
+                normalizeAddressKey(it.thread.address) == normalizeAddressKey(cleanAddress)
         }
         if (existingDeleted != null) {
             restoreDeletedThread(context, existingDeleted.thread.id)
@@ -1114,6 +1259,8 @@ object SmsMmsRepository {
             sortThreads(updated)
         }
 
+        verifyMessageUrlsOnlineAsync(context, threadId, msgId, cleanBody)
+
         return threadId
     }
 
@@ -1179,24 +1326,24 @@ object SmsMmsRepository {
         rawBody: String,
         isMms: Boolean = false
     ) {
-        val trimmedSender = senderAddress.trim()
-        val hasLetters = trimmedSender.any { it.isLetter() }
-        val cleanAddress = if (hasLetters) {
-            trimmedSender.filter { ch ->
-                ch.isLetterOrDigit() || (ch in "+-_. ")
-            }
-                .trim()
-                .take(28)
-                .ifBlank { trimmedSender.take(24) }
-        } else {
-            MessageSecurityAnalyzer.sanitizePhoneNumber(trimmedSender)
-                .ifBlank { trimmedSender.take(24) }
-        }
+        val cleanAddress = sanitizeSenderOrRecipientAddress(senderAddress)
 
         context?.let(::loadPersistedPins)
         if (isSenderBlocked(cleanAddress)) {
             Log.i(TAG, "Dropped incoming message from blocked sender: $cleanAddress")
             return
+        }
+
+        // If the sender's conversation was in Trash, restore it so the new message appears in the inbox
+        if (context != null) {
+            val deletedMatch = _deletedThreads.value.find {
+                arePhoneNumbersEqual(it.thread.address, cleanAddress) ||
+                    it.thread.address.equals(cleanAddress, ignoreCase = true) ||
+                    normalizeAddressKey(it.thread.address) == normalizeAddressKey(cleanAddress)
+            }
+            deletedMatch?.let {
+                restoreDeletedThread(context, it.thread.id)
+            }
         }
 
         val cleanBody = MessageSecurityAnalyzer.sanitizeMessageText(rawBody)
@@ -1222,7 +1369,8 @@ object SmsMmsRepository {
         _threads.update { current ->
             val existingIndex = current.indexOfFirst {
                 arePhoneNumbersEqual(it.address, cleanAddress) ||
-                    it.address.equals(cleanAddress, ignoreCase = true)
+                    it.address.equals(cleanAddress, ignoreCase = true) ||
+                    normalizeAddressKey(it.address) == normalizeAddressKey(cleanAddress)
             }
             val existingId = if (existingIndex >= 0) current[existingIndex].id else null
             val threadId = existingId ?: nextId.incrementAndGet()
@@ -1272,17 +1420,20 @@ object SmsMmsRepository {
             postIncomingMessageNotification(
                 context = ctx,
                 threadId = targetThreadId,
+                messageId = msgId,
                 senderName = resolvedName,
                 senderAddress = cleanAddress,
                 messageBody = cleanBody,
                 securityAnalysis = securityResult,
             )
+            verifyMessageUrlsOnlineAsync(ctx, targetThreadId, msgId, cleanBody)
         }
     }
 
     private fun postIncomingMessageNotification(
         context: Context,
         threadId: Long,
+        messageId: Long,
         senderName: String,
         senderAddress: String,
         messageBody: String,
@@ -1327,6 +1478,7 @@ object SmsMmsRepository {
 
         val openIntent = Intent(context, MainActivity::class.java).apply {
             action = ACTION_OPEN_THREAD_NOTIFICATION
+            data = "txtura://notification/$notificationId".toUri()
             putExtra(EXTRA_NOTIFICATION_THREAD_ID, threadId)
             putExtra(EXTRA_NOTIFICATION_ADDRESS, senderAddress)
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
@@ -1371,6 +1523,27 @@ object SmsMmsRepository {
             .setShowsUserInterface(false)
             .build()
 
+        // 2. Mark as Read action from Notification
+        val markReadIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+            action = ACTION_NOTIFICATION_MARK_READ
+            putExtra(EXTRA_NOTIFICATION_THREAD_ID, threadId)
+            putExtra(EXTRA_NOTIFICATION_ADDRESS, senderAddress)
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        val markReadPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId + 15_000,
+            markReadIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val markReadAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_stat_message,
+            locStrings.notificationMarkReadAction,
+            markReadPendingIntent,
+        )
+            .setShowsUserInterface(false)
+            .build()
+
         val builder = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_message)
             .setContentTitle(titleText)
@@ -1383,8 +1556,9 @@ object SmsMmsRepository {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(contentPendingIntent)
             .addAction(replyAction)
+            .addAction(markReadAction)
 
-        // 2. Copy 2FA / OTP Code action from Notification if a code is detected
+        // 3. Copy 2FA / OTP Code action from Notification if a code is detected, otherwise Highlight action
         val extractedOtp = securityAnalysis.extractedOtpCode
         if (!extractedOtp.isNullOrBlank()) {
             val copyOtpIntent = Intent(context, NotificationActionReceiver::class.java).apply {
@@ -1408,6 +1582,28 @@ object SmsMmsRepository {
                 .setShowsUserInterface(false)
                 .build()
             builder.addAction(copyOtpAction)
+        } else {
+            val highlightIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = ACTION_NOTIFICATION_HIGHLIGHT_MSG
+                putExtra(EXTRA_NOTIFICATION_THREAD_ID, threadId)
+                putExtra(EXTRA_NOTIFICATION_MESSAGE_ID, messageId)
+                putExtra(EXTRA_NOTIFICATION_ADDRESS, senderAddress)
+                putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            }
+            val highlightPendingIntent = PendingIntent.getBroadcast(
+                context,
+                notificationId + 25_000,
+                highlightIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val highlightAction = NotificationCompat.Action.Builder(
+                R.drawable.ic_stat_message,
+                locStrings.notificationHighlightAction,
+                highlightPendingIntent,
+            )
+                .setShowsUserInterface(false)
+                .build()
+            builder.addAction(highlightAction)
         }
 
         val notification = builder.build()
@@ -1560,7 +1756,7 @@ object SmsMmsRepository {
                     thread
                 }
             }
-            sortThreads(updated)
+            updated
         }
         savePersistedPins(context)
     }
@@ -1725,8 +1921,10 @@ object SmsMmsRepository {
         val maxAgeMillis = retentionDays.coerceAtLeast(1) * 86_400_000L
         val expiredIds = synchronized(deletedThreadTimestamps) {
             deletedThreadTimestamps.entries
+                .asSequence()
                 .filter { (_, deletedAt) -> (now - deletedAt) >= maxAgeMillis }
                 .map { it.key }
+                .toList()
         }
         if (expiredIds.isNotEmpty()) {
             expiredIds.forEach { id ->

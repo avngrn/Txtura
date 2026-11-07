@@ -83,13 +83,15 @@ class MainActivity : ComponentActivity() {
         private const val KEY_BUBBLE_ZOOM_SCALE = "bubble_zoom_scale"
         private const val KEY_SWIPE_RIGHT_ACTION = "swipe_right_action"
         private const val KEY_SWIPE_LEFT_ACTION = "swipe_left_action"
-        private const val KEY_AUTO_DELETE_DAYS = "auto_delete_days"
+        private const val KEY_AUTO_DELETE_DAYS = "auto_delete_days_v2"
         private const val KEY_DELETED_GROUPING_MODE = "deleted_grouping_mode"
         private const val KEY_MAIN_WALLPAPER = "main_window_wallpaper"
         private const val KEY_CONTACT_WALLPAPERS = "contact_chat_wallpapers_v1"
         private const val KEY_UI_COLOR_MODE = "ui_color_mode"
         private const val KEY_UI_OPACITY = "ui_opacity_v3"
         private const val KEY_CATEGORY_ORDER = "category_order_v1"
+        private const val KEY_RECALL_MESSAGES_ENABLED = "recall_messages_enabled"
+        private const val KEY_IDENTIFY_MALICIOUS_WEBSITES = "identify_malicious_websites"
         private const val GALLERY_TARGET_MAIN = "__MAIN__"
     }
 
@@ -106,11 +108,14 @@ class MainActivity : ComponentActivity() {
     private var swipeLeftAction by mutableStateOf(SwipeAction.DELETE)
     private var autoDeleteDays by mutableIntStateOf(30)
     private var deletedGroupingMode by mutableStateOf(DeletedGroupingMode.BY_DATE)
+    private var recallMessagesEnabled by mutableStateOf(value = true)
+    private var identifyMaliciousWebsites by mutableStateOf(value = true)
 
     private var lastBackupTimestamp by mutableLongStateOf(0L)
     private var pendingRestorePayload by mutableStateOf<BackupRestorePayload?>(null)
 
     private var activeThreadId by mutableStateOf<Long?>(null)
+    private var activeThreadAddress by mutableStateOf<String?>(null)
     private var showSettingsScreen by mutableStateOf(value = false)
     private var showDeletedMessagesScreen by mutableStateOf(value = false)
     private var showChatWallpaperDialogForThread by mutableStateOf<ConversationThread?>(null)
@@ -230,7 +235,7 @@ class MainActivity : ComponentActivity() {
                     ),
                     null,
                     null,
-                    null
+                    null,
                 )?.use { cursor ->
                     if (cursor.moveToFirst()) {
                         val rawNumber = cursor.getString(0).orEmpty()
@@ -241,9 +246,10 @@ class MainActivity : ComponentActivity() {
                             val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                                 context = this@MainActivity,
                                 recipientAddress = cleanNumber,
-                                preferredName = displayName
+                                preferredName = displayName,
                             )
                             showNewMessageDialog = false
+                            activeThreadAddress = cleanNumber
                             activeThreadId = threadId
                         }
                     }
@@ -281,7 +287,7 @@ class MainActivity : ComponentActivity() {
                         BackupManager.createInternalBackupFile(this@MainActivity, json)
                         lastBackupTimestamp = System.currentTimeMillis()
                         val locStrings = TxturaStrings.forLocale()
-                        val totalMsgs = currentThreads.sumOf { thread -> thread.messages.size } +
+                        val totalMsgs = currentThreads.sumOf { (_, _, _, _, _, _, messages) -> messages.size } +
                             currentDeleted.sumOf { (thread, _) -> thread.messages.size }
                         Toast.makeText(
                             this@MainActivity,
@@ -336,7 +342,7 @@ class MainActivity : ComponentActivity() {
 
             var availableContacts by remember { mutableStateOf<List<ContactPickerItem>>(emptyList()) }
 
-            LaunchedEffect(hasSmsPerm, isDefaultSms, autoDeleteDays, threads.size) {
+            LaunchedEffect(hasSmsPerm, isDefaultSms, autoDeleteDays) {
                 SmsMmsRepository.purgeExpiredDeletedThreads(this@MainActivity, autoDeleteDays)
                 if (hasSmsPerm || isDefaultSms) {
                     SmsMmsRepository.syncDeviceMessages(this@MainActivity, autoDeleteDays)
@@ -344,7 +350,23 @@ class MainActivity : ComponentActivity() {
                 availableContacts = SmsMmsRepository.loadAvailableContactsForPicker(this@MainActivity)
             }
 
-            val selectedThread = threads.find { it.id == activeThreadId }
+            val selectedThread = threads.find { (id) -> id == activeThreadId }
+                ?: activeThreadAddress?.takeIf { it.isNotBlank() }?.let { addr ->
+                    SmsMmsRepository.findThreadByAddress(threads, addr)
+                }
+
+            LaunchedEffect(selectedThread?.id, activeThreadAddress) {
+                if (selectedThread != null) {
+                    if (activeThreadId != selectedThread.id) {
+                        activeThreadId = selectedThread.id
+                    }
+                    if (activeThreadAddress.isNullOrBlank()) {
+                        activeThreadAddress = selectedThread.address
+                    }
+                    SmsMmsRepository.markThreadRead(this@MainActivity, selectedThread.id)
+                }
+            }
+
             val activeWallpaper = if ((selectedThread != null) && !showSettingsScreen && !showDeletedMessagesScreen) {
                 contactWallpapers[contactWallpaperKey(selectedThread.address)] ?: mainWallpaper
             } else {
@@ -427,6 +449,8 @@ class MainActivity : ComponentActivity() {
                             autoDeleteDays = autoDeleteDays,
                             deletedGroupingMode = deletedGroupingMode,
                             deletedMessagesCount = deletedThreads.size,
+                            recallMessagesEnabled = recallMessagesEnabled,
+                            identifyMaliciousWebsites = identifyMaliciousWebsites,
                             hasSmsPermission = hasSmsPerm,
                             isDefaultSmsApp = isDefaultSms,
                             rationaleMessage = rationaleBannerText,
@@ -434,6 +458,21 @@ class MainActivity : ComponentActivity() {
                             onSelectTheme = { selectedMode ->
                                 themeMode = selectedMode
                                 saveSelectedTheme(selectedMode)
+                                if (!mainWallpaper.isCustomGalleryImage && mainWallpaper.preset.isMinimalist) {
+                                    val sysDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                                        android.content.res.Configuration.UI_MODE_NIGHT_YES
+                                    val targetDark = when (selectedMode) {
+                                        TxturaThemeMode.LIGHT -> false
+                                        TxturaThemeMode.DARK, TxturaThemeMode.AMOLED -> true
+                                        TxturaThemeMode.SYSTEM -> sysDark
+                                    }
+                                    val targetPreset = if (targetDark) WallpaperPreset.ALL_BLACK else WallpaperPreset.ALL_WHITE
+                                    if (mainWallpaper.preset != targetPreset) {
+                                        val cfg = mainWallpaper.copy(preset = targetPreset)
+                                        mainWallpaper = cfg
+                                        saveMainWallpaper(cfg)
+                                    }
+                                }
                             },
                             onToggleShowContactPhotos = { enabled ->
                                 showContactPhotos = enabled
@@ -471,7 +510,13 @@ class MainActivity : ComponentActivity() {
                                     }
                                     UiColorMode.MINIMALIST -> {
                                         if (!mainWallpaper.preset.isMinimalist) {
-                                            val isDark = themeMode != TxturaThemeMode.LIGHT
+                                            val sysDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                                                android.content.res.Configuration.UI_MODE_NIGHT_YES
+                                            val isDark = when (themeMode) {
+                                                TxturaThemeMode.LIGHT -> false
+                                                TxturaThemeMode.DARK, TxturaThemeMode.AMOLED -> true
+                                                TxturaThemeMode.SYSTEM -> sysDark
+                                            }
                                             val cfg = WallpaperConfig(
                                                 preset = if (isDark) WallpaperPreset.ALL_BLACK else WallpaperPreset.ALL_WHITE,
                                                 customImageUri = null,
@@ -496,7 +541,11 @@ class MainActivity : ComponentActivity() {
                                 val cfg = WallpaperConfig(
                                     preset = preset,
                                     customImageUri = null,
-                                    texture = if (preset.isMinimalist && mainWallpaper.texture == WallpaperTexture.AUTO_THEME) WallpaperTexture.NONE else mainWallpaper.texture
+                                    texture = if (preset.isMinimalist && (mainWallpaper.texture == WallpaperTexture.AUTO_THEME)) {
+                                        WallpaperTexture.NONE
+                                    } else {
+                                        mainWallpaper.texture
+                                    },
                                 )
                                 mainWallpaper = cfg
                                 saveMainWallpaper(cfg)
@@ -529,6 +578,18 @@ class MainActivity : ComponentActivity() {
                                 deletedGroupingMode = mode
                                 saveDeletedGroupingMode(mode)
                             },
+                            onToggleRecallMessages = { enabled ->
+                                recallMessagesEnabled = enabled
+                                saveRecallMessagesEnabled(enabled)
+                            },
+                            onToggleIdentifyMaliciousWebsites = { enabled ->
+                                identifyMaliciousWebsites = enabled
+                                MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled = enabled
+                                saveIdentifyMaliciousWebsites(enabled)
+                                if (enabled) {
+                                    SmsMmsRepository.scanAllThreadsForMaliciousWebsitesOnline(this@MainActivity)
+                                }
+                            },
                             onOpenDeletedMessages = {
                                 showDeletedMessagesScreen = true
                             },
@@ -545,6 +606,7 @@ class MainActivity : ComponentActivity() {
                     selectedThread != null -> {
                         BackHandler {
                             activeThreadId = null
+                            activeThreadAddress = null
                             pendingMmsUri = null
                         }
                         val contactKey = contactWallpaperKey(selectedThread.address)
@@ -556,6 +618,7 @@ class MainActivity : ComponentActivity() {
                         ConversationDetailScreen(
                             thread = selectedThread,
                             showContactPhotos = showContactPhotos,
+                            recallMessagesEnabled = recallMessagesEnabled,
                             bubbleZoomScale = bubbleZoomScale,
                             onUpdateBubbleZoomScale = { newScale ->
                                 bubbleZoomScale = newScale
@@ -567,6 +630,7 @@ class MainActivity : ComponentActivity() {
                             scheduledMessages = threadScheduledMessages,
                             onBack = {
                                 activeThreadId = null
+                                activeThreadAddress = null
                                 pendingMmsUri = null
                             },
                             onTogglePinThread = {
@@ -610,6 +674,7 @@ class MainActivity : ComponentActivity() {
                                     locStrings.messageForwardedToast(recipientName ?: recipientAddress),
                                     Toast.LENGTH_SHORT
                                 ).show()
+                                activeThreadAddress = recipientAddress
                                 activeThreadId = targetThreadId
                             },
                             onOpenChatWallpaperPicker = {
@@ -634,6 +699,7 @@ class MainActivity : ComponentActivity() {
                                     Toast.LENGTH_SHORT
                                 ).show()
                                 activeThreadId = null
+                                activeThreadAddress = null
                                 pendingMmsUri = null
                             },
                             onToggleSenderCategory = {
@@ -696,6 +762,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onOpenThread = { id ->
                                 SmsMmsRepository.markThreadRead(this@MainActivity, id)
+                                activeThreadAddress = threads.find { it.id == id }?.address
                                 activeThreadId = id
                             },
                             onTogglePin = { id ->
@@ -796,10 +863,9 @@ class MainActivity : ComponentActivity() {
                             saveContactWallpapers(updated)
                             showChatWallpaperDialogForThread = null
                         },
-                        onDismiss = {
-                            showChatWallpaperDialogForThread = null
-                        }
-                    )
+                    ) {
+                        showChatWallpaperDialogForThread = null
+                    }
                 }
 
                 // Confirmation dialog before moving a message/conversation to Deleted Messages (Trash)
@@ -820,11 +886,10 @@ class MainActivity : ComponentActivity() {
                                 locStrings.movedToTrashToast(pendingDelete.contactName),
                                 Toast.LENGTH_SHORT
                             ).show()
-                        },
-                        onDismiss = {
-                            threadPendingDeleteConfirmation = null
                         }
-                    )
+                    ) {
+                        threadPendingDeleteConfirmation = null
+                    }
                 }
 
                 if (showNewMessageDialog) {
@@ -940,6 +1005,9 @@ class MainActivity : ComponentActivity() {
 
         uiOpacity = prefs.getFloat(KEY_UI_OPACITY, 0.50f).coerceIn(0.0f, 1.0f)
         categoryOrder = ConversationFilter.deserializeOrder(prefs.getString(KEY_CATEGORY_ORDER, null))
+        recallMessagesEnabled = prefs.getBoolean(KEY_RECALL_MESSAGES_ENABLED, true)
+        identifyMaliciousWebsites = prefs.getBoolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, true)
+        MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled = identifyMaliciousWebsites
     }
 
     private fun contactWallpaperKey(address: String): String {
@@ -1055,6 +1123,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun saveRecallMessagesEnabled(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
+            putBoolean(KEY_RECALL_MESSAGES_ENABLED, enabled)
+        }
+    }
+
+    private fun saveIdentifyMaliciousWebsites(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
+            putBoolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, enabled)
+        }
+    }
+
     private fun buildAppSettingsSnapshot(): AppSettingsSnapshot {
         return AppSettingsSnapshot(
             themeMode = themeMode,
@@ -1069,7 +1149,9 @@ class MainActivity : ComponentActivity() {
             bubbleZoomScale = bubbleZoomScale,
             uiColorMode = uiColorMode,
             uiOpacity = uiOpacity,
-            categoryOrder = categoryOrder
+            categoryOrder = categoryOrder,
+            recallMessagesEnabled = recallMessagesEnabled,
+            identifyMaliciousWebsites = identifyMaliciousWebsites
         )
     }
 
@@ -1157,6 +1239,13 @@ class MainActivity : ComponentActivity() {
         categoryOrder = payload.settings.categoryOrder
         saveCategoryOrder(categoryOrder)
 
+        recallMessagesEnabled = payload.settings.recallMessagesEnabled
+        saveRecallMessagesEnabled(recallMessagesEnabled)
+
+        identifyMaliciousWebsites = payload.settings.identifyMaliciousWebsites
+        MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled = identifyMaliciousWebsites
+        saveIdentifyMaliciousWebsites(identifyMaliciousWebsites)
+
         lifecycleScope.launch {
             val (threadCount, msgCount) = SmsMmsRepository.restoreDataFromBackup(this@MainActivity, payload)
             val locStrings = TxturaStrings.forLocale()
@@ -1216,7 +1305,10 @@ class MainActivity : ComponentActivity() {
             showSettingsScreen = false
             showDeletedMessagesScreen = false
             showNewMessageDialog = false
+            showChatWallpaperDialogForThread = null
+            threadPendingDeleteConfirmation = null
             if (notifAddress.isNotBlank()) {
+                activeThreadAddress = notifAddress
                 val resolvedId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                     context = this,
                     recipientAddress = notifAddress,
@@ -1225,8 +1317,12 @@ class MainActivity : ComponentActivity() {
                 SmsMmsRepository.markThreadRead(this, resolvedId)
             } else if (notifThreadId > 0L) {
                 activeThreadId = notifThreadId
+                activeThreadAddress = SmsMmsRepository.threads.value.find { it.id == notifThreadId }?.address
                 SmsMmsRepository.markThreadRead(this, notifThreadId)
             }
+            incoming.action = null
+            incoming.removeExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ADDRESS)
+            incoming.removeExtra(SmsMmsRepository.EXTRA_NOTIFICATION_THREAD_ID)
             return
         }
 
@@ -1236,6 +1332,7 @@ class MainActivity : ComponentActivity() {
         prefilledRecipient = validatedRecipient
         prefilledBody = validatedBody.orEmpty()
         if (prefilledRecipient.isNotBlank() && prefilledBody.isBlank()) {
+            activeThreadAddress = prefilledRecipient
             val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                 context = this,
                 recipientAddress = prefilledRecipient

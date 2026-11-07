@@ -1,3 +1,5 @@
+@file:Suppress("SpellCheckingInspection")
+
 package com.txtura.ui.theme
 
 import android.app.Activity
@@ -37,10 +39,10 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 enum class TxturaThemeMode(val label: String) {
-    AMOLED("AMOLED"),
+    SYSTEM("Auto"),
     LIGHT("Light"),
     DARK("Dark"),
-    SYSTEM("Auto")
+    AMOLED("AMOLED")
 }
 
 @Immutable
@@ -112,7 +114,7 @@ val LightGlassPalette = GlassPalette(
     accentSecondary = SapphireDeep,
     outgoingBubbleStart = Color(0xDD4338CA),
     outgoingBubbleEnd = Color(0xDD0284C7),
-    incomingBubbleSurface = Color(0xCCD5E0EE)
+    incomingBubbleSurface = Color(0xCCD5E0EE),
 )
 
 val DarkGlassPalette = GlassPalette(
@@ -131,7 +133,7 @@ val DarkGlassPalette = GlassPalette(
     accentSecondary = IndigoSoft,
     outgoingBubbleStart = Color(0xCC312E81),
     outgoingBubbleEnd = Color(0xCC0369A1),
-    incomingBubbleSurface = Color(0x401E293B)
+    incomingBubbleSurface = Color(0x401E293B),
 )
 
 val AmoledGlassPalette = GlassPalette(
@@ -150,7 +152,7 @@ val AmoledGlassPalette = GlassPalette(
     accentSecondary = WisteriaGlass,
     outgoingBubbleStart = Color(0xD91E40AF),
     outgoingBubbleEnd = Color(0xD94338CA),
-    incomingBubbleSurface = Color(0x3B161E2E)
+    incomingBubbleSurface = Color(0x3B161E2E),
 )
 
 val LocalGlassPalette = staticCompositionLocalOf { AmoledGlassPalette }
@@ -200,12 +202,13 @@ object WallpaperHarmonyEngine {
                         android.graphics.Color.red(pixel),
                         android.graphics.Color.green(pixel),
                         android.graphics.Color.blue(pixel),
-                        hsv
+                        hsv,
                     )
                     val sat = hsv[1]
                     val value = hsv[2]
                     val weight = ((sat * 0.75f) + (value * 0.25f)).toDouble()
-                    if ((sat > 0.12f) && (value in 0.12f..0.95f)) {
+                    val isVibrant = (sat > 0.12f) && (value >= 0.12f) && (value <= 0.95f)
+                    if (isVibrant) {
                         val rad = Math.toRadians(hsv[0].toDouble())
                         sumX += cos(rad) * weight
                         sumY += sin(rad) * weight
@@ -297,11 +300,12 @@ object WallpaperHarmonyEngine {
     private fun applyOpacityMultiplier(palette: GlassPalette, uiOpacity: Float, uiColorMode: UiColorMode): GlassPalette {
         val clamped = uiOpacity.coerceIn(0.0f, 1.0f)
         val frostDepthTone = when {
-            palette.uiColorMode == UiColorMode.MINIMALIST && !palette.isDark -> Color(0xFFF4F4F5)
-            palette.uiColorMode == UiColorMode.MINIMALIST && palette.isDark -> Color(0xFF000000)
+            (palette.uiColorMode == UiColorMode.MINIMALIST) && !palette.isDark -> Color(0xFFF4F4F5)
+            (palette.uiColorMode == UiColorMode.MINIMALIST) && palette.isAmoled -> Color(0xFF000000)
+            (palette.uiColorMode == UiColorMode.MINIMALIST) && palette.isDark -> Color(0xFF1A202C)
             !palette.isDark -> lerp(Color(0xFFCBD5E1), palette.accentPrimary.copy(alpha = 1f), 0.18f)
-            palette.isAmoled -> lerp(Color(0xFF070A10), palette.orbPrimary.copy(alpha = 1f), 0.28f)
-            else -> lerp(Color(0xFF0C121D), palette.orbPrimary.copy(alpha = 1f), 0.30f)
+            palette.isAmoled -> lerp(Color(0xFF030508), palette.orbPrimary.copy(alpha = 1f), 0.20f)
+            else -> lerp(Color(0xFF1E293B), palette.orbPrimary.copy(alpha = 1f), 0.34f)
         }
 
         // solidity: 1.0 when uiOpacity is 0.0 (najzamucenije / najpunije), 0.0 when uiOpacity is 1.0 (potpuno providno)
@@ -428,35 +432,61 @@ object WallpaperHarmonyEngine {
         // 2. Built-in Wallpaper Preset
         val preset = wallpaperConfig.preset
 
-        // Minimalist Themes (Pure pitch-black AMOLED & Pure clean white)
-        if (preset == WallpaperPreset.ALL_BLACK || (preset.isMinimalist && isDark)) {
-            val adapted = canonicalBase.copy(
-                isDark = true,
-                isAmoled = true,
-                backgroundBase = Color.Black,
-                orbPrimary = Color.Transparent,
-                orbSecondary = Color.Transparent,
-                glassSurface = Color(0xFF0D0D0E),
-                glassSurfaceElevated = Color(0xFF17171A),
-                glassBorderTop = Color.White.copy(alpha = 0.22f),
-                glassBorderBottom = Color.White.copy(alpha = 0.08f),
-                textPrimary = Color.White,
-                textSecondary = Color(0xFFA1A1AA),
-                accentPrimary = Color.White,
-                accentSecondary = Color(0xFFD4D4D8),
-                dangerColor = RoseDanger,
-                safeColor = EmeraldSafe,
-                sendButtonColor = SapphireAccent,
-                outgoingBubbleStart = Color(0xFF27272A),
-                outgoingBubbleEnd = Color(0xFF18181B),
-                incomingBubbleSurface = Color(0xFF121214),
-                uiOpacity = uiOpacity,
-                uiColorMode = UiColorMode.MINIMALIST
-            )
+        // Minimalist Themes (Pure pitch-black AMOLED / Dark Slate & Pure clean white)
+        if (preset == WallpaperPreset.ALL_BLACK) {
+            val adapted = if (isAmoled) {
+                canonicalBase.copy(
+                    isDark = true,
+                    isAmoled = true,
+                    backgroundBase = Color.Black,
+                    orbPrimary = Color.Transparent,
+                    orbSecondary = Color.Transparent,
+                    glassSurface = Color(0xFF0A0A0C),
+                    glassSurfaceElevated = Color(0xFF141418),
+                    glassBorderTop = Color.White.copy(alpha = 0.24f),
+                    glassBorderBottom = Color.White.copy(alpha = 0.08f),
+                    textPrimary = Color.White,
+                    textSecondary = Color(0xFFA1A1AA),
+                    accentPrimary = Color.White,
+                    accentSecondary = Color(0xFFD4D4D8),
+                    dangerColor = RoseDanger,
+                    safeColor = EmeraldSafe,
+                    sendButtonColor = SapphireAccent,
+                    outgoingBubbleStart = Color(0xFF27272A),
+                    outgoingBubbleEnd = Color(0xFF18181B),
+                    incomingBubbleSurface = Color(0xFF101012),
+                    uiOpacity = uiOpacity,
+                    uiColorMode = UiColorMode.MINIMALIST
+                )
+            } else {
+                canonicalBase.copy(
+                    isDark = true,
+                    isAmoled = false,
+                    backgroundBase = Color(0xFF161B24),
+                    orbPrimary = Color.Transparent,
+                    orbSecondary = Color.Transparent,
+                    glassSurface = Color(0xFF222A38),
+                    glassSurfaceElevated = Color(0xFF2C3648),
+                    glassBorderTop = Color.White.copy(alpha = 0.28f),
+                    glassBorderBottom = Color.White.copy(alpha = 0.12f),
+                    textPrimary = Color(0xFFF1F5F9),
+                    textSecondary = Color(0xFFCBD5E1),
+                    accentPrimary = Color.White,
+                    accentSecondary = Color(0xFFE2E8F0),
+                    dangerColor = RoseDanger,
+                    safeColor = EmeraldSafe,
+                    sendButtonColor = SapphireAccent,
+                    outgoingBubbleStart = Color(0xFF334155),
+                    outgoingBubbleEnd = Color(0xFF1E293B),
+                    incomingBubbleSurface = Color(0xFF242D3C),
+                    uiOpacity = uiOpacity,
+                    uiColorMode = UiColorMode.MINIMALIST
+                )
+            }
             return applyOpacityMultiplier(adapted, uiOpacity, UiColorMode.MINIMALIST)
         }
 
-        if (preset == WallpaperPreset.ALL_WHITE || preset.isMinimalist) {
+        if (preset == WallpaperPreset.ALL_WHITE) {
             val adapted = canonicalBase.copy(
                 isDark = false,
                 isAmoled = false,
@@ -490,47 +520,47 @@ object WallpaperHarmonyEngine {
             val singleAccent = presetComplementaryAccent(activeMonoPreset, isDark)
             val secondaryTone = presetSecondaryComplementaryAccent(activeMonoPreset, isDark)
 
-            // Monochrome base strictly follows Light vs Dark/AMOLED mode
+            // Monochrome base strictly follows Light vs Dark (slate-charcoal) vs AMOLED (pitch-black OLED)
             val monoBgBase = when {
                 !isDark -> Color(0xFFE4EBF3)
                 isAmoled -> Color(0xFF000000)
-                else -> Color(0xFF0B0E14)
+                else -> Color(0xFF182130)
             }
 
             val surfaceBaseAlpha = canonicalBase.glassSurface.alpha
             val elevatedBaseAlpha = canonicalBase.glassSurfaceElevated.alpha
 
-            val monoSurface = if (isDark) {
-                lerp(Color(0xFF141821), singleAccent, 0.12f).copy(alpha = surfaceBaseAlpha)
-            } else {
-                lerp(Color(0xFFD5DFED), singleAccent, 0.14f).copy(alpha = surfaceBaseAlpha)
+            val monoSurface = when {
+                !isDark -> lerp(Color(0xFFD5DFED), singleAccent, 0.14f).copy(alpha = surfaceBaseAlpha)
+                isAmoled -> lerp(Color(0xFF080A0F), singleAccent, 0.10f).copy(alpha = surfaceBaseAlpha)
+                else -> lerp(Color(0xFF243044), singleAccent, 0.16f).copy(alpha = surfaceBaseAlpha)
             }
-            val monoElevated = if (isDark) {
-                lerp(Color(0xFF1C222E), singleAccent, 0.18f).copy(alpha = elevatedBaseAlpha)
-            } else {
-                lerp(Color(0xFFDCE6F4), singleAccent, 0.18f).copy(alpha = elevatedBaseAlpha)
+            val monoElevated = when {
+                !isDark -> lerp(Color(0xFFDCE6F4), singleAccent, 0.18f).copy(alpha = elevatedBaseAlpha)
+                isAmoled -> lerp(Color(0xFF0F131C), singleAccent, 0.15f).copy(alpha = elevatedBaseAlpha)
+                else -> lerp(Color(0xFF2E3C54), singleAccent, 0.22f).copy(alpha = elevatedBaseAlpha)
             }
-            val monoIncoming = if (isDark) {
-                lerp(Color(0xFF161B25), singleAccent, 0.14f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
-            } else {
-                lerp(Color(0xFFD8E2F0), singleAccent, 0.14f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+            val monoIncoming = when {
+                !isDark -> lerp(Color(0xFFD8E2F0), singleAccent, 0.14f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+                isAmoled -> lerp(Color(0xFF0A0D14), singleAccent, 0.12f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+                else -> lerp(Color(0xFF263348), singleAccent, 0.18f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
             }
 
             val bubbleAlpha = if (isAmoled) 0.84f else 0.90f
             val bubbleBase = if (isDark) {
-                lerp(singleAccent, Color(0xFF0F172A), 0.35f)
+                lerp(singleAccent, if (isAmoled) Color(0xFF090D16) else Color(0xFF1E293B), 0.35f)
             } else {
                 singleAccent
             }
 
             val adapted = canonicalBase.copy(
                 backgroundBase = monoBgBase,
-                orbPrimary = singleAccent.copy(alpha = if (isDark) 0.22f else 0.18f),
-                orbSecondary = singleAccent.copy(alpha = if (isDark) 0.14f else 0.12f),
+                orbPrimary = singleAccent.copy(alpha = if (isAmoled) 0.18f else if (isDark) 0.28f else 0.18f),
+                orbSecondary = singleAccent.copy(alpha = if (isAmoled) 0.12f else if (isDark) 0.20f else 0.12f),
                 glassSurface = monoSurface,
                 glassSurfaceElevated = monoElevated,
                 glassBorderTop = singleAccent.copy(alpha = if (isDark) 0.48f else 0.55f),
-                glassBorderBottom = singleAccent.copy(alpha = if (isDark) 0.16f else 0.22f),
+                glassBorderBottom = singleAccent.copy(alpha = if (isDark) 0.18f else 0.22f),
                 accentPrimary = singleAccent,
                 accentSecondary = secondaryTone,
                 outgoingBubbleStart = bubbleBase.copy(alpha = bubbleAlpha),
@@ -556,31 +586,37 @@ object WallpaperHarmonyEngine {
         val surfaceBaseAlpha = canonicalBase.glassSurface.alpha
         val elevatedBaseAlpha = canonicalBase.glassSurfaceElevated.alpha
 
-        // Smoked obsidian/slate in Dark mode and smoked quartz in Light mode (never bleached white)
-        val tintedSurface = if (isDark) {
-            lerp(Color(0xFF101724), bgPrimary, 0.26f).copy(alpha = surfaceBaseAlpha)
-        } else {
-            lerp(Color(0xFFD4DFEE), bgPrimary, 0.22f).copy(alpha = surfaceBaseAlpha)
+        // Distinct surface depth: Pitch-black obsidian in AMOLED, rich midnight-slate in Dark, smoked quartz in Light
+        val tintedSurface = when {
+            !isDark -> lerp(Color(0xFFD4DFEE), bgPrimary, 0.22f).copy(alpha = surfaceBaseAlpha)
+            isAmoled -> lerp(Color(0xFF070A10), bgPrimary, 0.18f).copy(alpha = surfaceBaseAlpha)
+            else -> lerp(Color(0xFF233046), bgPrimary, 0.28f).copy(alpha = surfaceBaseAlpha)
         }
-        val tintedElevated = if (isDark) {
-            lerp(Color(0xFF172032), compPrimary, 0.22f).copy(alpha = elevatedBaseAlpha)
-        } else {
-            lerp(Color(0xFFDBE5F3), compPrimary, 0.18f).copy(alpha = elevatedBaseAlpha)
+        val tintedElevated = when {
+            !isDark -> lerp(Color(0xFFDBE5F3), compPrimary, 0.18f).copy(alpha = elevatedBaseAlpha)
+            isAmoled -> lerp(Color(0xFF0E131D), compPrimary, 0.16f).copy(alpha = elevatedBaseAlpha)
+            else -> lerp(Color(0xFF2D3E58), compPrimary, 0.24f).copy(alpha = elevatedBaseAlpha)
         }
-        val tintedIncoming = if (isDark) {
-            lerp(Color(0xFF121A29), bgPrimary, 0.28f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
-        } else {
-            lerp(Color(0xFFD6E1EF), bgPrimary, 0.18f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+        val tintedIncoming = when {
+            !isDark -> lerp(Color(0xFFD6E1EF), bgPrimary, 0.18f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+            isAmoled -> lerp(Color(0xFF090D14), bgPrimary, 0.20f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+            else -> lerp(Color(0xFF25344B), bgPrimary, 0.28f).copy(alpha = canonicalBase.incomingBubbleSurface.alpha)
+        }
+
+        val adaptedBgBase = when {
+            !isDark -> lerp(Color(0xFFE3EAF4), bgPrimary, 0.16f)
+            isAmoled -> Color.Black
+            else -> lerp(Color(0xFF182234), Color(preset.baseColorHex), 0.45f)
         }
 
         val adapted = canonicalBase.copy(
-            backgroundBase = if (isDark) Color(preset.baseColorHex) else lerp(Color(0xFFE3EAF4), bgPrimary, 0.16f),
-            orbPrimary = bgPrimary.copy(alpha = if (isDark) 0.30f else 0.24f),
-            orbSecondary = bgSecondary.copy(alpha = if (isDark) 0.26f else 0.20f),
+            backgroundBase = adaptedBgBase,
+            orbPrimary = bgPrimary.copy(alpha = if (isAmoled) 0.22f else if (isDark) 0.36f else 0.24f),
+            orbSecondary = bgSecondary.copy(alpha = if (isAmoled) 0.18f else if (isDark) 0.30f else 0.20f),
             glassSurface = tintedSurface,
             glassSurfaceElevated = tintedElevated,
-            glassBorderTop = compPrimary.copy(alpha = if (isDark) 0.45f else 0.65f),
-            glassBorderBottom = bgPrimary.copy(alpha = if (isDark) 0.20f else 0.32f),
+            glassBorderTop = compPrimary.copy(alpha = if (isDark) 0.48f else 0.65f),
+            glassBorderBottom = bgPrimary.copy(alpha = if (isDark) 0.22f else 0.32f),
             accentPrimary = compPrimary,
             accentSecondary = compSecondary,
             outgoingBubbleStart = bubbleStart,
@@ -650,10 +686,10 @@ fun TxturaTheme(
     val systemDark = isSystemInDarkTheme()
     val context = LocalContext.current
     val basePalette = when (themeMode) {
+        TxturaThemeMode.SYSTEM -> if (systemDark) DarkGlassPalette else LightGlassPalette
         TxturaThemeMode.LIGHT -> LightGlassPalette
         TxturaThemeMode.DARK -> DarkGlassPalette
         TxturaThemeMode.AMOLED -> AmoledGlassPalette
-        TxturaThemeMode.SYSTEM -> if (systemDark) AmoledGlassPalette else LightGlassPalette
     }
 
     val customPath = wallpaperConfig.customImageUri

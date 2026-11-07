@@ -28,6 +28,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val strings = TxturaStrings.forLocale()
 
         val threadId = intent.getLongExtra(SmsMmsRepository.EXTRA_NOTIFICATION_THREAD_ID, -1L)
+        val messageId = intent.getLongExtra(SmsMmsRepository.EXTRA_NOTIFICATION_MESSAGE_ID, -1L)
         val senderAddress = intent.getStringExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ADDRESS).orEmpty().trim()
         val notificationId = intent.getIntExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ID, -1)
 
@@ -63,6 +64,53 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to send direct reply from notification", e)
                     }
+                }
+            }
+
+            SmsMmsRepository.ACTION_NOTIFICATION_MARK_READ -> {
+                try {
+                    SmsMmsRepository.initializePersistedState(appContext)
+                    if (threadId > 0L) {
+                        SmsMmsRepository.markThreadRead(appContext, threadId)
+                    } else if (senderAddress.isNotEmpty()) {
+                        val resolvedThreadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
+                            context = appContext,
+                            recipientAddress = senderAddress,
+                        )
+                        SmsMmsRepository.markThreadRead(appContext, resolvedThreadId)
+                    }
+                    if (notificationId > 0) {
+                        NotificationManagerCompat.from(appContext).cancel(notificationId)
+                    }
+                    Toast.makeText(
+                        appContext,
+                        strings.notificationMarkedReadToast,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to mark thread read from notification", e)
+                }
+            }
+
+            SmsMmsRepository.ACTION_NOTIFICATION_HIGHLIGHT_MSG -> {
+                try {
+                    SmsMmsRepository.initializePersistedState(appContext)
+                    if ((threadId > 0L) && (messageId > 0L)) {
+                        SmsMmsRepository.toggleHighlightMessage(appContext, threadId, messageId)
+                    }
+                    if (threadId > 0L) {
+                        SmsMmsRepository.markThreadRead(appContext, threadId)
+                    }
+                    if (notificationId > 0) {
+                        NotificationManagerCompat.from(appContext).cancel(notificationId)
+                    }
+                    Toast.makeText(
+                        appContext,
+                        strings.notificationHighlightedToast,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to highlight message from notification", e)
                 }
             }
 

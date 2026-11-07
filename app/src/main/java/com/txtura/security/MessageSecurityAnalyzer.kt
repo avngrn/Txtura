@@ -1,12 +1,25 @@
+@file:Suppress("SpellCheckingInspection")
+
 package com.txtura.security
 
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.BadParcelableException
 import android.util.Log
 import androidx.core.content.IntentSanitizer
 import com.txtura.ui.i18n.TxturaStrings
+import java.net.HttpURLConnection
+import java.net.IDN
+import java.net.URL
+import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
+import javax.net.ssl.SSLHandshakeException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 enum class SecurityRiskLevel {
     SAFE,
@@ -18,6 +31,13 @@ data class SecurityAnalysisResult(
     val riskLevel: SecurityRiskLevel,
     val reasons: List<String>,
     val extractedOtpCode: String?,
+)
+
+data class DetectedSafeLink(
+    val startIndex: Int,
+    val endIndex: Int,
+    val rawText: String,
+    val browserUrl: String,
 )
 
 /**
@@ -39,6 +59,18 @@ object MessageSecurityAnalyzer {
 
     private const val TAG = "TxturaSecurity"
 
+    private data class OnlineUrlVerdict(
+        val isMalicious: Boolean,
+        val reason: String?,
+        val checkedAtMillis: Long = System.currentTimeMillis(),
+    )
+
+    // Thread-safe cache of online URL threat intelligence verdicts (host/url -> verdict)
+    private val onlineVerdictCache = ConcurrentHashMap<String, OnlineUrlVerdict>()
+
+    @Volatile
+    var isOnlineMaliciousWebsiteCheckEnabled: Boolean = true
+
     private data class ParsedUrl(
         val rawUrl: String,
         val scheme: String,
@@ -47,11 +79,11 @@ object MessageSecurityAnalyzer {
         val tld: String,
         val pathAndQuery: String,
         val hasEmbeddedAtSymbol: Boolean,
-        val nonStandardPort: Int?
+        val nonStandardPort: Int?,
     )
 
     private val urlExtractRegex = Regex(
-        pattern = """(?i)\b((?:https?://|www\.)[^\s<>"]+|[a-z0-9\u0400-\u04FF.-]+\.[a-z\u0400-\u04FF]{2,10}(?:/[^\s<>"]*)?)"""
+        pattern = """(?i)\b((?:https?://|www\.)[^\s<>"]+|[a-z0-9\u0400-\u04FF.-]+\.[a-z\u0400-\u04FF]{2,10}(?:/[^\s<>"]*)?)""",
     )
 
     // Well-known legitimate global & regional domains (unless spoofed via subdomain or '@' trick)
@@ -260,14 +292,24 @@ object MessageSecurityAnalyzer {
                 threatScore += 3
                 reasons.add(strings.reasonIpUrl)
             }
+
+            // 9b. Apply cached online threat intelligence verdict if available & enabled
+            if (isOnlineMaliciousWebsiteCheckEnabled) {
+                val cachedVerdict = onlineVerdictCache[url.rawUrl.lowercase()]
+                    ?: onlineVerdictCache[url.host.lowercase()]
+                if (cachedVerdict?.isMalicious == true) {
+                    threatScore += 5
+                    reasons.add(cachedVerdict.reason ?: strings.reasonMaliciousWebsiteOnline(url.host))
+                }
+            }
         }
 
         // 10. Check for Phishing / Smishing Social Engineering Lures
         val hasPhishingKeywords = phishingSocialEngineeringPatterns.any { lowerBody.contains(it) }
         if (hasPhishingKeywords) {
             if (parsedUrls.isNotEmpty()) {
-                val allUrlsTrusted = parsedUrls.all { urlItem ->
-                    (urlItem.registeredDomain in trustedGlobalDomains) && !urlItem.hasEmbeddedAtSymbol && (urlItem.scheme != "http")
+                val allUrlsTrusted = parsedUrls.all { (_, scheme, _, registeredDomain, _, _, hasEmbeddedAtSymbol, _) ->
+                    (registeredDomain in trustedGlobalDomains) && !hasEmbeddedAtSymbol && (scheme != "http")
                 }
                 if (!allUrlsTrusted) {
                     threatScore += 3
@@ -288,7 +330,7 @@ object MessageSecurityAnalyzer {
 
         val finalRisk = when {
             threatScore >= 3 -> SecurityRiskLevel.SUSPICIOUS
-            threatScore in 1..2 -> SecurityRiskLevel.CAUTION
+            (threatScore in 1..2) -> SecurityRiskLevel.CAUTION
             else -> SecurityRiskLevel.SAFE
         }
 
@@ -297,7 +339,7 @@ object MessageSecurityAnalyzer {
         return SecurityAnalysisResult(
             riskLevel = finalRisk,
             reasons = reasons.distinct(),
-            extractedOtpCode = otpCode
+            extractedOtpCode = otpCode,
         )
     }
 
@@ -310,8 +352,7 @@ object MessageSecurityAnalyzer {
 
         // 2. Check direct contextual patterns
         otpContextRegex.find(body)?.let { match ->
-            val matched = match.groups[1]?.value ?: match.groups[2]?.value
-            if (matched != null) return matched
+            (match.groups[1]?.value ?: match.groups[2]?.value)?.let { return it }
         }
 
         val hasOtpKeyword = otpHintKeywords.any { lowerBody.contains(it) }
@@ -340,6 +381,76 @@ object MessageSecurityAnalyzer {
         }
 
         return null
+    }
+
+    /**
+     * Extracts safe URLs with their exact character offsets in [body] so the UI can render
+     * clickable links that open in the default browser while refusing to linkify suspicious URLs.
+     */
+    fun extractSafeLinks(
+        body: String,
+        precomputedAnalysis: SecurityAnalysisResult? = null,
+    ): List<DetectedSafeLink> {
+        if (body.isBlank()) return emptyList()
+        val (riskLevel) = precomputedAnalysis ?: analyzeMessage(body)
+        if (riskLevel == SecurityRiskLevel.SUSPICIOUS) return emptyList()
+
+        return urlExtractRegex.findAll(body).mapNotNull { match ->
+            val raw = match.value.trimEnd('.', ',', ';', ')', ']', '!', '?')
+            if (raw.isBlank()) return@mapNotNull null
+            if (raw.contains('@') && !raw.contains("://") && !raw.contains('/')) {
+                return@mapNotNull null
+            }
+            val parsed = parseSingleUrl(raw) ?: return@mapNotNull null
+            if (!isParsedUrlIndividuallySafe(parsed)) return@mapNotNull null
+
+            val start = match.range.first
+            val end = (start + raw.length).coerceAtMost(body.length)
+            if (start >= end) return@mapNotNull null
+
+            val browserUrl = if (
+                raw.startsWith("https://", ignoreCase = true) ||
+                raw.startsWith("http://", ignoreCase = true)
+            ) {
+                raw
+            } else {
+                "https://$raw"
+            }
+
+            DetectedSafeLink(
+                startIndex = start,
+                endIndex = end,
+                rawText = raw,
+                browserUrl = browserUrl,
+            )
+        }.toList()
+    }
+
+    private fun isParsedUrlIndividuallySafe(url: ParsedUrl): Boolean {
+        if (isOnlineMaliciousWebsiteCheckEnabled) {
+            val cachedVerdict = onlineVerdictCache[url.rawUrl.lowercase()]
+                ?: onlineVerdictCache[url.host.lowercase()]
+            if (cachedVerdict?.isMalicious == true) return false
+        }
+        val isTrustedDomain = (url.registeredDomain in trustedGlobalDomains) && !url.hasEmbeddedAtSymbol
+        if (url.hasEmbeddedAtSymbol) return false
+        if (ipv4HostRegex.matches(url.host)) return false
+        val hasMalwareExt = malwareFileExtensions.any { ext ->
+            url.pathAndQuery.substringBefore('?').endsWith(ext) ||
+                url.pathAndQuery.contains("$ext?") ||
+                url.pathAndQuery.contains("$ext&")
+        }
+        if (hasMalwareExt && !isTrustedDomain) return false
+        if (hasHomographOrMixedScript(url.host)) return false
+        if (detectBrandImpersonation(url) != null) return false
+        if (!isTrustedDomain && (url.tld in highRiskTlds)) return false
+        if (url.scheme == "http") {
+            val hasLoginPath = credentialPathKeywords.any {
+                url.pathAndQuery.contains(it) || url.host.contains(it)
+            }
+            if (hasLoginPath || !isTrustedDomain) return false
+        }
+        return (url.nonStandardPort == null) || (url.nonStandardPort in listOf(80, 443))
     }
 
     private fun extractAndParseUrls(text: String): List<ParsedUrl> {
@@ -442,12 +553,274 @@ object MessageSecurityAnalyzer {
     }
 
     /**
+     * Checks whether [body] contains any candidate URLs that can be verified online.
+     */
+    fun hasUrlsToInspect(body: String): Boolean {
+        return body.isNotBlank() && extractAndParseUrls(body).isNotEmpty()
+    }
+
+    /**
+     * Performs an asynchronous online malicious website & phishing inspection for all URLs in [body]
+     * when [isOnlineMaliciousWebsiteCheckEnabled] is true and internet connectivity is available:
+     * 1. Queries Cloudflare Security DNS-over-HTTPS (`security.cloudflare-dns.com`, which blocks
+     *    known malware & phishing domains by returning `0.0.0.0` or censored response).
+     * 2. Resolves HTTP/HTTPS redirect chains for shortened or untrusted URLs to uncover hidden
+     *    phishing/malware landing domains, invalid TLS certificates, or credential-harvesting forms.
+     *
+     * Returns an updated [SecurityAnalysisResult] if a new online threat is discovered, or `null`
+     * if no change in security status occurred.
+     */
+    suspend fun inspectMessageUrlsOnline(
+        context: Context,
+        body: String
+    ): SecurityAnalysisResult? = withContext(Dispatchers.IO) {
+        if (!isOnlineMaliciousWebsiteCheckEnabled || body.isBlank()) return@withContext null
+        if (!isInternetAvailable(context)) return@withContext null
+
+        val parsedUrls = extractAndParseUrls(body)
+        if (parsedUrls.isEmpty()) return@withContext null
+
+        val strings = TxturaStrings.forLocale()
+        var newlyFlagged = false
+
+        for (url in parsedUrls) {
+            val rawKey = url.rawUrl.lowercase()
+            val hostKey = url.host.lowercase()
+
+            // Skip already cached URLs (valid for 30 minutes)
+            val existing = onlineVerdictCache[rawKey] ?: onlineVerdictCache[hostKey]
+            if (existing != null && (System.currentTimeMillis() - existing.checkedAtMillis) < 1_800_000L) {
+                if (existing.isMalicious) newlyFlagged = true
+                continue
+            }
+
+            val isTrusted = (url.registeredDomain in trustedGlobalDomains) &&
+                !url.hasEmbeddedAtSymbol &&
+                (url.registeredDomain !in urlShorteners)
+
+            // 1. Check domain reputation via Cloudflare Malware/Phishing Filtering DNS-over-HTTPS
+            if (!isTrusted) {
+                val blockedBySecurityDns = checkCloudflareSecurityDnsBlocked(url.host)
+                if (blockedBySecurityDns) {
+                    val reason = strings.reasonMaliciousWebsiteOnline(url.host)
+                    val verdict = OnlineUrlVerdict(isMalicious = true, reason = reason)
+                    onlineVerdictCache[hostKey] = verdict
+                    onlineVerdictCache[rawKey] = verdict
+                    newlyFlagged = true
+                    continue
+                }
+            }
+
+            // 2. Inspect redirect chain, TLS validity, and landing page for shorteners or untrusted links
+            if (!isTrusted || (url.registeredDomain in urlShorteners) || (url.host in urlShorteners)) {
+                val redirectVerdict = inspectUrlRedirectAndLandingOnline(url, strings)
+                onlineVerdictCache[rawKey] = redirectVerdict
+                if (redirectVerdict.isMalicious) {
+                    if (url.registeredDomain !in urlShorteners) {
+                        onlineVerdictCache[hostKey] = redirectVerdict
+                    }
+                    newlyFlagged = true
+                    continue
+                }
+            }
+
+            onlineVerdictCache[rawKey] = OnlineUrlVerdict(isMalicious = false, reason = null)
+        }
+
+        if (newlyFlagged) {
+            analyzeMessage(body)
+        } else {
+            null
+        }
+    }
+
+    private fun isInternetAvailable(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Queries Cloudflare's 1.1.1.2 Malware & Phishing Blocking DoH endpoint:
+     * `https://security.cloudflare-dns.com/dns-query?name=<host>&type=A`
+     * If the domain is sinkholed to `0.0.0.0` or carries the "Censored"/"Filtered" EDE comment,
+     * the domain is a confirmed malicious/phishing website.
+     */
+    private fun checkCloudflareSecurityDnsBlocked(rawHost: String): Boolean {
+        return try {
+            val asciiHost = IDN.toASCII(rawHost.trim().trimEnd('.'))
+            if (asciiHost.isBlank() || ipv4HostRegex.matches(asciiHost)) return false
+
+            val encodedName = URLEncoder.encode(asciiHost, "UTF-8")
+            val endpoint = URL("https://security.cloudflare-dns.com/dns-query?name=$encodedName&type=A")
+            val conn = (endpoint.openConnection() as? HttpURLConnection) ?: return false
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Accept", "application/dns-json")
+            conn.connectTimeout = 3500
+            conn.readTimeout = 3500
+            conn.instanceFollowRedirects = false
+
+            try {
+                if (conn.responseCode != 200) return false
+                val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(responseText)
+                val answers = json.optJSONArray("Answer")
+                if (answers != null) {
+                    for (i in 0 until answers.length()) {
+                        val ans = answers.optJSONObject(i) ?: continue
+                        val data = ans.optString("data", "").trim()
+                        if (data == "0.0.0.0" || data == "::" || data == "127.0.0.1") {
+                            return true
+                        }
+                    }
+                }
+                val comment = json.optString("Comment", "").lowercase()
+                if (comment.contains("filtered") || comment.contains("malware") || comment.contains("phishing")) {
+                    return true
+                }
+                false
+            } finally {
+                conn.disconnect()
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Follows up to 4 HTTP redirects without executing JavaScript to verify:
+     * - Whether a shortened link (`bit.ly`, `tinyurl.com`, etc.) redirects to a phishing/malware domain
+     * - Whether the destination domain is blocked by Cloudflare Security DNS or static brand-spoof rules
+     * - Whether the HTTPS server presents an invalid/self-signed/expired TLS certificate
+     * - Whether an untrusted landing page contains password/card-number harvesting inputs impersonating a brand
+     */
+    private fun inspectUrlRedirectAndLandingOnline(
+        initialUrl: ParsedUrl,
+        strings: com.txtura.ui.i18n.AppStrings
+    ): OnlineUrlVerdict {
+        var currentUrlStr = if (
+            initialUrl.rawUrl.startsWith("http://", ignoreCase = true) ||
+            initialUrl.rawUrl.startsWith("https://", ignoreCase = true)
+        ) {
+            initialUrl.rawUrl
+        } else {
+            "https://${initialUrl.rawUrl}"
+        }
+
+        var hops = 0
+        while (hops < 4) {
+            hops++
+            val conn = try {
+                (URL(currentUrlStr).openConnection() as? HttpURLConnection)
+            } catch (_: Exception) {
+                null
+            } ?: break
+
+            try {
+                conn.instanceFollowRedirects = false
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 3500
+                conn.readTimeout = 3500
+                conn.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36"
+                )
+
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val location = conn.getHeaderField("Location")?.trim()
+                    if (location.isNullOrBlank()) break
+                    val nextUrl = try {
+                        URL(URL(currentUrlStr), location).toString()
+                    } catch (_: Exception) {
+                        location
+                    }
+                    val parsedDest = parseSingleUrl(nextUrl)
+                    if ((parsedDest != null) &&
+                        (!isParsedUrlIndividuallySafe(parsedDest) || checkCloudflareSecurityDnsBlocked(parsedDest.host))
+                    ) {
+                        return OnlineUrlVerdict(
+                            isMalicious = true,
+                            reason = strings.reasonMaliciousRedirectOnline(initialUrl.host, parsedDest.host)
+                        )
+                    }
+                    currentUrlStr = nextUrl
+                    continue
+                }
+
+                // Final landing page reached — check content-type for direct APK/EXE dropper
+                val contentType = conn.contentType?.lowercase().orEmpty()
+                if (contentType.contains("application/vnd.android.package-archive") ||
+                    contentType.contains("application/x-msdownload") ||
+                    contentType.contains("application/x-dosexec")
+                ) {
+                    return OnlineUrlVerdict(
+                        isMalicious = true,
+                        reason = strings.reasonMalwareFile(".apk/.exe")
+                    )
+                }
+
+                // Inspect first 16 KB of HTML on untrusted domains for credential/card harvesting forms
+                val finalParsed = parseSingleUrl(currentUrlStr) ?: initialUrl
+                val isFinalTrusted = finalParsed.registeredDomain in trustedGlobalDomains
+                if (!isFinalTrusted && contentType.contains("text/html")) {
+                    val snippet = try {
+                        val reader = conn.inputStream.bufferedReader()
+                        val buf = CharArray(16_384)
+                        val readCount = reader.read(buf)
+                        if (readCount > 0) String(buf, 0, readCount).lowercase() else ""
+                    } catch (_: Exception) {
+                        ""
+                    }
+
+                    if (snippet.isNotBlank()) {
+                        val hasPasswordOrCardField = snippet.contains("type=\"password\"") ||
+                            snippet.contains("type='password'") ||
+                            snippet.contains("autocomplete=\"cc-number\"") ||
+                            snippet.contains("name=\"cvv\"") ||
+                            snippet.contains("name=\"cardnumber\"")
+
+                        val mentionsProtectedBrand = protectedBrandDomains.keys.any { brand ->
+                            snippet.contains("<title") && snippet.contains(brand)
+                        }
+
+                        if (hasPasswordOrCardField && mentionsProtectedBrand) {
+                            return OnlineUrlVerdict(
+                                isMalicious = true,
+                                reason = strings.reasonMaliciousWebsiteOnline(finalParsed.host)
+                            )
+                        }
+                    }
+                }
+                break
+            } catch (_: SSLHandshakeException) {
+                val host = parseSingleUrl(currentUrlStr)?.host ?: initialUrl.host
+                return OnlineUrlVerdict(
+                    isMalicious = true,
+                    reason = strings.reasonInvalidTlsCertificate(host)
+                )
+            } catch (_: Exception) {
+                break
+            } finally {
+                conn.disconnect()
+            }
+        }
+
+        return OnlineUrlVerdict(isMalicious = false, reason = null)
+    }
+
+    /**
      * Strictly sanitizes a recipient phone number or short code to prevent injection or malformed URIs.
      */
     fun sanitizePhoneNumber(rawInput: String): String {
         val cleaned = rawInput.trim()
             .filterIndexed { index, ch ->
-                ch.isDigit() || (index == 0 && ch == '+')
+                ch.isDigit() || ((index == 0) && (ch == '+'))
             }
         return cleaned.take(20)
     }
