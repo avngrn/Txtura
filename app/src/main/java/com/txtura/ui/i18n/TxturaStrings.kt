@@ -659,7 +659,7 @@ class AppStrings(val isSerbian: Boolean) {
     // App Update Checker (GitHub Releases)
     val updateSectionTitle: String = s("App Updates", "Ažuriranje aplikacije")
     val checkForUpdatesButton: String = s("Check for updates", "Proveri ažuriranja")
-    val checkingForUpdatesLabel: String = s("Checking for updates...", "Provera ažuriranja...")
+    val checkingForUpdatesLabel: String = s("Checking for updates", "Provera ažuriranja")
     val appUpToDateLabel: (String) -> String = { ver ->
         if (isSerbian) "Aplikacija je ažurna (v$ver)" else "App is up to date (v$ver)"
     }
