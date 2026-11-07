@@ -9,6 +9,9 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -24,6 +27,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -37,7 +41,10 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.lifecycle.lifecycleScope
+import kotlin.time.Duration.Companion.minutes
+import kotlinx.coroutines.delay
 import com.txtura.data.AppSettingsSnapshot
+import com.txtura.data.AppUpdateManager
 import com.txtura.data.BackupManager
 import com.txtura.data.BackupRestorePayload
 import com.txtura.data.ContactPickerItem
@@ -348,6 +355,55 @@ class MainActivity : ComponentActivity() {
                     SmsMmsRepository.syncDeviceMessages(this@MainActivity, autoDeleteDays)
                 }
                 availableContacts = SmsMmsRepository.loadAvailableContactsForPicker(this@MainActivity)
+            }
+
+            // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
+            val currentAppVersionName = remember {
+                runCatching {
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0"
+                }.getOrDefault("1.0")
+            }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    if (AppUpdateManager.shouldPerformPeriodicCheck(this@MainActivity)) {
+                        AppUpdateManager.checkForUpdates(this@MainActivity, currentAppVersionName)
+                    }
+                    delay(15.minutes) // Poll every 15m to see if 6h window elapsed
+                }
+            }
+            DisposableEffect(Unit) {
+                val cm = getSystemService(ConnectivityManager::class.java)
+                val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onCapabilitiesChanged(
+                        network: Network,
+                        networkCapabilities: NetworkCapabilities,
+                    ) {
+                        val hasNet = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                            networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                            (
+                                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                                )
+                        if (hasNet && AppUpdateManager.shouldPerformPeriodicCheck(this@MainActivity)) {
+                            lifecycleScope.launch {
+                                AppUpdateManager.checkForUpdates(this@MainActivity, currentAppVersionName)
+                            }
+                        }
+                    }
+                }
+                try {
+                    cm?.registerDefaultNetworkCallback(callback)
+                } catch (_: Exception) {
+                    // Ignore on restricted environments
+                }
+                onDispose {
+                    try {
+                        cm?.unregisterNetworkCallback(callback)
+                    } catch (_: Exception) {
+                        // Ignore
+                    }
+                }
             }
 
             val selectedThread = threads.find { (id) -> id == activeThreadId }
@@ -1258,31 +1314,22 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * On first startup of the application, automatically requests SMS/MMS/Contacts permissions
-     * and prompts to set Txtura as the Default SMS & MMS application.
+     * On every startup of the application, verifies all required runtime permissions
+     * (SMS, MMS, Contacts, and Notifications) and prompts for any that are missing,
+     * as well as prompting to set Txtura as the Default SMS & MMS application.
      */
     private fun checkFirstStartupPermissionsAndRole() {
         val prefs = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
-        val alreadyRequested = prefs.getBoolean(KEY_FIRST_STARTUP_DONE, false)
-        if (!alreadyRequested) {
-            prefs.edit { putBoolean(KEY_FIRST_STARTUP_DONE, true) }
-            val allGranted = requiredSmsPermissions.all { perm ->
-                ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
-            }
-            if (!allGranted) {
-                smsPermissionLauncher.launch(requiredSmsPermissions)
-            } else if (!SmsMmsRepository.isDefaultSmsApp(this)) {
-                showDefaultSmsRolePrompt = true
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Ensure POST_NOTIFICATIONS is requested on Android 13+ so incoming SMS notifications are shown
-            val hasNotifPerm = ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) == PackageManager.PERMISSION_GRANTED
-            if (!hasNotifPerm) {
-                smsPermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
-            }
+        prefs.edit { putBoolean(KEY_FIRST_STARTUP_DONE, true) }
+
+        val missingPermissions = requiredSmsPermissions.filter { perm ->
+            ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isNotEmpty()) {
+            smsPermissionLauncher.launch(missingPermissions.toTypedArray())
+        } else if (!SmsMmsRepository.isDefaultSmsApp(this)) {
+            showDefaultSmsRolePrompt = true
         }
     }
 

@@ -357,7 +357,7 @@ class AppStrings(val isSerbian: Boolean) {
     }
 
     // Blocked Senders Section
-    val blockedSendersSectionTitle: String = s("Blocked Senders", "Blokirani pošiljoci")
+    val blockedSendersSectionTitle: String = s("Blocked Senders", "Blokirani pošiljaoci")
     val unblockSenderButton: String = s("Unblock", "Odblokiraj")
     val blockedSendersEmpty: String = s("No blocked senders.", "Trenutno nema blokiranih pošiljalaca.")
     val senderBlockedToast: (String) -> String = { addr ->
@@ -654,6 +654,38 @@ class AppStrings(val isSerbian: Boolean) {
     val settingsFooterCopyright: String = s(
         "© 2026 Txtura • All rights reserved",
         "© 2026 Txtura • Sva prava zadržana",
+    )
+
+    // App Update Checker (GitHub Releases)
+    val updateSectionTitle: String = s("App Updates", "Ažuriranje aplikacije")
+    val checkForUpdatesButton: String = s("Check for updates", "Proveri ažuriranja")
+    val checkingForUpdatesLabel: String = s("Checking for updates...", "Provera ažuriranja...")
+    val appUpToDateLabel: (String) -> String = { ver ->
+        if (isSerbian) "Aplikacija je ažurna (v$ver)" else "App is up to date (v$ver)"
+    }
+    val updateAvailableTitle: (String) -> String = { ver ->
+        if (isSerbian) "Dostupna je nova verzija: $ver" else "New version available: $ver"
+    }
+    val downloadAndInstallUpdateButton: (String) -> String = { ver ->
+        if (isSerbian) "Preuzmi i instaliraj ($ver)" else "Download & Install ($ver)"
+    }
+    val downloadingUpdateLabel: (Int) -> String = { pct ->
+        if (isSerbian) "Preuzimanje ažuriranja sa GitHub-a... $pct%" else "Downloading update from GitHub... $pct%"
+    }
+    val updateLastCheckedLabel: (String) -> String = { timeStr ->
+        if (isSerbian) "Poslednja provera: $timeStr" else "Last checked: $timeStr"
+    }
+    val updateNoInternetToast: String = s(
+        "No internet connection (Wi-Fi or mobile data required).",
+        "Nema internet konekcije (potreban je Wi-Fi ili mobilni podaci).",
+    )
+    val updateCheckFailedToast: String = s(
+        "Could not reach GitHub Releases right now.",
+        "Trenutno nije moguće pristupiti GitHub izdanjima.",
+    )
+    val updateUpToDateToast: String = s(
+        "You already have the latest version of Txtura.",
+        "Već koristiš najnoviju verziju aplikacije Txtura.",
     )
 }
 

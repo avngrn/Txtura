@@ -60,7 +60,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.selection.TextSelectionColors
@@ -114,6 +116,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
@@ -128,6 +132,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.txtura.R
+import com.txtura.data.AppUpdateCheckResult
+import com.txtura.data.AppUpdateManager
 import com.txtura.data.BackupRestorePayload
 import com.txtura.data.ChatMessage
 import com.txtura.data.ContactPickerItem
@@ -136,6 +142,7 @@ import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedConversationEntry
 import com.txtura.data.DeletedGroupingMode
 import com.txtura.data.DeliveryStatus
+import com.txtura.data.GitHubReleaseInfo
 import com.txtura.data.MainListLayoutMode
 import com.txtura.data.MessageType
 import com.txtura.data.MmsAttachment
@@ -1044,6 +1051,30 @@ fun SettingsScreen(
         }.getOrDefault("1.0" to 1L)
     }
 
+    val coroutineScope = rememberCoroutineScope()
+    var cachedReleaseInfo by remember(context, appVersionName) {
+        mutableStateOf(AppUpdateManager.getCachedReleaseInfo(context, appVersionName))
+    }
+    var lastUpdateCheckMs by remember(context) {
+        mutableLongStateOf(AppUpdateManager.getLastCheckTimestamp(context))
+    }
+    var isCheckingUpdates by remember { mutableStateOf(false) }
+    var downloadProgressPct by remember { mutableStateOf<Int?>(null) }
+
+    LaunchedEffect(context, appVersionName) {
+        if (AppUpdateManager.shouldPerformPeriodicCheck(context)) {
+            isCheckingUpdates = true
+            when (val res = AppUpdateManager.checkForUpdates(context, appVersionName)) {
+                is AppUpdateCheckResult.Success -> {
+                    cachedReleaseInfo = res.info
+                    lastUpdateCheckMs = AppUpdateManager.getLastCheckTimestamp(context)
+                }
+                else -> Unit
+            }
+            isCheckingUpdates = false
+        }
+    }
+
     // Active category window (null = main Settings categories overview window)
     var activeCategoryWindow by remember { mutableStateOf<SettingsCategoryWindow?>(null) }
     var showSecurityMeasuresDialog by remember { mutableStateOf(value = false) }
@@ -1166,6 +1197,171 @@ fun SettingsScreen(
                             title = strings.permissionsSectionTitle,
                             accentHighlight = if (!hasSmsPermission || !isDefaultSmsApp) palette.accentPrimary else null,
                         ) { activeCategoryWindow = SettingsCategoryWindow.PERMISSIONS_AND_ROLE }
+
+                        // 6. Provera i preuzimanje ažuriranja sa GitHub-a (automatski na 6h ili ručno)
+                        val hasUpdate = cachedReleaseInfo?.isUpdateAvailable == true
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(22.dp),
+                            elevated = true,
+                            accentHighlight = if (hasUpdate) palette.safeColor else null,
+                            contentPadding = PaddingValues(16.dp),
+                        ) {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        val updateIconTint = if (hasUpdate) palette.safeColor else palette.accentPrimary
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .size(38.dp)
+                                                .clip(CircleShape)
+                                                .background(updateIconTint.copy(alpha = 0.14f))
+                                                .border(1.dp, updateIconTint.copy(alpha = 0.45f), CircleShape),
+                                        ) {
+                                            Icon(
+                                                imageVector = TxturaIcons.ClockTimer,
+                                                contentDescription = null,
+                                                tint = updateIconTint,
+                                                modifier = Modifier.size(19.dp),
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                text = strings.updateSectionTitle,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = palette.textPrimary,
+                                                fontWeight = FontWeight.Bold,
+                                            )
+                                            val statusText = when {
+                                                downloadProgressPct != null -> strings.downloadingUpdateLabel(downloadProgressPct ?: 0)
+                                                hasUpdate -> strings.updateAvailableTitle(cachedReleaseInfo?.versionTag.orEmpty())
+                                                else -> strings.appUpToDateLabel(appVersionName)
+                                            }
+                                            Text(
+                                                text = statusText,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (hasUpdate) palette.safeColor else palette.accentPrimary,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                            if (lastUpdateCheckMs > 0L) {
+                                                val formattedTime = remember(lastUpdateCheckMs) {
+                                                    SimpleDateFormat("dd.MM.yyyy. HH:mm", Locale.getDefault())
+                                                        .format(Date(lastUpdateCheckMs))
+                                                }
+                                                Text(
+                                                    text = strings.updateLastCheckedLabel(formattedTime),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontSize = 10.sp,
+                                                    color = palette.textSecondary.copy(alpha = 0.78f),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    GlassCard(
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(14.dp),
+                                        elevated = !hasUpdate,
+                                        accentHighlight = palette.accentPrimary,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                        onClick = {
+                                            if (!isCheckingUpdates && (downloadProgressPct == null)) {
+                                                coroutineScope.launch {
+                                                    isCheckingUpdates = true
+                                                    when (val res = AppUpdateManager.checkForUpdates(context, appVersionName)) {
+                                                        is AppUpdateCheckResult.Success -> {
+                                                            cachedReleaseInfo = res.info
+                                                            lastUpdateCheckMs = AppUpdateManager.getLastCheckTimestamp(context)
+                                                            if (!res.info.isUpdateAvailable) {
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    strings.updateUpToDateToast,
+                                                                    Toast.LENGTH_SHORT,
+                                                                ).show()
+                                                            }
+                                                        }
+                                                        is AppUpdateCheckResult.NoInternet -> {
+                                                            Toast.makeText(
+                                                                context,
+                                                                strings.updateNoInternetToast,
+                                                                Toast.LENGTH_SHORT,
+                                                            ).show()
+                                                        }
+                                                        is AppUpdateCheckResult.Error -> {
+                                                            Toast.makeText(
+                                                                context,
+                                                                strings.updateCheckFailedToast,
+                                                                Toast.LENGTH_SHORT,
+                                                            ).show()
+                                                        }
+                                                    }
+                                                    isCheckingUpdates = false
+                                                }
+                                            }
+                                        },
+                                    ) {
+                                        Text(
+                                            text = if (isCheckingUpdates) strings.checkingForUpdatesLabel else strings.checkForUpdatesButton,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = palette.accentPrimary,
+                                            fontWeight = FontWeight.Bold,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.align(Alignment.Center),
+                                        )
+                                    }
+
+                                    if (hasUpdate && (cachedReleaseInfo != null)) {
+                                        val releaseToInstall = cachedReleaseInfo!!
+                                        GlassCard(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(14.dp),
+                                            elevated = true,
+                                            accentHighlight = palette.safeColor,
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                            onClick = {
+                                                if (downloadProgressPct == null) {
+                                                    coroutineScope.launch {
+                                                        downloadProgressPct = 0
+                                                        AppUpdateManager.downloadAndInstallUpdate(
+                                                            context = context,
+                                                            releaseInfo = releaseToInstall,
+                                                            onProgress = { pct -> downloadProgressPct = pct },
+                                                        )
+                                                        downloadProgressPct = null
+                                                    }
+                                                }
+                                            },
+                                        ) {
+                                            Text(
+                                                text = strings.downloadAndInstallUpdateButton(releaseToInstall.versionTag),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = palette.safeColor,
+                                                fontWeight = FontWeight.Bold,
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier.align(Alignment.Center),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Official Centered App Footer at the bottom of Settings
@@ -1203,26 +1399,40 @@ fun SettingsScreen(
                             textAlign = TextAlign.Center
                         )
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(horizontal = 12.dp)
-                        ) {
-                            Icon(
-                                imageVector = TxturaIcons.ShieldCheck,
-                                contentDescription = null,
-                                tint = palette.safeColor,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = strings.settingsFooterPrivacyBadge,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontSize = 10.sp,
-                                color = palette.textSecondary,
-                                textAlign = TextAlign.Center
+                        val footerBadgeAnnotated = remember(strings.settingsFooterPrivacyBadge) {
+                            buildAnnotatedString {
+                                appendInlineContent("footerShield", "[✓]")
+                                append(" ")
+                                append(strings.settingsFooterPrivacyBadge)
+                            }
+                        }
+                        val footerInlineContent = remember(palette.safeColor) {
+                            mapOf(
+                                "footerShield" to InlineTextContent(
+                                    Placeholder(
+                                        width = 12.sp,
+                                        height = 12.sp,
+                                        placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
+                                    ),
+                                ) {
+                                    Icon(
+                                        imageVector = TxturaIcons.ShieldCheck,
+                                        contentDescription = null,
+                                        tint = palette.safeColor,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                },
                             )
                         }
+                        Text(
+                            text = footerBadgeAnnotated,
+                            inlineContent = footerInlineContent,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            color = palette.textSecondary,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
 
                         Text(
                             text = strings.settingsFooterCopyright,

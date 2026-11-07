@@ -3,19 +3,27 @@ package com.txtura.data
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.security.SecurityAnalysisResult
 import com.txtura.security.SecurityRiskLevel
 import com.txtura.ui.theme.TxturaThemeMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -824,5 +832,325 @@ object BackupManager {
         return context.contentResolver.openInputStream(sourceUri)?.use { input ->
             BufferedReader(InputStreamReader(input, Charsets.UTF_8)).readText()
         } ?: throw IllegalArgumentException("Cannot open input stream for $sourceUri")
+    }
+}
+
+data class GitHubReleaseInfo(
+    val versionTag: String,
+    val releaseTitle: String,
+    val releaseNotes: String,
+    val releasePageUrl: String,
+    val apkDownloadUrl: String?,
+    val isUpdateAvailable: Boolean,
+)
+
+sealed class AppUpdateCheckResult {
+    data class Success(val info: GitHubReleaseInfo) : AppUpdateCheckResult()
+    data object NoInternet : AppUpdateCheckResult()
+    data class Error(val message: String) : AppUpdateCheckResult()
+}
+
+/**
+ * Checks GitHub Releases (`avngrn/Txtura`) for new application versions,
+ * supports automatic real-time checks every 6 hours when Wi-Fi or mobile data is connected,
+ * and downloads/installs the latest APK update.
+ */
+object AppUpdateManager {
+
+    const val GITHUB_OWNER = "avngrn"
+    const val GITHUB_REPO = "Txtura"
+    const val CHECK_INTERVAL_MILLIS = 6L * 60L * 60L * 1000L // 6 hours
+    private const val PREFS_UPDATE = "txtura_github_update_prefs"
+    private const val KEY_LAST_CHECK_TIME = "last_update_check_timestamp"
+    private const val KEY_CACHED_TAG = "cached_latest_tag"
+    private const val KEY_CACHED_TITLE = "cached_release_title"
+    private const val KEY_CACHED_NOTES = "cached_release_notes"
+    private const val KEY_CACHED_PAGE_URL = "cached_release_page_url"
+    private const val KEY_CACHED_APK_URL = "cached_release_apk_url"
+
+    private const val LATEST_RELEASE_API = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
+    private const val ALL_RELEASES_API = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases?per_page=1"
+    private const val ALL_TAGS_API = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/tags?per_page=1"
+    const val RELEASES_WEB_URL = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases"
+
+    fun getLastCheckTimestamp(context: Context): Long {
+        return context.getSharedPreferences(PREFS_UPDATE, Context.MODE_PRIVATE)
+            .getLong(KEY_LAST_CHECK_TIME, 0L)
+    }
+
+    fun getCachedReleaseInfo(context: Context, currentVersionName: String): GitHubReleaseInfo? {
+        val prefs = context.getSharedPreferences(PREFS_UPDATE, Context.MODE_PRIVATE)
+        val tag = prefs.getString(KEY_CACHED_TAG, null)?.takeIf { it.isNotBlank() } ?: return null
+        val title = prefs.getString(KEY_CACHED_TITLE, tag).orEmpty().ifBlank { tag }
+        val notes = prefs.getString(KEY_CACHED_NOTES, "").orEmpty()
+        val pageUrl = prefs.getString(KEY_CACHED_PAGE_URL, RELEASES_WEB_URL).orEmpty().ifBlank { RELEASES_WEB_URL }
+        val apkUrl = prefs.getString(KEY_CACHED_APK_URL, null)?.takeIf { it.isNotBlank() }
+        return GitHubReleaseInfo(
+            versionTag = tag,
+            releaseTitle = title,
+            releaseNotes = notes,
+            releasePageUrl = pageUrl,
+            apkDownloadUrl = apkUrl,
+            isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tag),
+        )
+    }
+
+    /**
+     * Checks whether the phone currently has an active internet connection over Wi-Fi or mobile data.
+     */
+    fun hasActiveInternetConnection(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+            val network = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            val hasWifiOrCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+            hasInternet && hasWifiOrCellular
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Returns true if Wi-Fi or mobile data is available and at least 6 hours have elapsed since the last check.
+     */
+    fun shouldPerformPeriodicCheck(context: Context): Boolean {
+        if (!hasActiveInternetConnection(context)) return false
+        val lastCheck = getLastCheckTimestamp(context)
+        val elapsed = System.currentTimeMillis() - lastCheck
+        return (lastCheck == 0L) || (elapsed >= CHECK_INTERVAL_MILLIS)
+    }
+
+    /**
+     * Compares semantic version strings (e.g., current `"1.0"` vs remote `"v1.1.0"`).
+     */
+    fun isRemoteVersionNewer(currentVersion: String, remoteTag: String): Boolean {
+        val cleanCurrent = currentVersion.trim().removePrefix("v").removePrefix("V")
+        val cleanRemote = remoteTag.trim().removePrefix("v").removePrefix("V")
+        if (cleanRemote.isBlank() || cleanCurrent.equals(cleanRemote, ignoreCase = true)) return false
+
+        val currentParts = cleanCurrent.split(Regex("[^0-9]+")).mapNotNull { it.toIntOrNull() }
+        val remoteParts = cleanRemote.split(Regex("[^0-9]+")).mapNotNull { it.toIntOrNull() }
+        if (remoteParts.isEmpty()) return false
+
+        val maxLen = maxOf(currentParts.size, remoteParts.size)
+        for (i in 0 until maxLen) {
+            val cur = currentParts.getOrElse(i) { 0 }
+            val rem = remoteParts.getOrElse(i) { 0 }
+            if (rem > cur) return true
+            if (rem < cur) return false
+        }
+        return false
+    }
+
+    /**
+     * Queries GitHub Releases API for the latest version of Txtura.
+     */
+    suspend fun checkForUpdates(
+        context: Context,
+        currentVersionName: String,
+    ): AppUpdateCheckResult = withContext(Dispatchers.IO) {
+        if (!hasActiveInternetConnection(context)) {
+            return@withContext AppUpdateCheckResult.NoInternet
+        }
+
+        try {
+            val releaseObj = fetchLatestReleaseJson()
+                ?: fetchFirstArrayObject(ALL_RELEASES_API)
+
+            val info = if (releaseObj != null) {
+                val tag = releaseObj.optString("tag_name", "").trim()
+                    .ifBlank { releaseObj.optString("name", "").trim() }
+                    .ifBlank { "v$currentVersionName" }
+                val title = releaseObj.optString("name", tag).trim().ifBlank { tag }
+                val notes = releaseObj.optString("body", "").trim()
+                val htmlUrl = releaseObj.optString("html_url", RELEASES_WEB_URL).trim().ifBlank { RELEASES_WEB_URL }
+
+                var apkUrl: String? = null
+                val assets = releaseObj.optJSONArray("assets")
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val asset = assets.optJSONObject(i) ?: continue
+                        val assetName = asset.optString("name", "").lowercase(Locale.ROOT)
+                        val downloadUrl = asset.optString("browser_download_url", "").trim()
+                        if (assetName.endsWith(".apk") && downloadUrl.isNotBlank()) {
+                            apkUrl = downloadUrl
+                            break
+                        }
+                    }
+                }
+
+                GitHubReleaseInfo(
+                    versionTag = tag,
+                    releaseTitle = title,
+                    releaseNotes = notes,
+                    releasePageUrl = htmlUrl,
+                    apkDownloadUrl = apkUrl,
+                    isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tag),
+                )
+            } else {
+                val tagObj = fetchFirstArrayObject(ALL_TAGS_API)
+                val tag = tagObj?.optString("name", "")?.trim()?.ifBlank { "v$currentVersionName" }
+                    ?: "v$currentVersionName"
+                GitHubReleaseInfo(
+                    versionTag = tag,
+                    releaseTitle = tag,
+                    releaseNotes = "",
+                    releasePageUrl = RELEASES_WEB_URL,
+                    apkDownloadUrl = null,
+                    isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tag),
+                )
+            }
+
+            val now = System.currentTimeMillis()
+            context.getSharedPreferences(PREFS_UPDATE, Context.MODE_PRIVATE).edit {
+                putLong(KEY_LAST_CHECK_TIME, now)
+                putString(KEY_CACHED_TAG, info.versionTag)
+                putString(KEY_CACHED_TITLE, info.releaseTitle)
+                putString(KEY_CACHED_NOTES, info.releaseNotes)
+                putString(KEY_CACHED_PAGE_URL, info.releasePageUrl)
+                putString(KEY_CACHED_APK_URL, info.apkDownloadUrl.orEmpty())
+            }
+
+            AppUpdateCheckResult.Success(info)
+        } catch (e: Exception) {
+            AppUpdateCheckResult.Error(e.localizedMessage ?: "GitHub API error")
+        }
+    }
+
+    private fun fetchLatestReleaseJson(): JSONObject? {
+        val conn = (URL(LATEST_RELEASE_API).openConnection() as? HttpURLConnection) ?: return null
+        return try {
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Accept", "application/vnd.github+json")
+            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
+            conn.connectTimeout = 6000
+            conn.readTimeout = 6000
+            if (conn.responseCode == 200) {
+                val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                JSONObject(text)
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun fetchFirstArrayObject(urlStr: String): JSONObject? {
+        val conn = (URL(urlStr).openConnection() as? HttpURLConnection) ?: return null
+        return try {
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Accept", "application/vnd.github+json")
+            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
+            conn.connectTimeout = 6000
+            conn.readTimeout = 6000
+            if (conn.responseCode == 200) {
+                val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val arr = JSONArray(text)
+                if (arr.length() > 0) arr.optJSONObject(0) else null
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Downloads the APK asset from GitHub Releases into cache and launches the Android package installer,
+     * or opens the GitHub Release page if no direct APK asset is attached.
+     */
+    suspend fun downloadAndInstallUpdate(
+        context: Context,
+        releaseInfo: GitHubReleaseInfo,
+        onProgress: (Int) -> Unit,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val apkUrl = releaseInfo.apkDownloadUrl
+        if (apkUrl.isNullOrBlank()) {
+            withContext(Dispatchers.Main) {
+                openReleasePageInBrowser(context, releaseInfo.releasePageUrl)
+            }
+            return@withContext true
+        }
+
+        try {
+            val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
+            val safeTag = releaseInfo.versionTag.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            val targetApk = File(updatesDir, "Txtura-$safeTag.apk")
+
+            val conn = (URL(apkUrl).openConnection() as? HttpURLConnection) ?: return@withContext false
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 15000
+
+            try {
+                if (conn.responseCode !in (200..299)) {
+                    withContext(Dispatchers.Main) {
+                        openReleasePageInBrowser(context, releaseInfo.releasePageUrl)
+                    }
+                    return@withContext false
+                }
+
+                val totalBytes = conn.contentLengthLong
+                conn.inputStream.use { input ->
+                    FileOutputStream(targetApk).use { output ->
+                        val buffer = ByteArray(8 * 1024)
+                        var downloaded = 0L
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            if (totalBytes > 0L) {
+                                val pct = ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                                onProgress(pct)
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+            } finally {
+                conn.disconnect()
+            }
+
+            val apkUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                targetApk,
+            )
+            withContext(Dispatchers.Main) {
+                val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(apkUri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(installIntent)
+            }
+            true
+        } catch (_: Exception) {
+            withContext(Dispatchers.Main) {
+                openReleasePageInBrowser(context, releaseInfo.releasePageUrl)
+            }
+            false
+        }
+    }
+
+    fun openReleasePageInBrowser(context: Context, url: String = RELEASES_WEB_URL) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, url.toUri()).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            // Ignore if no browser available
+        }
     }
 }
