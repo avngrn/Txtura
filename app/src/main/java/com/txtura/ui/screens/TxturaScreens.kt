@@ -724,8 +724,8 @@ fun ConversationsListScreen(
                 GlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(22.dp),
+                        .padding(top = 4.dp, bottom = 4.dp),
+                    shape = RoundedCornerShape(26.dp),
                     elevated = true,
                     accentHighlight = palette.accentPrimary,
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
@@ -739,7 +739,7 @@ fun ConversationsListScreen(
                         GlassCard(
                             shape = RoundedCornerShape(50),
                             elevated = true,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                             onClick = {
                                 isSelectionMode = false
                                 selectedThreadIds = emptySet()
@@ -750,9 +750,9 @@ fun ConversationsListScreen(
                                     imageVector = TxturaIcons.Close,
                                     contentDescription = strings.cancel,
                                     tint = palette.textSecondary,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = selCount.toString(),
                                     style = MaterialTheme.typography.labelMedium,
@@ -772,7 +772,8 @@ fun ConversationsListScreen(
                             },
                             tint = if (allSelected) palette.accentPrimary else palette.safeColor,
                             pressedTint = palette.accentPrimary,
-                            size = 38.dp,
+                            size = 44.dp,
+                            iconSize = 24.dp,
                             onClick = {
                                 if (allSelected) {
                                     selectedThreadIds = emptySet()
@@ -789,7 +790,8 @@ fun ConversationsListScreen(
                             tooltipText = strings.bottomBarMarkReadTooltip,
                             tint = palette.accentPrimary,
                             pressedTint = palette.accentPrimary,
-                            size = 38.dp,
+                            size = 44.dp,
+                            iconSize = 24.dp,
                             onClick = {
                                 if (selectedThreadIds.isNotEmpty()) {
                                     pendingBatchAction = BatchSelectionAction.MARK_READ
@@ -803,7 +805,8 @@ fun ConversationsListScreen(
                             tooltipText = strings.bottomBarDeleteTooltip,
                             tint = palette.dangerColor,
                             pressedTint = palette.dangerColor,
-                            size = 38.dp,
+                            size = 44.dp,
+                            iconSize = 24.dp,
                             onClick = {
                                 if (selectedThreadIds.isNotEmpty()) {
                                     pendingBatchAction = BatchSelectionAction.DELETE
@@ -856,12 +859,12 @@ private fun HomeBottomDockBar(
         modifier = modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center
     ) {
-        // Compact, centered Glass Pill Dock Bar
+        // Full-width Glass Bottom Dock Bar matching the rest of the interface
         Box(
             modifier = Modifier
-                .wrapContentWidth()
-                .height(58.dp)
-                .clip(RoundedCornerShape(32.dp))
+                .fillMaxWidth()
+                .height(64.dp)
+                .clip(RoundedCornerShape(26.dp))
                 .background(
                     Brush.linearGradient(
                         colors = listOf(
@@ -875,14 +878,15 @@ private fun HomeBottomDockBar(
                     brush = Brush.verticalGradient(
                         colors = listOf(palette.glassBorderTop, palette.glassBorderBottom)
                     ),
-                    shape = RoundedCornerShape(32.dp)
+                    shape = RoundedCornerShape(26.dp)
                 )
-                .padding(horizontal = 14.dp, vertical = 5.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center
         ) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 // 1. Ikonica za označavanje (Označi sve kao pročitano)
                 GlassTooltipIconButton(
@@ -890,7 +894,8 @@ private fun HomeBottomDockBar(
                     tooltipText = strings.markAllReadTooltip,
                     tint = palette.accentPrimary,
                     onClick = onMarkAllRead,
-                    size = 40.dp
+                    size = 46.dp,
+                    iconSize = 24.dp
                 )
 
                 // 2. Ikonica za hajlajte (Hajlajtovane poruke od svih kontakata)
@@ -900,14 +905,15 @@ private fun HomeBottomDockBar(
                         tooltipText = strings.highlightedMessagesTooltip,
                         tint = if (highlightedCount > 0) palette.cautionColor else palette.accentPrimary,
                         onClick = onOpenHighlightedMessages,
-                        size = 40.dp
+                        size = 46.dp,
+                        iconSize = 24.dp
                     )
                     if (highlightedCount > 0) {
                         Box(
                             contentAlignment = Alignment.Center,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .size(17.dp)
+                                .size(18.dp)
                                 .clip(CircleShape)
                                 .background(palette.cautionColor)
                         ) {
@@ -926,7 +932,7 @@ private fun HomeBottomDockBar(
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(48.dp)
+                        .size(52.dp)
                         .clip(CircleShape)
                         .background(
                             Brush.linearGradient(
@@ -952,7 +958,7 @@ private fun HomeBottomDockBar(
                         imageVector = TxturaIcons.Plus,
                         contentDescription = strings.newMessage,
                         tint = if (palette.isDark) Color.Black else Color.White,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(28.dp)
                     )
                 }
 
@@ -963,14 +969,15 @@ private fun HomeBottomDockBar(
                         tooltipText = strings.deletedMessagesTitle,
                         tint = palette.accentPrimary,
                         onClick = onOpenDeletedMessages,
-                        size = 40.dp
+                        size = 46.dp,
+                        iconSize = 24.dp
                     )
                     if (deletedCount > 0) {
                         Box(
                             contentAlignment = Alignment.Center,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .size(17.dp)
+                                .size(18.dp)
                                 .clip(CircleShape)
                                 .background(palette.accentPrimary)
                         ) {
@@ -991,7 +998,8 @@ private fun HomeBottomDockBar(
                     tooltipText = strings.settingsTooltip,
                     tint = palette.accentPrimary,
                     onClick = onOpenSettings,
-                    size = 40.dp
+                    size = 46.dp,
+                    iconSize = 24.dp
                 )
             }
         }
@@ -1549,10 +1557,10 @@ fun SettingsScreen(
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val vName = pkgInfo.versionName ?: "1.5"
+            val vName = pkgInfo.versionName ?: "1.5.1"
             val vCode = pkgInfo.longVersionCode
             vName to vCode
-        }.getOrDefault("1.5" to 2L)
+        }.getOrDefault("1.5.1" to 3L)
     }
 
     val coroutineScope = rememberCoroutineScope()
@@ -4468,9 +4476,41 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v1.5",
+                        versionName = "v1.5.1",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Upravljanje porukama & Korpa" else "Message Handling & Trash",
+                                items = listOf(
+                                    if (strings.isSerbian) "Pojedinačne i označene poruke koje se brišu unutar samog četa premeštaju se u Obrisane poruke (korpu) umesto trajnog brisanja" else "Individual and multi-selected messages deleted directly from inside a chat are now moved to Trash instead of immediate permanent deletion",
+                                    if (strings.isSerbian) "Podrška za vraćanje (Restore) obrisanih poruka nazad u aktivni razgovor i automatsko uklanjanje nakon isteka definisanog roka" else "Full support for restoring trashed messages back into the active thread and auto-delete lifecycle purging",
+                                    if (strings.isSerbian) "Učitavanje kompletne istorije: uklonjena veštačka ograničenja (LIMIT) tako da se uvek učitavaju sve poruke iz memorije uređaja" else "Full message history loading: removed query LIMIT constraints to always load all stored SMS/MMS messages from device memory"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Korisnički interfejs & Podešavanja" else "User Interface & Settings",
+                                items = listOf(
+                                    if (strings.isSerbian) "Donji navigacioni bar i traka za masovno označavanje prošireni na punu širinu ekrana radi savršenog uklapanja sa karticama" else "Bottom dock bar and selection bar expanded to full width to seamlessly match the rest of the interface",
+                                    if (strings.isSerbian) "Povećane ikonice i komfornije dodirne zone na donjem navigacionom baru" else "Enlarged icons and more comfortable touch targets on the bottom dock bar",
+                                    if (strings.isSerbian) "Objedinjena podešavanja za Mehuriće i Eksterne linkove u pregledne padajuće kartice ispod opcija automatskog uklanjanja poruka" else "Consolidated Bubbles and External Links options into elegant collapsible cards under auto-delete settings"
+                                )
+                            )
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = strings.changelogPreviousVersionsHeader,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = palette.textSecondary,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v1.5",
+                        releaseDate = "08.11.2026.",
+                        isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Pretraga, Isticanje & Nacrti" else "Search, Pin, Highlights & Drafts",
@@ -4984,6 +5024,7 @@ fun ConversationDetailScreen(
     onTogglePinMessage: (Long) -> Unit,
     onToggleHighlightMessage: (Long) -> Unit = {},
     onDeleteMessage: (Long) -> Unit = {},
+    onDeleteMessages: (List<Long>) -> Unit = { ids -> ids.forEach(onDeleteMessage) },
     onCopyMessageText: (String) -> Unit = {},
     onForwardMessage: (ChatMessage, String, String?) -> Unit = { _, _, _ -> },
     onOpenChatWallpaperPicker: () -> Unit = {},
@@ -6223,12 +6264,7 @@ fun ConversationDetailScreen(
                             onClick = {
                                 val idsToDelete = selectedMessageIds.toList()
                                 selectedMessageIds = emptySet()
-                                idsToDelete.forEach { id -> onDeleteMessage(id) }
-                                Toast.makeText(
-                                    context,
-                                    if (idsToDelete.size == 1) strings.messageDeletedToast else strings.threadsDeletedToast(idsToDelete.size),
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                                onDeleteMessages(idsToDelete)
                             }
                         )
 

@@ -78,6 +78,7 @@ object SmsMmsRepository {
     private const val KEY_HIGHLIGHTED_MSGS = "highlighted_message_ids"
     private const val KEY_BLOCKED_ADDRS = "blocked_sender_addresses"
     private const val KEY_DELETED_THREADS = "deleted_threads_meta"
+    private const val KEY_DELETED_MSGS = "deleted_messages_meta"
     private const val KEY_FORCED_SERVICE_ADDRS = "forced_service_addresses"
     private const val KEY_FORCED_PERSON_ADDRS = "forced_person_addresses"
     const val KEY_DELIVERY_REPORTS_ENABLED = "delivery_reports_enabled"
@@ -111,6 +112,10 @@ object SmsMmsRepository {
 
     // Map of soft-deleted threadId -> deletedAtMillis (persisted across app restarts)
     private val deletedThreadTimestamps: MutableMap<Long, Long> =
+        Collections.synchronizedMap(mutableMapOf())
+
+    // Map of soft-deleted messageId -> Pair(threadId, deletedAtMillis) (persisted across app restarts)
+    private val deletedMessageMeta: MutableMap<Long, Pair<Long, Long>> =
         Collections.synchronizedMap(mutableMapOf())
 
     private val _threads = MutableStateFlow<List<ConversationThread>>(emptyList())
@@ -309,6 +314,20 @@ object SmsMmsRepository {
                 }
             }
         }
+        prefs.getStringSet(KEY_DELETED_MSGS, null)?.let { saved ->
+            deletedMessageMeta.clear()
+            saved.forEach { entry ->
+                val parts = entry.split("|")
+                if (parts.size == 3) {
+                    val msgId = parts[0].toLongOrNull()
+                    val threadId = parts[1].toLongOrNull()
+                    val ts = parts[2].toLongOrNull()
+                    if (msgId != null && threadId != null && ts != null) {
+                        deletedMessageMeta[msgId] = Pair(threadId, ts)
+                    }
+                }
+            }
+        }
 
         // Permanently purge any legacy demo threads/addresses from memory and persistent sets
         val hadDemoPins = pinnedAddresses.removeAll(DEMO_ADDRESSES)
@@ -320,7 +339,17 @@ object SmsMmsRepository {
                 hadDemoDeleted = true
             }
         }
-        if (hadDemoPins || hadDemoMsgs || hadDemoServices || hadDemoDeleted) {
+        var hadDemoDeletedMsgs = false
+        DEMO_THREAD_IDS.forEach { demoThreadId ->
+            val toRemove = synchronized(deletedMessageMeta) {
+                deletedMessageMeta.filter { it.value.first == demoThreadId }.keys.toList()
+            }
+            toRemove.forEach {
+                deletedMessageMeta.remove(it)
+                hadDemoDeletedMsgs = true
+            }
+        }
+        if (hadDemoPins || hadDemoMsgs || hadDemoServices || hadDemoDeleted || hadDemoDeletedMsgs) {
             savePersistedPins(context)
         }
         _deletedThreads.update { trash ->
@@ -339,6 +368,12 @@ object SmsMmsRepository {
                 .map { (key, value) -> "$key|$value" }
                 .toSet()
         }
+        val serializedDeletedMsgs = synchronized(deletedMessageMeta) {
+            deletedMessageMeta.entries
+                .asSequence()
+                .map { (key, value) -> "$key|${value.first}|${value.second}" }
+                .toSet()
+        }
         prefs.edit {
             putStringSet(KEY_PINNED_ADDRS, synchronized(pinnedAddresses) { pinnedAddresses.toSet() })
             putStringSet(KEY_PINNED_MSGS, synchronized(pinnedMessageIds) { pinnedMessageIds.asSequence().map { it.toString() }.toSet() })
@@ -347,6 +382,7 @@ object SmsMmsRepository {
             putStringSet(KEY_FORCED_SERVICE_ADDRS, synchronized(forcedServiceAddresses) { forcedServiceAddresses.toSet() })
             putStringSet(KEY_FORCED_PERSON_ADDRS, synchronized(forcedPersonAddresses) { forcedPersonAddresses.toSet() })
             putStringSet(KEY_DELETED_THREADS, serializedDeleted)
+            putStringSet(KEY_DELETED_MSGS, serializedDeletedMsgs)
         }
     }
 
@@ -812,7 +848,7 @@ object SmsMmsRepository {
                 smsProjection,
                 smsSelection,
                 smsSelectionArgs,
-                "${Telephony.Sms.DATE} DESC LIMIT 500"
+                "${Telephony.Sms.DATE} DESC"
             )?.use { cursor ->
                 val idIdx = cursor.getColumnIndexOrThrow(Telephony.Sms._ID)
                 val threadIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.THREAD_ID)
@@ -920,6 +956,7 @@ object SmsMmsRepository {
         // Partition threads into active inbox vs soft-deleted Trash threads, excluding blocked senders
         val activeList = mutableListOf<ConversationThread>()
         val trashedFromDevice = mutableListOf<DeletedConversationEntry>()
+        val allDraftsMap = getAllDrafts(context)
         for (thread in deviceThreads) {
             if (isSenderBlocked(thread.address)) {
                 blockedThreadsCache[normalizeAddressKey(thread.address)] = thread
@@ -934,7 +971,23 @@ object SmsMmsRepository {
                     )
                 )
             } else {
-                activeList.add(thread)
+                val (trashedMsgs, remainingMsgs) = thread.messages.partition { msg ->
+                    msg.id in deletedMessageMeta
+                }
+                if (trashedMsgs.isNotEmpty()) {
+                    val latestDeletedAt = trashedMsgs.mapNotNull { deletedMessageMeta[it.id]?.second }
+                        .maxOrNull() ?: System.currentTimeMillis()
+                    trashedFromDevice.add(
+                        DeletedConversationEntry(
+                            thread = thread.copy(messages = trashedMsgs),
+                            deletedAtMillis = latestDeletedAt
+                        )
+                    )
+                }
+                val hasDraft = !allDraftsMap[thread.id].isNullOrBlank()
+                if (remainingMsgs.isNotEmpty() || hasDraft) {
+                    activeList.add(thread.copy(messages = remainingMsgs))
+                }
             }
         }
 
@@ -949,10 +1002,11 @@ object SmsMmsRepository {
             }
             if (matchingInMemory != null) {
                 val missingMessages = matchingInMemory.messages.filter { memMsg ->
-                    deviceThread.messages.none { dbMsg ->
-                        dbMsg.body == memMsg.body &&
-                            kotlin.math.abs(dbMsg.timestampMillis - memMsg.timestampMillis) < 15_000L
-                    }
+                    memMsg.id !in deletedMessageMeta &&
+                        deviceThread.messages.none { dbMsg ->
+                            dbMsg.body == memMsg.body &&
+                                kotlin.math.abs(dbMsg.timestampMillis - memMsg.timestampMillis) < 15_000L
+                        }
                 }
                 if (missingMessages.isNotEmpty()) {
                     val combinedMsgs = (deviceThread.messages + missingMessages.map { it.copy(threadId = deviceThread.id) })
@@ -970,6 +1024,11 @@ object SmsMmsRepository {
             if (isSenderBlocked(inMemoryThread.address) || (inMemoryThread.id in deletedThreadTimestamps)) {
                 continue
             }
+            val activeInMemoryMsgs = inMemoryThread.messages.filterNot { it.id in deletedMessageMeta }
+            val hasDraft = !allDraftsMap[inMemoryThread.id].isNullOrBlank()
+            if (activeInMemoryMsgs.isEmpty() && !hasDraft) {
+                continue
+            }
             val alreadyInDeviceList = mergedActiveList.any { dev ->
                 dev.id == inMemoryThread.id ||
                     arePhoneNumbersEqual(dev.address, inMemoryThread.address) ||
@@ -977,22 +1036,37 @@ object SmsMmsRepository {
                     normalizeAddressKey(dev.address) == normalizeAddressKey(inMemoryThread.address)
             }
             if (!alreadyInDeviceList) {
-                mergedActiveList.add(inMemoryThread)
+                mergedActiveList.add(inMemoryThread.copy(messages = activeInMemoryMsgs))
             }
         }
 
-        val draftsMap = getAllDrafts(context)
         val activeWithDrafts = mergedActiveList.map { th ->
-            val draft = draftsMap[th.id]
+            val draft = allDraftsMap[th.id]
             if (!draft.isNullOrBlank()) th.copy(draftText = draft) else th
         }
         _threads.value = sortThreads(activeWithDrafts)
         _deletedThreads.update { existingTrash ->
-            (existingTrash + trashedFromDevice)
-                .associateBy { it.thread.id }
-                .values
+            val combinedMap = mutableMapOf<Long, DeletedConversationEntry>()
+            for (entry in existingTrash + trashedFromDevice) {
+                val prev = combinedMap[entry.thread.id]
+                if (prev != null) {
+                    val mergedMsgs = (prev.thread.messages + entry.thread.messages)
+                        .distinctBy { it.id }
+                        .sortedBy { it.timestampMillis }
+                    combinedMap[entry.thread.id] = prev.copy(
+                        thread = prev.thread.copy(messages = mergedMsgs),
+                        deletedAtMillis = maxOf(prev.deletedAtMillis, entry.deletedAtMillis)
+                    )
+                } else {
+                    combinedMap[entry.thread.id] = entry
+                }
+            }
+            combinedMap.values
                 .asSequence()
-                .filter { it.thread.id in deletedThreadTimestamps }
+                .filter {
+                    (it.thread.id in deletedThreadTimestamps) ||
+                        it.thread.messages.any { m -> m.id in deletedMessageMeta }
+                }
                 .filterNot { it.thread.id in DEMO_THREAD_IDS || it.thread.address in DEMO_ADDRESSES }
                 .sortedByDescending { it.deletedAtMillis }
                 .toList()
@@ -1022,7 +1096,7 @@ object SmsMmsRepository {
                 mmsProjection,
                 null,
                 null,
-                "${Telephony.Mms.DATE} DESC LIMIT 100"
+                "${Telephony.Mms.DATE} DESC"
             )?.use { cursor ->
                 val idIdx = cursor.getColumnIndexOrThrow(Telephony.Mms._ID)
                 val threadIdx = cursor.getColumnIndexOrThrow(Telephony.Mms.THREAD_ID)
@@ -1297,7 +1371,7 @@ object SmsMmsRepository {
                         projection,
                         null,
                         null,
-                        "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC LIMIT 250"
+                        "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC"
                     )?.use { cursor ->
                         val nameIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                         val numIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
@@ -2099,17 +2173,54 @@ object SmsMmsRepository {
     }
 
     /**
-     * Deletes a single message from a conversation thread.
+     * Moves a single message from an active conversation thread to the Deleted Messages (Trash) folder.
      */
-    fun deleteMessage(context: Context, threadId: Long, messageId: Long) {
-        pinnedMessageIds.remove(messageId)
-        highlightedMessageIds.remove(messageId)
+    fun deleteMessage(
+        context: Context,
+        threadId: Long,
+        messageId: Long,
+        retentionDays: Int = 30
+    ) {
+        deleteMessages(context, threadId, setOf(messageId), retentionDays)
+    }
+
+    /**
+     * Moves multiple messages from an active conversation thread to the Deleted Messages (Trash) folder.
+     */
+    fun deleteMessages(
+        context: Context,
+        threadId: Long,
+        messageIds: Collection<Long>,
+        retentionDays: Int = 30
+    ) {
+        if (messageIds.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val idsSet = messageIds.toSet()
+
+        idsSet.forEach { id ->
+            pinnedMessageIds.remove(id)
+            highlightedMessageIds.remove(id)
+            deletedMessageMeta[id] = Pair(threadId, now)
+        }
         savePersistedPins(context)
 
+        var trashedMessages = listOf<ChatMessage>()
+        var baseThread: ConversationThread? = null
+
         _threads.update { list ->
-            val updated = list.map { thread ->
+            val updated = list.mapNotNull { thread ->
                 if (thread.id == threadId) {
-                    thread.copy(messages = thread.messages.filterNot { it.id == messageId })
+                    baseThread = thread
+                    val found = thread.messages.filter { it.id in idsSet }
+                    if (found.isNotEmpty()) {
+                        trashedMessages = found
+                    }
+                    val remaining = thread.messages.filterNot { it.id in idsSet }
+                    if (remaining.isEmpty() && thread.draftText.isNullOrBlank()) {
+                        null
+                    } else {
+                        thread.copy(messages = remaining)
+                    }
                 } else {
                     thread
                 }
@@ -2117,21 +2228,36 @@ object SmsMmsRepository {
             sortThreads(updated)
         }
 
-        val appCtx = context.applicationContext
-        ioScope.launch {
-            if (!isDefaultSmsApp(appCtx)) return@launch
-            try {
-                if (messageId < 1_000_000_000L) {
-                    appCtx.contentResolver.delete(
-                        Telephony.Sms.CONTENT_URI,
-                        "${Telephony.Sms._ID} = ?",
-                        arrayOf(messageId.toString())
+        val contactInfo = baseThread ?: _deletedThreads.value.find { it.thread.id == threadId }?.thread
+        if (trashedMessages.isNotEmpty() || contactInfo != null) {
+            _deletedThreads.update { currentTrash ->
+                val existingEntry = currentTrash.find { it.thread.id == threadId }
+                val newEntry = if (existingEntry != null) {
+                    val combinedMsgs = (existingEntry.thread.messages + trashedMessages)
+                        .distinctBy { it.id }
+                        .sortedBy { it.timestampMillis }
+                    existingEntry.copy(
+                        thread = existingEntry.thread.copy(messages = combinedMsgs),
+                        deletedAtMillis = now
                     )
+                } else if (contactInfo != null) {
+                    DeletedConversationEntry(
+                        thread = contactInfo.copy(messages = trashedMessages),
+                        deletedAtMillis = now
+                    )
+                } else {
+                    null
                 }
-            } catch (_: Exception) {
-                // Ignore if read-only
+
+                if (newEntry != null) {
+                    (listOf(newEntry) + currentTrash.filterNot { it.thread.id == threadId })
+                        .sortedByDescending { it.deletedAtMillis }
+                } else {
+                    currentTrash
+                }
             }
         }
+        purgeExpiredDeletedThreads(context, retentionDays)
     }
 
     /**
@@ -2160,6 +2286,9 @@ object SmsMmsRepository {
 
         targets.forEach { target ->
             deletedThreadTimestamps[target.id] = now
+            target.messages.forEach { msg ->
+                deletedMessageMeta[msg.id] = Pair(target.id, now)
+            }
         }
         savePersistedPins(context)
 
@@ -2183,13 +2312,24 @@ object SmsMmsRepository {
     fun restoreDeletedThread(context: Context, threadId: Long): String? {
         val entry = _deletedThreads.value.find { it.thread.id == threadId } ?: return null
         deletedThreadTimestamps.remove(threadId)
+        entry.thread.messages.forEach { msg ->
+            deletedMessageMeta.remove(msg.id)
+        }
         savePersistedPins(context)
 
         _deletedThreads.update { currentTrash ->
             currentTrash.filterNot { it.thread.id == threadId }
         }
         _threads.update { currentActive ->
-            val merged = (currentActive.filterNot { it.id == threadId } + entry.thread)
+            val existing = currentActive.find { it.id == threadId }
+            val merged = if (existing != null) {
+                val combinedMsgs = (existing.messages + entry.thread.messages)
+                    .distinctBy { it.id }
+                    .sortedBy { it.timestampMillis }
+                currentActive.map { if (it.id == threadId) it.copy(messages = combinedMsgs) else it }
+            } else {
+                currentActive + entry.thread
+            }
             sortThreads(merged)
         }
         return entry.thread.contactName
@@ -2199,22 +2339,43 @@ object SmsMmsRepository {
      * Permanently deletes a single conversation from the Deleted Messages (Trash) folder.
      */
     fun permanentlyDeleteThread(context: Context, threadId: Long) {
+        val entry = _deletedThreads.value.find { it.thread.id == threadId }
         deletedThreadTimestamps.remove(threadId)
+        val msgIdsToDelete = entry?.thread?.messages?.map { it.id }?.toSet().orEmpty()
+        msgIdsToDelete.forEach { id -> deletedMessageMeta.remove(id) }
         savePersistedPins(context)
+
         _deletedThreads.update { currentTrash ->
             currentTrash.filterNot { it.thread.id == threadId }
         }
-        deleteFromSystemProviderIfDefault(context, threadId)
+
+        val isEntireThreadDeleted = _threads.value.none { it.id == threadId }
+        if (isEntireThreadDeleted) {
+            deleteFromSystemProviderIfDefault(context, threadId)
+        } else {
+            deleteMessagesFromSystemProviderIfDefault(context, msgIdsToDelete)
+        }
     }
 
     /**
      * Permanently empties all conversations in the Deleted Messages (Trash) folder.
      */
     fun emptyTrash(context: Context) {
-        val idsToPurge = _deletedThreads.value.map { it.thread.id }
-        idsToPurge.forEach { id ->
+        val entriesToPurge = _deletedThreads.value
+        val threadIdsToPurge = entriesToPurge.map { it.thread.id }.toSet()
+        val activeThreadIds = _threads.value.map { it.id }.toSet()
+
+        threadIdsToPurge.forEach { id ->
             deletedThreadTimestamps.remove(id)
-            deleteFromSystemProviderIfDefault(context, id)
+        }
+        entriesToPurge.forEach { entry ->
+            val msgIds = entry.thread.messages.map { it.id }.toSet()
+            msgIds.forEach { deletedMessageMeta.remove(it) }
+            if (entry.thread.id in activeThreadIds) {
+                deleteMessagesFromSystemProviderIfDefault(context, msgIds)
+            } else {
+                deleteFromSystemProviderIfDefault(context, entry.thread.id)
+            }
         }
         savePersistedPins(context)
         _deletedThreads.value = emptyList()
@@ -2227,23 +2388,58 @@ object SmsMmsRepository {
     fun purgeExpiredDeletedThreads(context: Context, retentionDays: Int) {
         val now = System.currentTimeMillis()
         val maxAgeMillis = retentionDays.coerceAtLeast(1) * 86_400_000L
-        val expiredIds = synchronized(deletedThreadTimestamps) {
+        val activeThreadIds = _threads.value.map { it.id }.toSet()
+
+        val expiredThreadIds = synchronized(deletedThreadTimestamps) {
             deletedThreadTimestamps.entries
                 .asSequence()
                 .filter { (_, deletedAt) -> (now - deletedAt) >= maxAgeMillis }
                 .map { it.key }
                 .toList()
         }
-        if (expiredIds.isNotEmpty()) {
-            expiredIds.forEach { id ->
+        if (expiredThreadIds.isNotEmpty()) {
+            expiredThreadIds.forEach { id ->
                 deletedThreadTimestamps.remove(id)
-                deleteFromSystemProviderIfDefault(context, id)
+                if (id !in activeThreadIds) {
+                    deleteFromSystemProviderIfDefault(context, id)
+                }
             }
+        }
+
+        val expiredMessageEntries = synchronized(deletedMessageMeta) {
+            deletedMessageMeta.entries
+                .asSequence()
+                .filter { (_, meta) -> (now - meta.second) >= maxAgeMillis }
+                .map { (msgId, meta) -> msgId to meta.first }
+                .toList()
+        }
+        if (expiredMessageEntries.isNotEmpty()) {
+            val expiredMsgIds = expiredMessageEntries.map { it.first }.toSet()
+            expiredMsgIds.forEach { id -> deletedMessageMeta.remove(id) }
+            deleteMessagesFromSystemProviderIfDefault(context, expiredMsgIds)
+        }
+
+        if (expiredThreadIds.isNotEmpty() || expiredMessageEntries.isNotEmpty()) {
             savePersistedPins(context)
         }
+
         _deletedThreads.update { currentTrash ->
-            currentTrash.filter { entry ->
-                (now - entry.deletedAtMillis) < maxAgeMillis
+            currentTrash.mapNotNull { entry ->
+                val nonExpiredMsgs = entry.thread.messages.filter { msg ->
+                    val meta = deletedMessageMeta[msg.id]
+                    val deletedAt = meta?.second ?: entry.deletedAtMillis
+                    (now - deletedAt) < maxAgeMillis
+                }
+                if (nonExpiredMsgs.isEmpty()) {
+                    null
+                } else {
+                    entry.copy(
+                        thread = entry.thread.copy(messages = nonExpiredMsgs),
+                        deletedAtMillis = nonExpiredMsgs.maxOfOrNull { msg ->
+                            deletedMessageMeta[msg.id]?.second ?: entry.deletedAtMillis
+                        } ?: entry.deletedAtMillis
+                    )
+                }
             }
         }
     }
@@ -2302,6 +2498,14 @@ object SmsMmsRepository {
             deletedThreadTimestamps.clear()
             deletedThreadTimestamps.putAll(payload.deletedThreadsMeta)
         }
+        synchronized(deletedMessageMeta) {
+            deletedMessageMeta.clear()
+            payload.deletedThreads.forEach { entry ->
+                entry.thread.messages.forEach { msg ->
+                    deletedMessageMeta[msg.id] = Pair(entry.thread.id, entry.deletedAtMillis)
+                }
+            }
+        }
         savePersistedPins(context)
 
         _threads.value = sortThreads(payload.threads.filterNot { isSenderBlocked(it.address) })
@@ -2322,6 +2526,42 @@ object SmsMmsRepository {
                     "${Telephony.Sms.THREAD_ID} = ?",
                     arrayOf(threadId.toString())
                 )
+            } catch (_: Exception) {
+                // Ignore if read-only or not default SMS app
+            }
+        }
+    }
+
+    private fun deleteMessagesFromSystemProviderIfDefault(context: Context, messageIds: Collection<Long>) {
+        if (messageIds.isEmpty()) return
+        val appCtx = context.applicationContext
+        ioScope.launch {
+            if (!isDefaultSmsApp(appCtx)) return@launch
+            try {
+                val smsIds = messageIds.filter { it < 1_000_000_000L }
+                if (smsIds.isNotEmpty()) {
+                    smsIds.chunked(50).forEach { chunk ->
+                        val placeholders = chunk.joinToString(",") { "?" }
+                        val args = chunk.map { it.toString() }.toTypedArray()
+                        appCtx.contentResolver.delete(
+                            Telephony.Sms.CONTENT_URI,
+                            "${Telephony.Sms._ID} IN ($placeholders)",
+                            args
+                        )
+                    }
+                }
+                val mmsIds = messageIds.filter { it >= 1_000_000_000L }.map { it - 1_000_000_000L }
+                if (mmsIds.isNotEmpty()) {
+                    mmsIds.chunked(50).forEach { chunk ->
+                        val placeholders = chunk.joinToString(",") { "?" }
+                        val args = chunk.map { it.toString() }.toTypedArray()
+                        appCtx.contentResolver.delete(
+                            Telephony.Mms.CONTENT_URI,
+                            "${Telephony.Mms._ID} IN ($placeholders)",
+                            args
+                        )
+                    }
+                }
             } catch (_: Exception) {
                 // Ignore if read-only or not default SMS app
             }

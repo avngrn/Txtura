@@ -12,8 +12,8 @@ class AppStrings(val isSerbian: Boolean) {
 
     val settingsTooltip: String = s("Settings", "Podešavanja")
     val searchPlaceholder: String = s(
-        "Search messages, contacts or codes...",
-        "Pretraži poruke, kontakte ili kodove...",
+        "Search messages, contacts or codes",
+        "Pretraži poruke, kontakte ili kodove",
     )
     val clearSearch: String = s("Clear search", "Obriši pretragu")
     val filterPeople: String = s("People", "Osobe")
@@ -47,7 +47,7 @@ class AppStrings(val isSerbian: Boolean) {
     val noHighlightedMessages: String = s("No highlighted messages yet", "Još uvek nema hajlajtovanih poruka")
     val noHighlightedMessagesSub: String = s(
         "Long-press any message in a chat and tap Highlight to save and view it here.",
-        "Dugo pritisnite poruku u razgovoru i odaberite Hajlajtuj da biste je videli ovde.",
+        "Zadržite dodir na poruci u razgovoru i odaberite Hajlajtuj da biste je videli ovde.",
     )
     val openInChatAction: String = s("Open in chat", "Otvori u razgovoru")
     val unhighlightMessageAction: String = s("Unhighlight", "Otkaži hajlajt")
@@ -72,20 +72,16 @@ class AppStrings(val isSerbian: Boolean) {
     )
     val removeMmsAttachment: String = s("Remove MMS attachment", "Ukloni MMS prilog")
     val attachMmsImage: String = s("Attach MMS image", "Dodaj MMS sliku")
-    val addMmsCaptionPlaceholder: String = s("Add MMS caption...", "Dodaj opis uz MMS...")
-    val writeSmsPlaceholder: String = s("Write an SMS message...", "Napiši SMS poruku...")
+    val addMmsCaptionPlaceholder: String = s("Add MMS caption", "Dodaj opis uz MMS")
+    val writeSmsPlaceholder: String = s("Write an SMS message", "Napiši SMS poruku")
     val mmsModeIndicator: String = s("MMS Mode • Multimedia message", "MMS režim • Multimedijalna poruka")
     val send: String = s("Send", "Pošalji")
     val cancel: String = s("Cancel", "Otkaži")
     val confirm: String = s("Confirm", "Potvrdi")
-    val newSmsMmsDialogTitle: String = s("Choose Recipient", "Izaberi primaoca / pošiljaoca")
-    val selectSenderSubtitle: String = s(
-        "Select a contact or enter a number to open or start a conversation",
-        "Izaberite osobu da biste nastavili prethodni čet ili započeli novu konverzaciju",
-    )
+    val newSmsMmsDialogTitle: String = s("Choose Recipient", "Izaberi primaoca")
     val searchOrEnterNumberPlaceholder: String = s(
-        "Search contact or type phone number...",
-        "Pretraži kontakt ili unesi broj telefona...",
+        "Search contact or type phone number",
+        "Pretraži kontakt ili unesi broj telefona",
     )
     val openChatWithNumberButton: (String) -> String = { num ->
         if (isSerbian) "Otvori čet sa: $num" else "Open conversation with $num"
@@ -104,12 +100,12 @@ class AppStrings(val isSerbian: Boolean) {
     val unhighlightMessageOption: String = s("Remove highlight", "Ukloni hajlajt")
     val confirmDeleteSingleMessageTitle: String = s("Delete message?", "Izbriši poruku?")
     val confirmDeleteSingleMessageBody: String = s(
-        "Do you want to delete this message from the conversation?",
-        "Da li želite da izbrišete ovu poruku iz konverzacije?",
+        "Do you want to move this message to Deleted messages?",
+        "Da li želite da premestite ovu poruku u obrisane poruke?",
     )
-    val forwardMessageDialogTitle: String = s("Forward message to...", "Prosledi poruku osobi...")
+    val forwardMessageDialogTitle: String = s("Forward message to", "Prosledi poruku osobi")
     val messageCopiedToast: String = s("Message copied to clipboard", "Poruka je kopirana")
-    val messageDeletedToast: String = s("Message deleted", "Poruka je izbrisana")
+    val messageDeletedToast: String = s("Message moved to Deleted messages", "Poruka je premeštena u obrisane poruke")
     val messageForwardedToast: (String) -> String = { name ->
         if (isSerbian) "Poruka prosleđena za: $name" else "Message forwarded to $name"
     }
@@ -280,8 +276,8 @@ class AppStrings(val isSerbian: Boolean) {
     }
     val recallMessagesTitle: String = s("Recall messages", "Opozovi poruke")
     val recallMessagesSub: String = s(
-        "Enable or disable the 6-second countdown timer when sending messages",
-        "Uključuje ili isključuje tajmer za slanje poruka (6 sekundi)",
+        "Enable or disable the countdown timer when sending messages",
+        "Uključuje ili isključuje tajmer za slanje poruka",
     )
     val maliciousWebsitesTitle: String = s(
         "Identify malicious websites in messages",
@@ -333,7 +329,7 @@ class AppStrings(val isSerbian: Boolean) {
 
     // 4. Auto-retrieve MMS
     val mmsAutoRetrieveTitle: String = s("Auto-retrieve MMS", "Automatski preuzmi MMS")
-    val mmsAutoRetrieveNotRoaming: String = s("Not roaming", "Nije u romingu")
+    val mmsAutoRetrieveNotRoaming: String = s("Not roaming", "Kad nije u romingu")
     val mmsAutoRetrieveAlways: String = s("Always", "Uvek")
     val mmsAutoRetrieveDisabled: String = s("Disabled", "Onemogućeno")
 
@@ -882,6 +878,7 @@ class AppStrings(val isSerbian: Boolean) {
         if (isSerbian) "Poruka poslata za $count primalaca u zasebnim četovima" else "Message sent to $count recipients in separate chats"
     }
     val addMoreRecipients: String = s("Add recipient", "Dodaj primaoca")
+    val selectSenderSubtitle: String = s("Select a contact or enter a phone number", "Izaberite kontakt ili unesite broj telefona")
     val broadcastSeparateNotice: String = s(
         "Each recipient will receive this message in their own private 1-on-1 conversation.",
         "Svaki primalac će primiti ovu poruku u sopstvenom privatnom 1-na-1 razgovoru.",

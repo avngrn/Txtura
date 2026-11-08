@@ -374,8 +374,8 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "1.5"
-                }.getOrDefault("1.5")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "1.5.1"
+                }.getOrDefault("1.5.1")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -768,11 +768,20 @@ class MainActivity : ComponentActivity() {
                                 SmsMmsRepository.toggleHighlightMessage(this@MainActivity, selectedThread.id, msgId)
                             },
                             onDeleteMessage = { msgId ->
-                                SmsMmsRepository.deleteMessage(this@MainActivity, selectedThread.id, msgId)
+                                SmsMmsRepository.deleteMessage(this@MainActivity, selectedThread.id, msgId, autoDeleteDays)
                                 val locStrings = TxturaStrings.forLocale()
                                 Toast.makeText(
                                     this@MainActivity,
                                     locStrings.messageDeletedToast,
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            },
+                            onDeleteMessages = { msgIds ->
+                                SmsMmsRepository.deleteMessages(this@MainActivity, selectedThread.id, msgIds, autoDeleteDays)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (msgIds.size == 1) locStrings.messageDeletedToast else locStrings.threadsDeletedToast(msgIds.size),
                                     Toast.LENGTH_SHORT,
                                 ).show()
                             },

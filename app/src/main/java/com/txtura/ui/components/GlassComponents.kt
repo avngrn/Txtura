@@ -1287,6 +1287,7 @@ fun GlassTooltipIconButton(
     tint: Color = LocalGlassPalette.current.accentPrimary,
     pressedTint: Color = tint,
     size: Dp = 44.dp,
+    iconSize: Dp = 22.dp,
 ) {
     val palette = LocalGlassPalette.current
     val glassSurfaceElevated = palette.glassSurfaceElevated
@@ -1359,7 +1360,7 @@ fun GlassTooltipIconButton(
                 contentDescription = tooltipText,
                 tint = activeTint,
                 modifier = Modifier
-                    .size(22.dp)
+                    .size(iconSize)
                     .align(Alignment.Center),
             )
         }
