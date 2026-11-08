@@ -1,4 +1,4 @@
-@file:Suppress("SpellCheckingInspection")
+@file:Suppress("SpellCheckingInspection", "DestructuringDeclaration", "TrailingComma")
 
 package com.txtura
 
@@ -99,6 +99,13 @@ class MainActivity : ComponentActivity() {
         private const val KEY_CATEGORY_ORDER = "category_order_v1"
         private const val KEY_RECALL_MESSAGES_ENABLED = "recall_messages_enabled"
         private const val KEY_IDENTIFY_MALICIOUS_WEBSITES = "identify_malicious_websites"
+        private const val KEY_IN_APP_SOUNDS_ENABLED = "in_app_sounds_enabled"
+        private const val KEY_PINCH_TO_ZOOM_ENABLED = "pinch_to_zoom_enabled"
+        private const val KEY_EXPRESSIVE_ANIMATIONS_ENABLED = "expressive_animations_enabled"
+        private const val KEY_BUBBLES_ENABLED = "bubbles_enabled"
+        private const val KEY_AUTO_PREVIEWS_SHOW_ALL = "auto_previews_show_all"
+        private const val KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY = "auto_previews_web_links_only"
+        private const val KEY_AUTO_PREVIEWS_WIFI_ONLY = "auto_previews_wifi_only"
         private const val GALLERY_TARGET_MAIN = "__MAIN__"
     }
 
@@ -117,6 +124,13 @@ class MainActivity : ComponentActivity() {
     private var deletedGroupingMode by mutableStateOf(DeletedGroupingMode.BY_DATE)
     private var recallMessagesEnabled by mutableStateOf(value = true)
     private var identifyMaliciousWebsites by mutableStateOf(value = true)
+    private var inAppSoundsEnabled by mutableStateOf(value = true)
+    private var pinchToZoomEnabled by mutableStateOf(value = true)
+    private var expressiveAnimationsEnabled by mutableStateOf(value = true)
+    private var bubblesEnabled by mutableStateOf(value = true)
+    private var autoPreviewsShowAll by mutableStateOf(value = true)
+    private var autoPreviewsWebLinksOnly by mutableStateOf(value = false)
+    private var autoPreviewsWifiOnly by mutableStateOf(value = false)
 
     private var lastBackupTimestamp by mutableLongStateOf(0L)
     private var pendingRestorePayload by mutableStateOf<BackupRestorePayload?>(null)
@@ -287,7 +301,7 @@ class MainActivity : ComponentActivity() {
                         pinnedMessageIds = pinnedMsgs,
                         highlightedMessageIds = highlightedMsgs,
                         blockedAddresses = blockedAddrs,
-                        deletedThreadsMeta = deletedMeta
+                        deletedThreadsMeta = deletedMeta,
                     )
                     val success = BackupManager.saveBackupToUri(this@MainActivity, uri, json)
                     if (success) {
@@ -299,7 +313,7 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(
                             this@MainActivity,
                             locStrings.backupCreatedSuccess(currentThreads.size + currentDeleted.size, totalMsgs),
-                            Toast.LENGTH_LONG
+                            Toast.LENGTH_LONG,
                         ).show()
                     }
                 }
@@ -321,7 +335,7 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(
                             this@MainActivity,
                             locStrings.backupErrorInvalid,
-                            Toast.LENGTH_LONG
+                            Toast.LENGTH_LONG,
                         ).show()
                     }
                 }
@@ -360,8 +374,8 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0"
-                }.getOrDefault("1.0")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "1.5"
+                }.getOrDefault("1.5")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -423,6 +437,18 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            var previousMessageCount by remember { mutableIntStateOf(0) }
+            LaunchedEffect(selectedThread?.id, selectedThread?.messages?.size) {
+                val currentCount = selectedThread?.messages?.size ?: 0
+                if (selectedThread != null && currentCount > previousMessageCount && previousMessageCount > 0) {
+                    val lastMsg = selectedThread.messages.lastOrNull()
+                    if (lastMsg != null && lastMsg.isIncoming && inAppSoundsEnabled) {
+                        SmsMmsRepository.playInAppMessageReceivedSound(this@MainActivity)
+                    }
+                }
+                previousMessageCount = currentCount
+            }
+
             val activeWallpaper = if ((selectedThread != null) && !showSettingsScreen && !showDeletedMessagesScreen) {
                 contactWallpapers[contactWallpaperKey(selectedThread.address)] ?: mainWallpaper
             } else {
@@ -433,7 +459,7 @@ class MainActivity : ComponentActivity() {
                 themeMode = themeMode,
                 wallpaperConfig = activeWallpaper,
                 uiOpacity = uiOpacity,
-                uiColorMode = uiColorMode
+                uiColorMode = uiColorMode,
             ) {
                 val strings = TxturaStrings.current()
 
@@ -456,14 +482,14 @@ class MainActivity : ComponentActivity() {
                             onRestoreThread = { threadId ->
                                 val restoredName = SmsMmsRepository.restoreDeletedThread(
                                     this@MainActivity,
-                                    threadId
+                                    threadId,
                                 )
                                 if (restoredName != null) {
                                     val locStrings = TxturaStrings.forLocale()
                                     Toast.makeText(
                                         this@MainActivity,
                                         locStrings.restoredToast(restoredName),
-                                        Toast.LENGTH_SHORT
+                                        Toast.LENGTH_SHORT,
                                     ).show()
                                 }
                             },
@@ -497,7 +523,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(
                                     this@MainActivity,
                                     locStrings.senderUnblockedToast(address),
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_SHORT,
                                 ).show()
                             },
                             swipeRightAction = swipeRightAction,
@@ -507,6 +533,44 @@ class MainActivity : ComponentActivity() {
                             deletedMessagesCount = deletedThreads.size,
                             recallMessagesEnabled = recallMessagesEnabled,
                             identifyMaliciousWebsites = identifyMaliciousWebsites,
+                            inAppSoundsEnabled = inAppSoundsEnabled,
+                            onToggleInAppSounds = { enabled ->
+                                inAppSoundsEnabled = enabled
+                                saveInAppSoundsEnabled(enabled)
+                            },
+                            pinchToZoomEnabled = pinchToZoomEnabled,
+                            onTogglePinchToZoom = { enabled ->
+                                pinchToZoomEnabled = enabled
+                                savePinchToZoomEnabled(enabled)
+                            },
+                            expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+                            onToggleExpressiveAnimations = { enabled ->
+                                expressiveAnimationsEnabled = enabled
+                                saveExpressiveAnimationsEnabled(enabled)
+                            },
+                            bubblesEnabled = bubblesEnabled,
+                            onToggleBubbles = { enabled ->
+                                bubblesEnabled = enabled
+                                saveBubblesEnabled(enabled)
+                            },
+                            onOpenSystemBubbleSettings = {
+                                SmsMmsRepository.openSystemBubbleSettings(this@MainActivity)
+                            },
+                            autoPreviewsShowAll = autoPreviewsShowAll,
+                            onToggleAutoPreviewsShowAll = { enabled ->
+                                autoPreviewsShowAll = enabled
+                                saveAutoPreviewsShowAll(enabled)
+                            },
+                            autoPreviewsWebLinksOnly = autoPreviewsWebLinksOnly,
+                            onToggleAutoPreviewsWebLinksOnly = { enabled ->
+                                autoPreviewsWebLinksOnly = enabled
+                                saveAutoPreviewsWebLinksOnly(enabled)
+                            },
+                            autoPreviewsWifiOnly = autoPreviewsWifiOnly,
+                            onToggleAutoPreviewsWifiOnly = { enabled ->
+                                autoPreviewsWifiOnly = enabled
+                                saveAutoPreviewsWifiOnly(enabled)
+                            },
                             hasSmsPermission = hasSmsPerm,
                             isDefaultSmsApp = isDefaultSms,
                             rationaleMessage = rationaleBannerText,
@@ -558,7 +622,7 @@ class MainActivity : ComponentActivity() {
                                             val cfg = WallpaperConfig(
                                                 preset = WallpaperPreset.DEFAULT,
                                                 customImageUri = null,
-                                                texture = mainWallpaper.texture
+                                                texture = mainWallpaper.texture,
                                             )
                                             mainWallpaper = cfg
                                             saveMainWallpaper(cfg)
@@ -667,8 +731,8 @@ class MainActivity : ComponentActivity() {
                         }
                         val contactKey = contactWallpaperKey(selectedThread.address)
                         val activeChatWallpaper = contactWallpapers[contactKey] ?: mainWallpaper
-                        val threadScheduledMessages = scheduledMessages.filter {
-                            it.threadId == selectedThread.id
+                        val threadScheduledMessages = scheduledMessages.filter { (_, threadId) ->
+                            threadId == selectedThread.id
                         }
 
                         ConversationDetailScreen(
@@ -680,6 +744,11 @@ class MainActivity : ComponentActivity() {
                                 bubbleZoomScale = newScale
                                 saveBubbleZoomScale(newScale)
                             },
+                            pinchToZoomEnabled = pinchToZoomEnabled,
+                            expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+                            autoPreviewsShowAll = autoPreviewsShowAll,
+                            autoPreviewsWebLinksOnly = autoPreviewsWebLinksOnly,
+                            autoPreviewsWifiOnly = autoPreviewsWifiOnly,
                             wallpaperConfig = activeChatWallpaper,
                             pendingAttachmentUri = pendingMmsUri,
                             availableContacts = availableContacts,
@@ -704,7 +773,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(
                                     this@MainActivity,
                                     locStrings.messageDeletedToast,
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_SHORT,
                                 ).show()
                             },
                             onCopyMessageText = { text ->
@@ -715,20 +784,20 @@ class MainActivity : ComponentActivity() {
                                     SmsMmsRepository.getOrCreateConversationWithRecipient(
                                         context = this@MainActivity,
                                         recipientAddress = recipientAddress,
-                                        preferredName = recipientName
+                                        preferredName = recipientName,
                                     )
                                 }
                                 val targetThreadId = SmsMmsRepository.sendMessage(
                                     context = this@MainActivity,
                                     recipientAddress = recipientAddress,
                                     rawBody = msgToForward.body,
-                                    attachmentUri = msgToForward.attachment?.uri
+                                    attachmentUri = msgToForward.attachment?.uri,
                                 )
                                 val locStrings = TxturaStrings.forLocale()
                                 Toast.makeText(
                                     this@MainActivity,
                                     locStrings.messageForwardedToast(recipientName ?: recipientAddress),
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_SHORT,
                                 ).show()
                                 activeThreadAddress = recipientAddress
                                 activeThreadId = targetThreadId
@@ -742,7 +811,7 @@ class MainActivity : ComponentActivity() {
                             onOpenContact = {
                                 openOrInsertContactSafely(
                                     phoneNumber = selectedThread.address,
-                                    displayName = selectedThread.contactName
+                                    displayName = selectedThread.contactName,
                                 )
                             },
                             onBlockContact = {
@@ -752,7 +821,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(
                                     this@MainActivity,
                                     locStrings.senderBlockedToast(blockedAddr),
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_SHORT,
                                 ).show()
                                 activeThreadId = null
                                 activeThreadAddress = null
@@ -770,16 +839,19 @@ class MainActivity : ComponentActivity() {
                             },
                             onPickMmsPhoto = {
                                 photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                                 )
                             },
                             onClearAttachment = { pendingMmsUri = null },
                             onSendMessage = { text, attachment ->
+                                if (inAppSoundsEnabled) {
+                                    SmsMmsRepository.playInAppMessageSentSound(this@MainActivity)
+                                }
                                 SmsMmsRepository.sendMessage(
                                     context = this@MainActivity,
                                     recipientAddress = selectedThread.address,
                                     rawBody = text,
-                                    attachmentUri = attachment
+                                    attachmentUri = attachment,
                                 )
                                 pendingMmsUri = null
                             },
@@ -790,7 +862,7 @@ class MainActivity : ComponentActivity() {
                                     recipientAddress = selectedThread.address,
                                     rawBody = text,
                                     attachmentUri = attachment,
-                                    scheduledAtMillis = scheduledAtMillis
+                                    scheduledAtMillis = scheduledAtMillis,
                                 )
                                 pendingMmsUri = null
                             },
@@ -818,7 +890,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onOpenThread = { id ->
                                 SmsMmsRepository.markThreadRead(this@MainActivity, id)
-                                activeThreadAddress = threads.find { it.id == id }?.address
+                                activeThreadAddress = threads.find { (tId) -> tId == id }?.address
                                 activeThreadId = id
                             },
                             onTogglePin = { id ->
@@ -840,7 +912,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(
                                     this@MainActivity,
                                     locStrings.threadsDeletedToast(threadIds.size),
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_SHORT,
                                 ).show()
                             },
                             onMarkSelectedThreadsRead = { threadIds ->
@@ -849,7 +921,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(
                                     this@MainActivity,
                                     locStrings.threadsMarkedReadToast(threadIds.size),
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_SHORT,
                                 ).show()
                             },
                             onCallSender = ::dialPhoneNumberSafely,
@@ -867,9 +939,9 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(
                                     this@MainActivity,
                                     locStrings.allMessagesMarkedReadToast,
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_SHORT,
                                 ).show()
-                            }
+                            },
                         ) { showSettingsScreen = true }
                     }
                 }
@@ -889,7 +961,7 @@ class MainActivity : ComponentActivity() {
                             val cfg = WallpaperConfig(
                                 preset = preset,
                                 customImageUri = null,
-                                texture = currentChatWp.texture
+                                texture = currentChatWp.texture,
                             )
                             val updated = contactWallpapers.toMutableMap().apply {
                                 put(contactKey, cfg)
@@ -925,24 +997,24 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Confirmation dialog before moving a message/conversation to Deleted Messages (Trash)
-                threadPendingDeleteConfirmation?.let { pendingDelete ->
+                threadPendingDeleteConfirmation?.let { (delId, delName) ->
                     ConfirmMoveToTrashDialog(
-                        contactName = pendingDelete.contactName,
+                        contactName = delName,
                         retentionDays = autoDeleteDays,
                         onConfirm = {
                             threadPendingDeleteConfirmation = null
                             SmsMmsRepository.moveThreadToTrash(
                                 context = this@MainActivity,
-                                threadId = pendingDelete.id,
-                                retentionDays = autoDeleteDays
+                                threadId = delId,
+                                retentionDays = autoDeleteDays,
                             )
                             val locStrings = TxturaStrings.forLocale()
                             Toast.makeText(
                                 this@MainActivity,
-                                locStrings.movedToTrashToast(pendingDelete.contactName),
-                                Toast.LENGTH_SHORT
+                                locStrings.movedToTrashToast(delName),
+                                Toast.LENGTH_SHORT,
                             ).show()
-                        }
+                        },
                     ) {
                         threadPendingDeleteConfirmation = null
                     }
@@ -958,9 +1030,12 @@ class MainActivity : ComponentActivity() {
                             val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                                 context = this@MainActivity,
                                 recipientAddress = recipient,
-                                preferredName = preferredName
+                                preferredName = preferredName,
                             )
                             if (prefilledBody.isNotBlank()) {
+                                if (inAppSoundsEnabled) {
+                                    SmsMmsRepository.playInAppMessageSentSound(this@MainActivity)
+                                }
                                 SmsMmsRepository.sendMessage(
                                     context = this@MainActivity,
                                     recipientAddress = recipient,
@@ -970,8 +1045,26 @@ class MainActivity : ComponentActivity() {
                             }
                             showNewMessageDialog = false
                             activeThreadId = threadId
+                        },
+                    ) { recipients, messageBody ->
+                        if (inAppSoundsEnabled) {
+                            SmsMmsRepository.playInAppMessageSentSound(this@MainActivity)
                         }
-                    )
+                        recipients.forEach { (_, address) ->
+                            SmsMmsRepository.sendMessage(
+                                context = this@MainActivity,
+                                recipientAddress = address,
+                                rawBody = messageBody
+                            )
+                        }
+                        val locStrings = TxturaStrings.forLocale()
+                        Toast.makeText(
+                            this@MainActivity,
+                            locStrings.broadcastMessagesSentToast(recipients.size),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        showNewMessageDialog = false
+                    }
                 }
 
                 // Prompt user to set Txtura as the Default SMS & MMS app whenever it is not currently default
@@ -981,10 +1074,9 @@ class MainActivity : ComponentActivity() {
                             showDefaultSmsRolePrompt = false
                             requestDefaultSmsRoleSafely()
                         },
-                        onDismiss = {
-                            showDefaultSmsRolePrompt = false
-                        }
-                    )
+                    ) {
+                        showDefaultSmsRolePrompt = false
+                    }
                 }
 
                 // Confirmation dialog before restoring conversations and settings from a backup
@@ -995,10 +1087,9 @@ class MainActivity : ComponentActivity() {
                             pendingRestorePayload = null
                             applyRestorePayload(restoreTarget)
                         },
-                        onDismiss = {
-                            pendingRestorePayload = null
-                        }
-                    )
+                    ) {
+                        pendingRestorePayload = null
+                    }
                 }
             }
         }
@@ -1063,6 +1154,13 @@ class MainActivity : ComponentActivity() {
         categoryOrder = ConversationFilter.deserializeOrder(prefs.getString(KEY_CATEGORY_ORDER, null))
         recallMessagesEnabled = prefs.getBoolean(KEY_RECALL_MESSAGES_ENABLED, true)
         identifyMaliciousWebsites = prefs.getBoolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, true)
+        inAppSoundsEnabled = prefs.getBoolean(KEY_IN_APP_SOUNDS_ENABLED, true)
+        pinchToZoomEnabled = prefs.getBoolean(KEY_PINCH_TO_ZOOM_ENABLED, true)
+        expressiveAnimationsEnabled = prefs.getBoolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, true)
+        bubblesEnabled = prefs.getBoolean(KEY_BUBBLES_ENABLED, true)
+        autoPreviewsShowAll = prefs.getBoolean(KEY_AUTO_PREVIEWS_SHOW_ALL, true)
+        autoPreviewsWebLinksOnly = prefs.getBoolean(KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY, false)
+        autoPreviewsWifiOnly = prefs.getBoolean(KEY_AUTO_PREVIEWS_WIFI_ONLY, false)
         MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled = identifyMaliciousWebsites
     }
 
@@ -1094,7 +1192,7 @@ class MainActivity : ComponentActivity() {
      */
     private suspend fun copyPickedWallpaperToInternalStorage(
         sourceUri: Uri,
-        targetKey: String
+        targetKey: String,
     ): Uri? = withContext(Dispatchers.IO) {
         try {
             val safeName = targetKey.replace(Regex("[^a-zA-Z0-9_-]"), "_")
@@ -1191,6 +1289,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun saveInAppSoundsEnabled(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_IN_APP_SOUNDS_ENABLED, enabled) }
+    }
+
+    private fun savePinchToZoomEnabled(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_PINCH_TO_ZOOM_ENABLED, enabled) }
+    }
+
+    private fun saveExpressiveAnimationsEnabled(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, enabled) }
+    }
+
+    private fun saveBubblesEnabled(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_BUBBLES_ENABLED, enabled) }
+    }
+
+    private fun saveAutoPreviewsShowAll(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_AUTO_PREVIEWS_SHOW_ALL, enabled) }
+    }
+
+    private fun saveAutoPreviewsWebLinksOnly(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY, enabled) }
+    }
+
+    private fun saveAutoPreviewsWifiOnly(enabled: Boolean) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_AUTO_PREVIEWS_WIFI_ONLY, enabled) }
+    }
+
     private fun buildAppSettingsSnapshot(): AppSettingsSnapshot {
         return AppSettingsSnapshot(
             themeMode = themeMode,
@@ -1207,7 +1333,21 @@ class MainActivity : ComponentActivity() {
             uiOpacity = uiOpacity,
             categoryOrder = categoryOrder,
             recallMessagesEnabled = recallMessagesEnabled,
-            identifyMaliciousWebsites = identifyMaliciousWebsites
+            identifyMaliciousWebsites = identifyMaliciousWebsites,
+            inAppSoundsEnabled = inAppSoundsEnabled,
+            pinchToZoomEnabled = pinchToZoomEnabled,
+            expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+            bubblesEnabled = bubblesEnabled,
+            autoPreviewsShowAll = autoPreviewsShowAll,
+            autoPreviewsWebLinksOnly = autoPreviewsWebLinksOnly,
+            autoPreviewsWifiOnly = autoPreviewsWifiOnly,
+            deliveryReportsEnabled = SmsMmsRepository.isDeliveryReportsEnabled(this),
+            mmsRequestReadReports = SmsMmsRepository.isMmsRequestReadReports(this),
+            mmsSendReadReports = SmsMmsRepository.isMmsSendReadReports(this),
+            mmsAutoRetrieve = SmsMmsRepository.getMmsAutoRetrieveMode(this),
+            mmsDataDisabledMode = SmsMmsRepository.getMmsDataDisabledMode(this),
+            mmsCreationMode = SmsMmsRepository.getMmsCreationMode(this),
+            smscNumber = SmsMmsRepository.getSmscAddress(this)
         )
     }
 
@@ -1238,7 +1378,7 @@ class MainActivity : ComponentActivity() {
                 pinnedMessageIds = pinnedMsgs,
                 highlightedMessageIds = highlightedMsgs,
                 blockedAddresses = blockedAddrs,
-                deletedThreadsMeta = deletedMeta
+                deletedThreadsMeta = deletedMeta,
             )
             val file = BackupManager.createInternalBackupFile(this@MainActivity, json)
             lastBackupTimestamp = System.currentTimeMillis()
@@ -1302,6 +1442,37 @@ class MainActivity : ComponentActivity() {
         MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled = identifyMaliciousWebsites
         saveIdentifyMaliciousWebsites(identifyMaliciousWebsites)
 
+        inAppSoundsEnabled = payload.settings.inAppSoundsEnabled
+        saveInAppSoundsEnabled(inAppSoundsEnabled)
+
+        pinchToZoomEnabled = payload.settings.pinchToZoomEnabled
+        savePinchToZoomEnabled(pinchToZoomEnabled)
+
+        expressiveAnimationsEnabled = payload.settings.expressiveAnimationsEnabled
+        saveExpressiveAnimationsEnabled(expressiveAnimationsEnabled)
+
+        bubblesEnabled = payload.settings.bubblesEnabled
+        saveBubblesEnabled(bubblesEnabled)
+
+        autoPreviewsShowAll = payload.settings.autoPreviewsShowAll
+        saveAutoPreviewsShowAll(autoPreviewsShowAll)
+
+        autoPreviewsWebLinksOnly = payload.settings.autoPreviewsWebLinksOnly
+        saveAutoPreviewsWebLinksOnly(autoPreviewsWebLinksOnly)
+
+        autoPreviewsWifiOnly = payload.settings.autoPreviewsWifiOnly
+        saveAutoPreviewsWifiOnly(autoPreviewsWifiOnly)
+
+        SmsMmsRepository.setDeliveryReportsEnabled(this, payload.settings.deliveryReportsEnabled)
+        SmsMmsRepository.setMmsRequestReadReports(this, payload.settings.mmsRequestReadReports)
+        SmsMmsRepository.setMmsSendReadReports(this, payload.settings.mmsSendReadReports)
+        SmsMmsRepository.setMmsAutoRetrieveMode(this, payload.settings.mmsAutoRetrieve)
+        SmsMmsRepository.setMmsDataDisabledMode(this, payload.settings.mmsDataDisabledMode)
+        SmsMmsRepository.setMmsCreationMode(this, payload.settings.mmsCreationMode)
+        if (payload.settings.smscNumber.isNotBlank()) {
+            SmsMmsRepository.setSmscAddress(this, payload.settings.smscNumber)
+        }
+
         lifecycleScope.launch {
             val (threadCount, msgCount) = SmsMmsRepository.restoreDataFromBackup(this@MainActivity, payload)
             val locStrings = TxturaStrings.forLocale()
@@ -1364,7 +1535,7 @@ class MainActivity : ComponentActivity() {
                 SmsMmsRepository.markThreadRead(this, resolvedId)
             } else if (notifThreadId > 0L) {
                 activeThreadId = notifThreadId
-                activeThreadAddress = SmsMmsRepository.threads.value.find { it.id == notifThreadId }?.address
+                activeThreadAddress = SmsMmsRepository.threads.value.find { (id) -> id == notifThreadId }?.address
                 SmsMmsRepository.markThreadRead(this, notifThreadId)
             }
             incoming.action = null
@@ -1382,7 +1553,7 @@ class MainActivity : ComponentActivity() {
             activeThreadAddress = prefilledRecipient
             val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                 context = this,
-                recipientAddress = prefilledRecipient
+                recipientAddress = prefilledRecipient,
             )
             activeThreadId = threadId
         } else {
@@ -1443,7 +1614,7 @@ class MainActivity : ComponentActivity() {
         try {
             val pickIntent = Intent(
                 Intent.ACTION_PICK,
-                ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
             )
             contactPhonePickerLauncher.launch(pickIntent)
         } catch (_: Exception) {
@@ -1455,11 +1626,11 @@ class MainActivity : ComponentActivity() {
     private fun rememberDynamicSmsPermissionState(tick: Int): Boolean {
         val read = ContextCompat.checkSelfPermission(
             this,
-            Manifest.permission.READ_SMS
+            Manifest.permission.READ_SMS,
         ) == PackageManager.PERMISSION_GRANTED
         val send = ContextCompat.checkSelfPermission(
             this,
-            Manifest.permission.SEND_SMS
+            Manifest.permission.SEND_SMS,
         ) == PackageManager.PERMISSION_GRANTED
         return (tick >= 0) && (read && send)
     }
@@ -1517,7 +1688,7 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(
                 this,
                 strings.setDefaultSmsInSystemToast,
-                Toast.LENGTH_SHORT
+                Toast.LENGTH_SHORT,
             ).show()
         }
     }
@@ -1571,8 +1742,7 @@ fun TxturaAmoledPreview() {
             onOpenContact = { _, _ -> },
             onCopyOtp = {},
             onOpenNewMessage = {},
-            onOpenSettings = {}
-        )
+        ) {}
     }
 }
 
@@ -1585,12 +1755,11 @@ fun TxturaSerbianPreview() {
             threads = threads,
             onOpenThread = {},
             onTogglePin = {},
-            onRequestDeleteThread = {},
+            onRequestDeleteThread = { _ -> },
             onCallSender = {},
             onOpenContact = { _, _ -> },
             onCopyOtp = {},
             onOpenNewMessage = {},
-            onOpenSettings = {}
-        )
+        ) {}
     }
 }

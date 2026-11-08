@@ -33,6 +33,12 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val notificationId = intent.getIntExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ID, -1)
 
         when (action) {
+            SmsMmsRepository.ACTION_SMS_DELIVERED -> {
+                val deliveredMsgId = intent.getLongExtra("message_id", -1L)
+                if (deliveredMsgId > 0L) {
+                    SmsMmsRepository.onMessageDelivered(deliveredMsgId)
+                }
+            }
             SmsMmsRepository.ACTION_NOTIFICATION_DIRECT_REPLY -> {
                 val remoteInputBundle = RemoteInput.getResultsFromIntent(intent)
                 val replyText = remoteInputBundle

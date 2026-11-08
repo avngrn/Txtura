@@ -1,4 +1,4 @@
-@file:Suppress("SpellCheckingInspection")
+@file:Suppress("SpellCheckingInspection", "DestructuringDeclaration", "TrailingComma")
 
 package com.txtura.security
 
@@ -98,7 +98,7 @@ object MessageSecurityAnalyzer {
         "paypal.com", "stripe.com", "revolut.com", "wise.com",
         "dhl.com", "fedex.com", "ups.com", "usps.com",
         "posta.rs", "mts.rs", "yettel.rs", "a1.rs", "euprava.gov.rs", "rts.rs", "n1info.rs",
-        "bbc.com", "bbc.co.uk", "cnn.com", "nytimes.com", "reuters.com"
+        "bbc.com", "bbc.co.uk", "cnn.com", "nytimes.com", "reuters.com",
     )
 
     // Global brands frequently impersonated in smishing (mapped to their official domains)
@@ -330,7 +330,7 @@ object MessageSecurityAnalyzer {
 
         val finalRisk = when {
             threatScore >= 3 -> SecurityRiskLevel.SUSPICIOUS
-            (threatScore in 1..2) -> SecurityRiskLevel.CAUTION
+            threatScore in 1..2 -> SecurityRiskLevel.CAUTION
             else -> SecurityRiskLevel.SAFE
         }
 
@@ -369,7 +369,9 @@ object MessageSecurityAnalyzer {
             standaloneDigitsRegex.findAll(body)
                 .map { it.value }
                 .firstOrNull { candidate ->
-                    candidate.length != 4 || candidate.toIntOrNull() !in 1990..2035
+                    val isNotFourDigits = candidate.length != 4
+                    val isNotRecentYear = candidate.toIntOrNull() !in 1990..2035
+                    isNotFourDigits || isNotRecentYear
                 }
                 ?.let { return it }
         }
@@ -496,10 +498,10 @@ object MessageSecurityAnalyzer {
             }
         }
 
-        val registeredDomain = if (hostParts.size >= 3 &&
-            hostParts[hostParts.size - 2] in setOf("co", "com", "org", "gov", "ac", "net") &&
-            hostParts.last().length == 2
-        ) {
+        val hasCountryCodeCctld = (hostParts.size >= 3) &&
+            (hostParts[hostParts.size - 2] in setOf("co", "com", "org", "gov", "ac", "net")) &&
+            (hostParts.last().length == 2)
+        val registeredDomain = if (hasCountryCodeCctld) {
             hostParts.takeLast(3).joinToString(".")
         } else {
             hostParts.takeLast(2).joinToString(".")
@@ -523,8 +525,8 @@ object MessageSecurityAnalyzer {
      */
     private fun hasHomographOrMixedScript(host: String): Boolean {
         if (host.contains("xn--")) return true
-        val hasLatin = host.any { it in 'a'..'z' }
-        val hasCyrillic = host.any { it in '\u0400'..'\u04FF' }
+        val hasLatin = host.any { ch -> ch in 'a'..'z' }
+        val hasCyrillic = host.any { ch -> ch in '\u0400'..'\u04FF' }
         return hasLatin && hasCyrillic
     }
 
@@ -906,4 +908,33 @@ object MessageSecurityAnalyzer {
             null
         }
     }
+
+    /**
+     * Extracts email addresses from an incoming SMS/MMS message body.
+     */
+    fun extractEmailAddresses(body: String): List<String> {
+        if (body.isBlank() || !body.contains('@')) return emptyList()
+        val pattern = Regex("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}")
+        return pattern.findAll(body).map { it.value.trim().trimEnd('.', ',', ';', ':') }.distinct().toList()
+    }
+
+    /**
+     * Extracts phone numbers from an incoming SMS/MMS message body, filtering out dates and short codes.
+     */
+    fun extractPhoneNumbers(body: String): List<String> {
+        if (body.isBlank()) return emptyList()
+        val pattern = Regex("(?:\\+|00)?[0-9][0-9\\s\\-()./]{5,18}[0-9]")
+        val datePattern = Regex("^\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4}$")
+        val matches = mutableListOf<String>()
+        for (match in pattern.findAll(body)) {
+            val raw = match.value.trim().trimEnd('.', ',', ';', ':', '!', '?', ')')
+            if (datePattern.matches(raw)) continue
+            val digits = raw.filter(Char::isDigit)
+            if (digits.length in 7..15) {
+                matches.add(raw)
+            }
+        }
+        return matches.distinct()
+    }
 }
+

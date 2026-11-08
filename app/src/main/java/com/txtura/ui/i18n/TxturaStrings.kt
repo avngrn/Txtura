@@ -1,4 +1,4 @@
-@file:Suppress("SpellCheckingInspection")
+@file:Suppress("SpellCheckingInspection", "unused")
 
 package com.txtura.ui.i18n
 
@@ -17,7 +17,7 @@ class AppStrings(val isSerbian: Boolean) {
     )
     val clearSearch: String = s("Clear search", "Obriši pretragu")
     val filterPeople: String = s("People", "Osobe")
-    val filterServices: String = s("Service Messages", "Servisne poruke")
+    val filterServices: String = s("Services", "Usluge")
     val filterUnread: String = s("Unread", "Nepročitano")
     val filterAll: String = s("All", "Sve")
     val newMessage: String = s("New Message", "Nova poruka")
@@ -42,6 +42,15 @@ class AppStrings(val isSerbian: Boolean) {
         "Odaberite poruke koje želite da otkačite",
     )
     val highlightedMessagesTitle: String = s("Highlighted", "Hajlajtovano")
+    val allHighlightedMessagesTitle: String = s("Highlighted Messages", "Hajlajtovane poruke")
+    val highlightedMessagesTooltip: String = s("Highlighted messages from all contacts", "Hajlajtovane poruke od svih kontakata")
+    val noHighlightedMessages: String = s("No highlighted messages yet", "Još uvek nema hajlajtovanih poruka")
+    val noHighlightedMessagesSub: String = s(
+        "Long-press any message in a chat and tap Highlight to save and view it here.",
+        "Dugo pritisnite poruku u razgovoru i odaberite Hajlajtuj da biste je videli ovde.",
+    )
+    val openInChatAction: String = s("Open in chat", "Otvori u razgovoru")
+    val unhighlightMessageAction: String = s("Unhighlight", "Otkaži hajlajt")
     val callSender: String = s("Call sender", "Pozovi pošiljaoca")
     val viewContactDetails: String = s("Contact details", "Podaci o kontaktu")
     val pickFromContacts: String = s("Pick contact", "Izaberi iz kontakata")
@@ -134,6 +143,18 @@ class AppStrings(val isSerbian: Boolean) {
     }
     val threadsMarkedReadToast: (Int) -> String = { count ->
         if (isSerbian) "Označeno kao pročitano: $count" else "Marked $count conversation(s) as read"
+    }
+    val messagesPinnedToast: (Int) -> String = { count ->
+        if (isSerbian) "Prikačeno poruka: $count" else "$count message(s) pinned"
+    }
+    val messagesUnpinnedToast: (Int) -> String = { count ->
+        if (isSerbian) "Otkačeno poruka: $count" else "$count message(s) unpinned"
+    }
+    val messagesHighlightedToast: (Int) -> String = { count ->
+        if (isSerbian) "Hajlajtovano poruka: $count" else "$count message(s) highlighted"
+    }
+    val messagesUnhighlightedToast: (Int) -> String = { count ->
+        if (isSerbian) "Uklonjen hajlajt za: $count" else "Highlight removed for $count"
     }
     val allMessagesMarkedReadToast: String = s(
         "All messages marked as read",
@@ -279,6 +300,151 @@ class AppStrings(val isSerbian: Boolean) {
     val defaultSmsPromptLater: String = s("Not now", "Ne sada")
     val showContactPhotosTitle: String = s("Show contact photos", "Prikaži slike kontakata")
     val layoutModeCompact: String = s("Compact messages view", "Kompaktni prikaz poruka")
+
+    // SMS & MMS Settings (Carrier, Delivery, Receipts, MMS, Alerts, SMSC, SIM)
+    val smsMmsSettingsSectionTitle: String = s("SMS and MMS settings", "SMS i MMS podešavanja")
+    val deliveryAndReceiptsSectionTitle: String = s("Delivery & receipts", "Isporuka i potvrde")
+    val mmsSectionTitle: String = s("Multimedia messages (MMS)", "Multimedijalne poruke (MMS)")
+    val soundAndAlertsSectionTitle: String = s("Sound & emergency alerts", "Tonovi i hitna upozorenja")
+    val simAndSmscSectionTitle: String = s("SIM card & SMS center", "SIM kartica i SMS centar")
+
+    // 1. Delivery Reports
+    val deliveryReportsTitle: String = s("Delivery reports", "Izveštaji o isporuci")
+    val deliveryReportsSub: String = s(
+        "Request a delivery report for each message you send",
+        "Zahtevajte izveštaj o isporuci za svaku poslatu poruku",
+    )
+    val deliveryReportsDisabled: String = s("Disabled", "Onemogućeno")
+    val deliveryReportsEnabled: String = s("Enabled", "Omogućeno")
+
+    // 2. Request read receipts
+    val requestReadReportsTitle: String = s("Request read receipts", "Zahtevaj potvrde o pročitanim porukama")
+    val requestReadReportsSub: String = s(
+        "Request a read report for each sent MMS message",
+        "Zahtevaj izveštaj o čitanju za svaku poslatu MMS poruku",
+    )
+
+    // 3. Send read receipts
+    val sendReadReportsTitle: String = s("Send read receipts", "Šalji potvrde pročitanoj poruci")
+    val sendReadReportsSub: String = s(
+        "Send a report that message was read if requested by MMS sender",
+        "Pošalji izveštaj da je poruka pročitana ako to zahteva pošiljalac MMS-a",
+    )
+
+    // 4. Auto-retrieve MMS
+    val mmsAutoRetrieveTitle: String = s("Auto-retrieve MMS", "Automatski preuzmi MMS")
+    val mmsAutoRetrieveNotRoaming: String = s("Not roaming", "Nije u romingu")
+    val mmsAutoRetrieveAlways: String = s("Always", "Uvek")
+    val mmsAutoRetrieveDisabled: String = s("Disabled", "Onemogućeno")
+
+    // 5. Download and send MMS
+    val mmsDataDisabledTitle: String = s("Download and send MMS", "Preuzmi i pošalji MMS")
+    val mmsDataDisabledSub: String = s(
+        "Download and send MMS messages even when mobile data is off",
+        "Preuzmi i pošalji MMS poruke čak i kada su mobilni podaci isključeni",
+    )
+    val mmsDataDisabledNotRoaming: String = s("Not during roaming", "Ne tokom rominga")
+    val mmsDataDisabledAlways: String = s("Always", "Uvek")
+    val mmsDataDisabledNever: String = s("Never", "Nikada")
+
+    // 6. Creation mode
+    val mmsCreationModeTitle: String = s("Creation mode", "Režim kreiranja")
+    val mmsCreationModeFree: String = s("Free", "Slobodno")
+    val mmsCreationModeWarning: String = s("Warning", "Upozorenje")
+    val mmsCreationModeRestricted: String = s("Restricted", "Ograničeno")
+
+    // 7. Wireless Emergency Alerts
+    val emergencyAlertsTitle: String = s("Wireless emergency alerts", "Upozorenja o hitnom slučaju")
+    val emergencyAlertsSub: String = s(
+        "Public safety alerts and emergency broadcast settings",
+        "Sistemska bezbednosna i hitna upozorenja preko mreže",
+    )
+
+    // 8. Message Tone
+    val messageToneTitle: String = s("Message tone", "Ton poruke")
+    val messageToneSub: String = s(
+        "Notification sound for incoming messages",
+        "Melodija i zvuk obaveštenja za poruke",
+    )
+
+    // 9. SMS Center Number (SMSC)
+    val smscNumberTitle: String = s("SMS center number", "Broj SMS centra")
+    val smscNumberSub: String = s(
+        "Service center address for SMS delivery",
+        "Broj servisnog centra mobilnog operatera",
+    )
+    val smscDialogTitle: String = s("SMS Center (SMSC)", "Broj SMS centra")
+    val smscDialogDesc: String = s(
+        "Service center phone number used by your mobile carrier to route text messages.",
+        "Broj SMS centra koji vaš mobilni operater koristi za prenos tekstualnih poruka.",
+    )
+    val smscNotSet: String = s("Default (System)", "Podrazumevano (Mreža)")
+    val smscSavedToast: String = s("SMS center updated", "Broj SMS centra je sačuvan")
+
+    // 10. Manage SIM Card Messages
+    val simMessagesTitle: String = s("Manage SIM card messages", "Upravljanje porukama SIM kartice")
+    val simMessagesSub: String = s(
+        "View and manage messages stored on SIM card",
+        "Pregledajte i upravljajte porukama sačuvanim na SIM kartici",
+    )
+    val simMessagesEmpty: String = s("No messages found on SIM card.", "Nema sačuvanih poruka na SIM kartici.")
+    val simMessagesLoading: String = s("Reading SIM card messages...", "Učitavanje poruka sa SIM kartice...")
+    val simMessageCopyInbox: String = s("Copy to Inbox", "Prebaci u sanduče")
+    val simMessageDelete: String = s("Delete from SIM", "Obriši sa SIM-a")
+    val simMessageCopiedToast: String = s("Message copied to inbox", "Poruka je kopirana u sanduče")
+    val simMessageDeletedToast: String = s("Message deleted from SIM", "Poruka je obrisana sa SIM kartice")
+
+    // In-app interaction & sound settings (Screenshot 1)
+    val inAppSoundsTitle: String = s("Hear outgoing and incoming message sounds", "Emituj zvuk za odlazne i dolazne poruke")
+    val inAppSoundsSub: String = s(
+        "Play sound effects while chatting when sending and receiving messages",
+        "Zvučni signali pri slanju i prijemu poruka unutar razgovora",
+    )
+    val pinchToZoomTitle: String = s("Pinch to zoom conversation text", "Uštinite da biste zumirali tekst konverzacije")
+    val pinchToZoomSub: String = s(
+        "Resize text in chat bubbles with a two-finger pinch gesture",
+        "Povećajte ili smanjite tekst u mehurićima širenjem ili skupljanjem prstiju",
+    )
+    val expressiveAnimationsTitle: String = s("Show expressive animations", "Prikaži izražajne animacije")
+    val expressiveAnimationsSub: String = s(
+        "Smooth bubble physics, transitions, and lively visual effects",
+        "Glatke animacije mehurića, prelaza i vizuelnih detalja",
+    )
+
+    // Bubbles (Screenshot 2)
+    val bubblesSectionTitle: String = s("Bubbles", "Mehurići")
+    val bubblesAllowTitle: String = s(
+        "Allow Txtura to display notifications as bubbles.",
+        "Dozvoli aplikaciji Txtura da prikazuje obaveštenja kao mehuriće.",
+    )
+    val bubblesInfoDesc: String = s(
+        "Some notifications and other content can appear as bubbles on the screen. To open a bubble, simply tap it. To dismiss a bubble, drag it down across the screen.",
+        "Neka obaveštenja i drugi sadržaj mogu da se prikažu kao mehurići na ekranu. Da biste otvorili mehurić, jednostavno ga dodirnite. Da biste odbacili mehurić, prevucite ga nadole preko ekrana.",
+    )
+    val bubblesOpenSystemSettings: String = s("Open system bubble settings", "Otvori sistemska podešavanja mehurića")
+
+    // External links & Automatic previews
+    val externalLinksTitle: String = s("External links", "Eksterni linkovi")
+    val externalLinksSub: String = s(
+        "Previews, rich media, and security threat protection for URLs",
+        "Pregledi sadržaja i bezbednosna provera internet linkova u porukama",
+    )
+    val autoPreviewsSectionTitle: String = s("Automatic previews", "Automatski pregledi")
+    val autoPreviewsShowAllTitle: String = s("Show all previews", "Prikazuj sve preglede")
+    val autoPreviewsShowAllSub: String = s(
+        "Automatically load link and attachment previews in conversations",
+        "Automatski učitavaj preglede linkova i priloga u razgovorima",
+    )
+    val autoPreviewsWebLinksOnlyTitle: String = s("Show only web link previews", "Prikazuj samo preglede veb-linkova")
+    val autoPreviewsWebLinksOnlySub: String = s(
+        "Load previews only for web URLs, excluding other rich media",
+        "Učitavaj preglede isključivo za veb-linkove (URL-ove)",
+    )
+    val autoPreviewsWifiOnlyTitle: String = s("Download data only over Wi-Fi", "Preuzimaj podatke samo preko WiFi-a")
+    val autoPreviewsWifiOnlySub: String = s(
+        "Download preview metadata and images only when connected to Wi-Fi",
+        "Preuzimaj podatke za pregled samo kada ste povezani na WiFi mrežu",
+    )
 
     // Swipe Gestures & Trash / Deleted Messages
     val swipeSectionTitle: String = s("Messages Actions", "Interakcije sa porukama")
@@ -543,9 +709,9 @@ class AppStrings(val isSerbian: Boolean) {
     // Chat Top-Right 3-Dots Menu & Block Contact Confirmation
     val moreOptionsTooltip: String = s("More options", "Više opcija")
     val toggleSenderCategoryOption: String = s("Change Sender Category", "Promeni kategoriju pošiljaoca")
-    val currentCategoryPeopleSub: String = s("Currently: People → Move to Services", "Trenutno: Osobe → Prebaci u Servisne poruke")
-    val currentCategoryServiceSub: String = s("Currently: Services → Move to People", "Trenutno: Servisne poruke → Prebaci u Osobe")
-    val senderMovedToServicesToast: String = s("Conversation moved to Service messages", "Razgovor prebačen u Servisne poruke")
+    val currentCategoryPeopleSub: String = s("Currently: People → Move to Services", "Trenutno: Osobe → Prebaci u Usluge")
+    val currentCategoryServiceSub: String = s("Currently: Services → Move to People", "Trenutno: Usluge → Prebaci u Osobe")
+    val senderMovedToServicesToast: String = s("Conversation moved to Services", "Razgovor prebačen u Usluge")
     val senderMovedToPeopleToast: String = s("Conversation moved to People", "Razgovor prebačen u Osobe")
     val blockContactOption: String = s("Block messages from this contact", "Blokiraj poruke od ovog kontakta")
     val confirmBlockContactTitle: String = s("Block this contact?", "Blokiraj kontakt?")
@@ -659,7 +825,7 @@ class AppStrings(val isSerbian: Boolean) {
     // App Update Checker (GitHub Releases)
     val updateSectionTitle: String = s("App Updates", "Ažuriranje aplikacije")
     val checkForUpdatesButton: String = s("Check for updates", "Proveri ažuriranja")
-    val checkingForUpdatesLabel: String = s("Checking for updates", "Provera ažuriranja")
+    val checkingForUpdatesLabel: String = s("Checking for updates...", "Proveravam ažuriranja...")
     val appUpToDateLabel: (String) -> String = { ver ->
         if (isSerbian) "Aplikacija je ažurna (v$ver)" else "App is up to date (v$ver)"
     }
@@ -676,8 +842,8 @@ class AppStrings(val isSerbian: Boolean) {
         if (isSerbian) "Poslednja provera: $timeStr" else "Last checked: $timeStr"
     }
     val updateNoInternetToast: String = s(
-        "No internet connection (Wi-Fi or mobile data required).",
-        "Nema internet konekcije (potreban je Wi-Fi ili mobilni podaci).",
+        "No internet connection.",
+        "Nema internet konekcije.",
     )
     val updateCheckFailedToast: String = s(
         "Could not reach GitHub Releases right now.",
@@ -687,6 +853,71 @@ class AppStrings(val isSerbian: Boolean) {
         "You already have the latest version of Txtura.",
         "Već koristiš najnoviju verziju aplikacije Txtura.",
     )
+    val changelogTooltip: String = s("Changelog & improvements", "Dnevnik izmena i poboljšanja")
+    val changelogDialogTitle: String = s("Changelog & Improvements", "Dnevnik izmena i poboljšanja")
+    val changelogCurrentVersionBadge: (String, Long) -> String = { vName, vCode ->
+        if (isSerbian) "Verzija $vName (Build $vCode) • Trenutna" else "Version $vName (Build $vCode) • Current"
+    }
+    val changelogAvailableUpdateBadge: (String) -> String = { tag ->
+        if (isSerbian) "Najnovije izdanje: $tag" else "Latest release: $tag"
+    }
+    val changelogPreviousVersionsHeader: String = s("Previous Versions History", "Istorija prethodnih verzija")
+
+    // Draft messages
+    val draftPrefix: String = s("[Draft]", "[Nacrt]")
+
+    // Scheduled message birthday midnight preset
+    val scheduleBirthdayMidnightChip: String = s("Midnight for Birthday (00:00)", "U ponoć za rođendan (00:00)")
+    val scheduleBirthdayMidnightApplied: String = s("Scheduled for midnight (00:00)", "Postavljeno za ponoć (00:00)")
+    val scheduleBirthdayDefaultGreeting: String = s("Happy Birthday! Wishing you all the best!", "Srećan rođendan! Sve najbolje od srca!")
+
+    // Multi-recipient broadcast messaging
+    val multiRecipientBadge: (Int) -> String = { count ->
+        if (isSerbian) "$count primalaca • Zasebni razgovori" else "$count recipients • Separate chats"
+    }
+    val sendToAllButton: (Int) -> String = { count ->
+        if (isSerbian) "Pošalji svima ($count)" else "Send to all ($count)"
+    }
+    val broadcastMessagesSentToast: (Int) -> String = { count ->
+        if (isSerbian) "Poruka poslata za $count primalaca u zasebnim četovima" else "Message sent to $count recipients in separate chats"
+    }
+    val addMoreRecipients: String = s("Add recipient", "Dodaj primaoca")
+    val broadcastSeparateNotice: String = s(
+        "Each recipient will receive this message in their own private 1-on-1 conversation.",
+        "Svaki primalac će primiti ovu poruku u sopstvenom privatnom 1-na-1 razgovoru.",
+    )
+    val sendToOtherContactsOption: String = s(
+        "Send to multiple recipients in separate chats",
+        "Pošalji i drugim kontaktima u zasebnim četovima",
+    )
+
+    // In-chat search
+    val searchInChatPlaceholder: String = s("Search messages in this chat...", "Pretraži poruke u ovom razgovoru...")
+    val searchMatchesCounter: (Int, Int) -> String = { curr, total -> "$curr/$total" }
+    val searchNoMatches: String = s("No matches", "Nema rezultata")
+    val searchChatTooltip: String = s("Search in chat", "Pretraži u razgovoru")
+    val closeSearchTooltip: String = s("Close search", "Zatvori pretragu")
+    val searchNextTooltip: String = s("Next match", "Sledeći rezultat")
+    val searchPrevTooltip: String = s("Previous match", "Prethodni rezultat")
+
+    // Contact sharing
+    val shareContactTooltip: String = s("Share contact (Name Phone)", "Pošalji kontakt (Ime prezime broj telefona)")
+    val shareContactDialogTitle: String = s("Select Contact to Share", "Izaberi kontakt za slanje")
+    val shareContactAddedToast: (String) -> String = { name ->
+        if (isSerbian) "Kontakt $name dodat u poruku" else "Contact $name added to message"
+    }
+    val pickFromPhonebookButton: String = s("Pick from device contacts", "Izaberi iz imenika telefona")
+
+    // Auto-detected email & phone numbers in received messages
+    val saveToContactsAction: String = s("Save to contacts", "Sačuvaj u kontakte")
+    val callNumberAction: String = s("Call number", "Pozovi broj")
+    val sendEmailAction: String = s("Send email", "Pošalji email")
+    val copyPhoneNumberAction: String = s("Copy phone number", "Kopiraj broj telefona")
+    val copyEmailAction: String = s("Copy email", "Kopiraj email adresu")
+    val phoneSavedToClipboardToast: String = s("Phone number copied to clipboard", "Broj telefona kopiran u privremenu memoriju")
+    val emailSavedToClipboardToast: String = s("Email copied to clipboard", "Email adresa kopirana u privremenu memoriju")
+    val detectedPhoneNumberLabel: String = s("Detected phone", "Prepoznat broj")
+    val detectedEmailLabel: String = s("Detected email", "Prepoznat email")
 }
 
 private val EnglishStrings = AppStrings(isSerbian = false)

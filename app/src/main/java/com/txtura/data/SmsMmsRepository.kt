@@ -1,4 +1,4 @@
-@file:Suppress("SpellCheckingInspection")
+@file:Suppress("SpellCheckingInspection", "DestructuringDeclaration", "TrailingComma", "ClarifyingParentheses")
 
 package com.txtura.data
 
@@ -17,6 +17,7 @@ import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
+import android.provider.Settings
 import android.provider.Telephony
 import android.telephony.PhoneNumberUtils
 import android.telephony.SmsManager
@@ -79,22 +80,32 @@ object SmsMmsRepository {
     private const val KEY_DELETED_THREADS = "deleted_threads_meta"
     private const val KEY_FORCED_SERVICE_ADDRS = "forced_service_addresses"
     private const val KEY_FORCED_PERSON_ADDRS = "forced_person_addresses"
+    const val KEY_DELIVERY_REPORTS_ENABLED = "delivery_reports_enabled"
+    const val KEY_MMS_REQUEST_READ_REPORTS = "mms_request_read_reports"
+    const val KEY_MMS_SEND_READ_REPORTS = "mms_send_read_reports"
+    const val KEY_MMS_AUTO_RETRIEVE = "mms_auto_retrieve"
+    const val KEY_MMS_DATA_DISABLED_MODE = "mms_data_disabled_mode"
+    const val KEY_MMS_CREATION_MODE = "mms_creation_mode"
+    const val KEY_SMSC_NUMBER = "smsc_number"
+
+    private val DEMO_THREAD_IDS = setOf(901L, 902L, 903L, 904L)
+    private val DEMO_ADDRESSES = setOf("+381641122334", "BANK-OTP", "DEXPRESS", "+381690009911")
 
     // Keeps track of pinned contact addresses, pinned message IDs, highlighted message IDs, and blocked senders
     private val pinnedAddresses: MutableSet<String> =
-        Collections.synchronizedSet(mutableSetOf("+381641122334", "BANK-OTP"))
+        Collections.synchronizedSet(mutableSetOf())
     private val pinnedMessageIds: MutableSet<Long> =
-        Collections.synchronizedSet(mutableSetOf(1L, 4L))
+        Collections.synchronizedSet(mutableSetOf())
     private val highlightedMessageIds: MutableSet<Long> =
         Collections.synchronizedSet(mutableSetOf())
     private val blockedAddresses: MutableSet<String> =
         Collections.synchronizedSet(mutableSetOf())
     private val forcedServiceAddresses: MutableSet<String> =
-        Collections.synchronizedSet(mutableSetOf("BANK-OTP", "DEXPRESS"))
+        Collections.synchronizedSet(mutableSetOf())
     private val forcedPersonAddresses: MutableSet<String> =
         Collections.synchronizedSet(mutableSetOf())
 
-    // Cached threads that were hidden because their sender was blocked (so unblocking can restore them in demo/memory mode)
+    // Cached threads that were hidden because their sender was blocked (so unblocking can restore them in memory mode)
     private val blockedThreadsCache: MutableMap<String, ConversationThread> =
         Collections.synchronizedMap(mutableMapOf())
 
@@ -102,7 +113,7 @@ object SmsMmsRepository {
     private val deletedThreadTimestamps: MutableMap<Long, Long> =
         Collections.synchronizedMap(mutableMapOf())
 
-    private val _threads = MutableStateFlow(createInitialDemoThreads())
+    private val _threads = MutableStateFlow<List<ConversationThread>>(emptyList())
     val threads: StateFlow<List<ConversationThread>> = _threads.asStateFlow()
 
     private val _deletedThreads = MutableStateFlow<List<DeletedConversationEntry>>(emptyList())
@@ -253,6 +264,7 @@ object SmsMmsRepository {
             vibrationPattern = longArrayOf(0L, 220L, 120L, 220L)
             setSound(defaultSoundUri, audioAttrs)
             setShowBadge(true)
+            setAllowBubbles(true)
         }
         nm.createNotificationChannel(channel)
     }
@@ -297,6 +309,26 @@ object SmsMmsRepository {
                 }
             }
         }
+
+        // Permanently purge any legacy demo threads/addresses from memory and persistent sets
+        val hadDemoPins = pinnedAddresses.removeAll(DEMO_ADDRESSES)
+        val hadDemoMsgs = pinnedMessageIds.removeAll(setOf(1L, 2L, 3L, 4L, 5L, 6L))
+        val hadDemoServices = forcedServiceAddresses.removeAll(DEMO_ADDRESSES)
+        var hadDemoDeleted = false
+        DEMO_THREAD_IDS.forEach { id ->
+            if (deletedThreadTimestamps.remove(id) != null) {
+                hadDemoDeleted = true
+            }
+        }
+        if (hadDemoPins || hadDemoMsgs || hadDemoServices || hadDemoDeleted) {
+            savePersistedPins(context)
+        }
+        _deletedThreads.update { trash ->
+            trash.filterNot { (thread) -> (thread.id in DEMO_THREAD_IDS) || (thread.address in DEMO_ADDRESSES) }
+        }
+        _threads.update { list ->
+            list.filterNot { (id, _, address) -> (id in DEMO_THREAD_IDS) || (address in DEMO_ADDRESSES) }
+        }
     }
 
     private fun savePersistedPins(context: Context) {
@@ -328,7 +360,7 @@ object SmsMmsRepository {
         return synchronized(blockedAddresses) {
             blockedAddresses.any { blocked ->
                 blocked.equals(clean, ignoreCase = true) ||
-                    normalizeAddressKey(blocked) == normKey ||
+                    (normalizeAddressKey(blocked) == normKey) ||
                     arePhoneNumbersEqual(blocked, clean)
             }
         }
@@ -342,20 +374,23 @@ object SmsMmsRepository {
         val clean = address.trim()
         val norm = normalizeAddressKey(clean)
         val isForcedPerson = synchronized(forcedPersonAddresses) {
-            clean in forcedPersonAddresses || (norm.isNotEmpty() && norm in forcedPersonAddresses)
+            (clean in forcedPersonAddresses) || (norm.isNotEmpty() && (norm in forcedPersonAddresses))
         }
         if (isForcedPerson) return false
 
         val isForcedService = synchronized(forcedServiceAddresses) {
-            clean in forcedServiceAddresses || (norm.isNotEmpty() && norm in forcedServiceAddresses)
+            (clean in forcedServiceAddresses) || (norm.isNotEmpty() && (norm in forcedServiceAddresses))
         }
         if (isForcedService) return true
 
         // Default heuristic:
         val cleanDigits = clean.filter { it.isDigit() }
-        return clean.any { it.isLetter() } ||
-            ((cleanDigits.length in 3..7) && !clean.startsWith("+")) ||
-            messages.any { it.securityAnalysis.extractedOtpCode != null }
+        val isAlphaSender = clean.any { it.isLetter() }
+        val inShortCodeLength = (cleanDigits.length in 3..7)
+        val isNotInternationalPlus = !clean.startsWith("+")
+        val isShortCode = inShortCodeLength && isNotInternationalPlus
+        val hasOtpMessage = messages.any { it.securityAnalysis.extractedOtpCode != null }
+        return isAlphaSender || isShortCode || hasOtpMessage
     }
 
     /**
@@ -468,6 +503,274 @@ object SmsMmsRepository {
         }
     }
 
+    // --- SMS & MMS Advanced System Settings ---
+
+    fun isDeliveryReportsEnabled(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_DELIVERY_REPORTS_ENABLED, false)
+    }
+
+    fun setDeliveryReportsEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putBoolean(KEY_DELIVERY_REPORTS_ENABLED, enabled)
+        }
+    }
+
+    fun isMmsRequestReadReports(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_MMS_REQUEST_READ_REPORTS, false)
+    }
+
+    fun setMmsRequestReadReports(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putBoolean(KEY_MMS_REQUEST_READ_REPORTS, enabled)
+        }
+    }
+
+    fun isMmsSendReadReports(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_MMS_SEND_READ_REPORTS, false)
+    }
+
+    fun setMmsSendReadReports(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putBoolean(KEY_MMS_SEND_READ_REPORTS, enabled)
+        }
+    }
+
+    fun getMmsAutoRetrieveMode(context: Context): MmsAutoRetrieveMode {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_MMS_AUTO_RETRIEVE, MmsAutoRetrieveMode.NOT_ROAMING.name)
+        return MmsAutoRetrieveMode.entries.find { it.name == raw } ?: MmsAutoRetrieveMode.NOT_ROAMING
+    }
+
+    fun setMmsAutoRetrieveMode(context: Context, mode: MmsAutoRetrieveMode) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putString(KEY_MMS_AUTO_RETRIEVE, mode.name)
+        }
+    }
+
+    fun getMmsDataDisabledMode(context: Context): MmsDataDisabledMode {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_MMS_DATA_DISABLED_MODE, MmsDataDisabledMode.NOT_ROAMING.name)
+        return MmsDataDisabledMode.entries.find { it.name == raw } ?: MmsDataDisabledMode.NOT_ROAMING
+    }
+
+    fun setMmsDataDisabledMode(context: Context, mode: MmsDataDisabledMode) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putString(KEY_MMS_DATA_DISABLED_MODE, mode.name)
+        }
+    }
+
+    fun getMmsCreationMode(context: Context): MmsCreationMode {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_MMS_CREATION_MODE, MmsCreationMode.FREE.name)
+        return MmsCreationMode.entries.find { it.name == raw } ?: MmsCreationMode.FREE
+    }
+
+    fun setMmsCreationMode(context: Context, mode: MmsCreationMode) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putString(KEY_MMS_CREATION_MODE, mode.name)
+        }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission", "HardwareIds")
+    fun getSmscAddress(context: Context): String {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_SMSC_NUMBER, null)
+        if (!saved.isNullOrBlank()) return saved
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val sm = context.getSystemService(SmsManager::class.java)
+                val smsc = sm?.smscAddress
+                if (!smsc.isNullOrBlank()) return smsc
+            } catch (_: Exception) { }
+        }
+        return ""
+    }
+
+    fun setSmscAddress(context: Context, address: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putString(KEY_SMSC_NUMBER, address.trim())
+        }
+    }
+
+    fun onMessageDelivered(messageId: Long) {
+        _threads.update { currentThreads ->
+            currentThreads.map { thread ->
+                if (thread.messages.any { it.id == messageId }) {
+                    thread.copy(
+                        messages = thread.messages.map { msg ->
+                            if (msg.id == messageId) msg.copy(status = DeliveryStatus.DELIVERED) else msg
+                        }
+                    )
+                } else {
+                    thread
+                }
+            }
+        }
+    }
+
+    fun openEmergencyAlerts(context: Context) {
+        val intents = listOf(
+            Intent("android.provider.Telephony.ACTION_MANAGE_EMERGENCY_ALERTS"),
+            Intent("android.settings.EMERGENCY_BROADCAST_SETTINGS"),
+            Intent(Settings.ACTION_WIRELESS_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS)
+        )
+        for (intent in intents) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+                return
+            } catch (_: Exception) { }
+        }
+    }
+
+    fun openMessageSoundSettings(context: Context) {
+        try {
+            val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                putExtra(Settings.EXTRA_CHANNEL_ID, CHANNEL_ID_MESSAGES)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            return
+        } catch (_: Exception) { }
+        try {
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_SOUND_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) { }
+        }
+    }
+
+    fun openSystemBubbleSettings(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val intent = Intent(Settings.ACTION_APP_NOTIFICATION_BUBBLE_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                return
+            } catch (_: Exception) { }
+        }
+        try {
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) { }
+    }
+
+    fun playInAppMessageSentSound(context: Context) {
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            audioManager?.playSoundEffect(android.media.AudioManager.FX_KEYPRESS_STANDARD, 0.75f)
+        } catch (_: Exception) {
+            try {
+                android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 65)
+                    .startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 70)
+            } catch (_: Exception) { }
+        }
+    }
+
+    fun playInAppMessageReceivedSound(context: Context) {
+        try {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val ringtone = RingtoneManager.getRingtone(context, uri)
+            ringtone?.play()
+        } catch (_: Exception) {
+            try {
+                android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 65)
+                    .startTone(android.media.ToneGenerator.TONE_PROP_ACK, 80)
+            } catch (_: Exception) { }
+        }
+    }
+
+    fun isWifiConnected(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return false
+            val activeNet = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(activeNet) ?: return false
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun getSimMessages(context: Context): List<SimCardMessage> {
+        val result = mutableListOf<SimCardMessage>()
+        try {
+            val uri = "content://sms/icc".toUri()
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val idIdx = cursor.getColumnIndex("_id").takeIf { it >= 0 }
+                    ?: cursor.getColumnIndex("index_on_icc").takeIf { it >= 0 }
+                    ?: 0
+                val addrIdx = cursor.getColumnIndex("address").takeIf { it >= 0 } ?: -1
+                val bodyIdx = cursor.getColumnIndex("body").takeIf { it >= 0 } ?: -1
+                val dateIdx = cursor.getColumnIndex("date").takeIf { it >= 0 } ?: -1
+
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idIdx)
+                    val addr = if (addrIdx >= 0) cursor.getString(addrIdx).orEmpty() else ""
+                    val rawBody = if (bodyIdx >= 0) cursor.getString(bodyIdx).orEmpty() else ""
+                    val cleanBody = MessageSecurityAnalyzer.sanitizeMessageText(rawBody)
+                    val date = if (dateIdx >= 0) cursor.getLong(dateIdx) else System.currentTimeMillis()
+                    result.add(SimCardMessage(id = id, address = addr, body = cleanBody, timestamp = date))
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed reading SIM card messages", e)
+        }
+        return result
+    }
+
+    fun deleteSimMessage(context: Context, simMessageId: Long): Boolean {
+        return try {
+            val uri = "content://sms/icc/$simMessageId".toUri()
+            val count = context.contentResolver.delete(uri, null, null)
+            count > 0
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed deleting SIM card message", e)
+            false
+        }
+    }
+
+    fun copySimMessageToInbox(context: Context, simMsg: SimCardMessage): Boolean {
+        return try {
+            persistMessageToSystemProviderIfDefault(
+                context = context,
+                address = simMsg.address,
+                body = simMsg.body,
+                timestampMillis = if (simMsg.timestamp > 0) simMsg.timestamp else System.currentTimeMillis(),
+                messageType = Telephony.Sms.MESSAGE_TYPE_INBOX,
+                read = 1
+            )
+            onIncomingMessageReceived(
+                context = context.applicationContext,
+                senderAddress = simMsg.address,
+                rawBody = simMsg.body,
+                isMms = false
+            )
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed copying SIM card message to inbox", e)
+            false
+        }
+    }
+
     /**
      * Loads the complete existing SMS and MMS history from Android's system Telephony provider.
      */
@@ -478,10 +781,7 @@ object SmsMmsRepository {
         loadPersistedPins(context)
         purgeExpiredDeletedThreads(context, retentionDays)
         if (!hasReadSmsPermission(context)) {
-            // Even in demo mode, filter out blocked senders
-            _threads.update { current ->
-                current.filterNot { isSenderBlocked(it.address) }
-            }
+            _threads.value = emptyList()
             return@withContext
         }
 
@@ -639,7 +939,7 @@ object SmsMmsRepository {
         }
 
         // Preserve in-memory conversations (or recently arrived/sent messages) not yet in Telephony DB
-        val previousInMemoryThreads = _threads.value.filter { it.id > 10L }
+        val previousInMemoryThreads = _threads.value.filterNot { it.id in DEMO_THREAD_IDS || it.address in DEMO_ADDRESSES }
         val mergedActiveList = activeList.asSequence().map { deviceThread ->
             val matchingInMemory = previousInMemoryThreads.find { prev ->
                 prev.id == deviceThread.id ||
@@ -681,13 +981,19 @@ object SmsMmsRepository {
             }
         }
 
-        _threads.value = sortThreads(mergedActiveList)
+        val draftsMap = getAllDrafts(context)
+        val activeWithDrafts = mergedActiveList.map { th ->
+            val draft = draftsMap[th.id]
+            if (!draft.isNullOrBlank()) th.copy(draftText = draft) else th
+        }
+        _threads.value = sortThreads(activeWithDrafts)
         _deletedThreads.update { existingTrash ->
             (existingTrash + trashedFromDevice)
                 .associateBy { it.thread.id }
                 .values
                 .asSequence()
                 .filter { it.thread.id in deletedThreadTimestamps }
+                .filterNot { it.thread.id in DEMO_THREAD_IDS || it.thread.address in DEMO_ADDRESSES }
                 .sortedByDescending { it.deletedAtMillis }
                 .toList()
         }
@@ -740,7 +1046,7 @@ object SmsMmsRepository {
                     val address = queryMmsAddressSafely(context, mmsId) ?: "Unknown"
                     val (mmsText, mmsAttachment) = queryMmsPartsSafely(context, mmsId)
                     val isSr = TxturaStrings.isSerbianLocale()
-                    val fallbackBody = if (isSr) "📸 MMS Poruka" else "📸 MMS Message"
+                    val fallbackBody = if (isSr) "MMS Poruka" else "MMS Message"
                     val cleanBody = MessageSecurityAnalyzer.sanitizeMessageText(
                         mmsText.ifBlank { fallbackBody }
                     )
@@ -1139,7 +1445,9 @@ object SmsMmsRepository {
         }
         val threadId = existingThread?.id ?: nextId.incrementAndGet()
 
-        var deliveryStatus = DeliveryStatus.SENT
+        val requestDeliveryReport = isDeliveryReportsEnabled(context)
+        val scAddress = getSmscAddress(context).takeIf { it.isNotBlank() }
+        var deliveryStatus = if (requestDeliveryReport) DeliveryStatus.SENT else DeliveryStatus.DELIVERED
 
         if (!isMms && cleanBody.isNotBlank() && hasSendSmsPermission(context)) {
             try {
@@ -1149,30 +1457,32 @@ object SmsMmsRepository {
                         setPackage(context.packageName)
                         putExtra("message_id", msgId)
                     }
-                    val deliveredIntent = Intent(ACTION_SMS_DELIVERED).apply {
-                        setPackage(context.packageName)
-                        putExtra("message_id", msgId)
-                    }
                     val sentPi = PendingIntent.getBroadcast(
                         context,
                         msgId.toInt(),
                         sentIntent,
                         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                     )
-                    val deliveredPi = PendingIntent.getBroadcast(
-                        context,
-                        (msgId + 1).toInt(),
-                        deliveredIntent,
-                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                    )
+                    val deliveredPi = if (requestDeliveryReport) {
+                        val deliveredIntent = Intent(ACTION_SMS_DELIVERED).apply {
+                            setPackage(context.packageName)
+                            putExtra("message_id", msgId)
+                        }
+                        PendingIntent.getBroadcast(
+                            context,
+                            (msgId + 1).toInt(),
+                            deliveredIntent,
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                        )
+                    } else null
 
                     val parts = smsManager.divideMessage(cleanBody)
                     if (parts.size > 1) {
                         val sentIntents = ArrayList(parts.map { sentPi })
-                        val deliveredIntents = ArrayList(parts.map { deliveredPi })
+                        val deliveredIntents = if (deliveredPi != null) ArrayList(parts.map { deliveredPi }) else null
                         smsManager.sendMultipartTextMessage(
                             cleanAddress,
-                            null,
+                            scAddress,
                             parts,
                             sentIntents,
                             deliveredIntents
@@ -1180,13 +1490,15 @@ object SmsMmsRepository {
                     } else {
                         smsManager.sendTextMessage(
                             cleanAddress,
-                            null,
+                            scAddress,
                             cleanBody,
                             sentPi,
                             deliveredPi
                         )
                     }
-                    deliveryStatus = DeliveryStatus.DELIVERED
+                    if (!requestDeliveryReport) {
+                        deliveryStatus = DeliveryStatus.DELIVERED
+                    }
 
                     persistMessageToSystemProviderIfDefault(
                         context = context,
@@ -1208,7 +1520,7 @@ object SmsMmsRepository {
 
         val resolvedContactName = resolveContactNameSafely(context, cleanAddress) ?: cleanAddress
         val resolvedPhotoUri = resolveContactPhotoUriSafely(context, cleanAddress)
-        val defaultMmsText = if (isSr) "📸 MMS Fotografija" else "📸 MMS Photo"
+        val defaultMmsText = if (isSr) "MMS Fotografija" else "MMS Photo"
 
         val newMessage = ChatMessage(
             id = msgId,
@@ -1453,23 +1765,19 @@ object SmsMmsRepository {
         }
 
         val isSr = TxturaStrings.isSerbianLocale()
-        val titleText = when (securityAnalysis.riskLevel) {
-            SecurityRiskLevel.SUSPICIOUS -> "⚠️ $senderName"
-            SecurityRiskLevel.CAUTION -> "🛡️ $senderName"
-            SecurityRiskLevel.SAFE -> senderName
-        }
+        val titleText = senderName
 
         val expandedBody = buildString {
             append(messageBody)
             securityAnalysis.extractedOtpCode?.let { otp ->
                 append("\n")
-                append(if (isSr) "🔑 Kod: $otp" else "🔑 Code: $otp")
+                append(if (isSr) "Kod: $otp" else "Code: $otp")
             }
             if (securityAnalysis.riskLevel == SecurityRiskLevel.SUSPICIOUS) {
                 append("\n")
                 append(
-                    if (isSr) "⚠️ Upozorenje: Mogući fišing ili rizičan link"
-                    else "⚠️ Warning: Potential phishing or risky link"
+                    if (isSr) "Upozorenje: Mogući fišing ili rizičan link"
+                    else "Warning: Potential phishing or risky link"
                 )
             }
         }
@@ -2067,155 +2375,48 @@ object SmsMmsRepository {
         }
     }
 
-    private fun createInitialDemoThreads(): List<ConversationThread> {
-        val now = System.currentTimeMillis()
-        val isSr = TxturaStrings.isSerbianLocale()
+    private const val PREFS_DRAFTS = "txtura_drafts_prefs"
 
-        val m1 = if (isSr) {
-            "Zdravo! Stižeš li večeras na kafu u 19h? Poslala sam ti i sliku novog studija 📸"
-        } else {
-            "Hey! Are you coming for coffee at 7 PM tonight? Sent you a photo of the new studio 📸"
-        }
-        val m2 = if (isSr) {
-            "Stižem sigurno! Izgleda odlično na slici, vidimo se u 19h."
-        } else {
-            "Definitely coming! Looks awesome in the photo, see you at 7 PM."
-        }
-        val m3 = if (isSr) {
-            "Super, čuvam mesto na terasi ✨"
-        } else {
-            "Great, saving a table on the terrace ✨"
-        }
+    fun getDraftForThread(context: Context, threadId: Long): String {
+        return context.getSharedPreferences(PREFS_DRAFTS, Context.MODE_PRIVATE)
+            .getString(threadId.toString(), "").orEmpty()
+    }
 
-        val bankMsg = if (isSr) {
-            "Vaš jednokratni verifikacioni kod je 849204 za prijavu na mobilno bankarstvo. Nikada ne delite ovaj kod."
-        } else {
-            "Your one-time verification code is 849204 for mobile banking sign-in. Never share this code."
+    fun saveDraftForThread(context: Context, threadId: Long, draftText: String) {
+        val clean = draftText.trimEnd()
+        context.getSharedPreferences(PREFS_DRAFTS, Context.MODE_PRIVATE).edit().apply {
+            if (clean.isBlank()) {
+                remove(threadId.toString())
+            } else {
+                putString(threadId.toString(), clean)
+            }
+            apply()
         }
-        val courierMsg = if (isSr) {
-            "Vaša pošiljka #RS-40912 biće isporučena danas između 14:00 i 16:00h. Kurir: Nikola (+381641234567)."
-        } else {
-            "Your parcel #TX-40912 will be delivered today between 2:00 PM and 4:00 PM. Courier: Alex (+381641234567)."
+        _threads.update { list ->
+            list.map { th ->
+                if (th.id == threadId) {
+                    th.copy(draftText = clean.ifBlank { null })
+                } else {
+                    th
+                }
+            }
         }
-        val phishingDemo = if (isSr) {
-            "HITNA UPLATA: Vaš nalog je suspendovan. Verifikujte karticu odmah na http://bit.ly/banka-verifikacija.xyz kako biste izbegli blokadu."
-        } else {
-            "URGENT PAYMENT: Your account is suspended. Verify your card immediately at http://bit.ly/bank-verify-now.xyz to avoid lock."
-        }
+    }
 
-        return listOf(
-            ConversationThread(
-                id = 901L,
-                contactName = "Milica Jovanović",
-                address = "+381641122334",
-                avatarInitials = "MJ",
-                avatarAccentColorHex = 0xFF00E5FF,
-                isPinned = true,
-                unreadCount = 1,
-                messages = listOf(
-                    ChatMessage(
-                        id = 1L,
-                        threadId = 901L,
-                        address = "+381641122334",
-                        body = m1,
-                        timestampMillis = now - 3_600_000L,
-                        isIncoming = true,
-                        type = MessageType.MMS,
-                        isPinned = true,
-                        attachment = MmsAttachment(
-                            uri = "content://com.txtura.demo/studio_photo".toUri(),
-                            mimeType = "image/jpeg",
-                            caption = "studio_interior_hdr.jpg (1.4 MB)"
-                        ),
-                        securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(m1)
-                    ),
-                    ChatMessage(
-                        id = 2L,
-                        threadId = 901L,
-                        address = "+381641122334",
-                        body = m2,
-                        timestampMillis = now - 1_800_000L,
-                        isIncoming = false,
-                        type = MessageType.SMS,
-                        status = DeliveryStatus.DELIVERED,
-                        securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(m2)
-                    ),
-                    ChatMessage(
-                        id = 3L,
-                        threadId = 901L,
-                        address = "+381641122334",
-                        body = m3,
-                        timestampMillis = now - 300_000L,
-                        isIncoming = true,
-                        type = MessageType.SMS,
-                        securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(m3)
-                    )
-                )
-            ),
-            ConversationThread(
-                id = 902L,
-                contactName = if (isSr) "Intesa / 2FA Kod" else "Bank / 2FA Code",
-                address = "BANK-OTP",
-                avatarInitials = "2FA",
-                avatarAccentColorHex = 0xFF10B981,
-                isPinned = true,
-                isService = true,
-                unreadCount = 1,
-                messages = listOf(
-                    ChatMessage(
-                        id = 4L,
-                        threadId = 902L,
-                        address = "BANK-OTP",
-                        body = bankMsg,
-                        timestampMillis = now - 900_000L,
-                        isIncoming = true,
-                        type = MessageType.SMS,
-                        isPinned = true,
-                        securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(bankMsg)
-                    )
-                )
-            ),
-            ConversationThread(
-                id = 903L,
-                contactName = if (isSr) "DExpress Kurir" else "Express Courier",
-                address = "DEXPRESS",
-                avatarInitials = "EC",
-                avatarAccentColorHex = 0xFF6366F1,
-                isService = true,
-                unreadCount = 0,
-                messages = listOf(
-                    ChatMessage(
-                        id = 5L,
-                        threadId = 903L,
-                        address = "DEXPRESS",
-                        body = courierMsg,
-                        timestampMillis = now - 7_200_000L,
-                        isIncoming = true,
-                        type = MessageType.SMS,
-                        securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(courierMsg)
-                    )
-                )
-            ),
-            ConversationThread(
-                id = 904L,
-                contactName = if (isSr) "+381690009911 (Spam Štit)" else "+381690009911 (Spam Shield)",
-                address = "+381690009911",
-                avatarInitials = "!",
-                avatarAccentColorHex = 0xFFF43F5E,
-                unreadCount = 0,
-                messages = listOf(
-                    ChatMessage(
-                        id = 6L,
-                        threadId = 904L,
-                        address = "+381690009911",
-                        body = phishingDemo,
-                        timestampMillis = now - 14_400_000L,
-                        isIncoming = true,
-                        type = MessageType.SMS,
-                        securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(phishingDemo)
-                    )
-                )
-            )
-        )
+    fun clearDraftForThread(context: Context, threadId: Long) {
+        saveDraftForThread(context, threadId, "")
+    }
+
+    fun getAllDrafts(context: Context): Map<Long, String> {
+        val all = context.getSharedPreferences(PREFS_DRAFTS, Context.MODE_PRIVATE).all
+        val result = mutableMapOf<Long, String>()
+        all.forEach { (key, value) ->
+            val id = key.toLongOrNull()
+            val str = value as? String
+            if (id != null && !str.isNullOrBlank()) {
+                result[id] = str
+            }
+        }
+        return result
     }
 }

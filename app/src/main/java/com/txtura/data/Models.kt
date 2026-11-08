@@ -1,3 +1,5 @@
+@file:Suppress("SpellCheckingInspection", "DestructuringDeclaration", "TrailingComma")
+
 package com.txtura.data
 
 import android.content.Context
@@ -39,6 +41,31 @@ enum class DeliveryStatus {
     DELIVERED,
     FAILED
 }
+
+enum class MmsAutoRetrieveMode {
+    NOT_ROAMING,
+    ALWAYS,
+    DISABLED
+}
+
+enum class MmsDataDisabledMode {
+    NOT_ROAMING,
+    ALWAYS,
+    NEVER
+}
+
+enum class MmsCreationMode {
+    FREE,
+    WARNING,
+    RESTRICTED
+}
+
+data class SimCardMessage(
+    val id: Long,
+    val address: String,
+    val body: String,
+    val timestamp: Long,
+)
 
 enum class ConversationFilter {
     PEOPLE,
@@ -286,7 +313,8 @@ data class ConversationThread(
     val messages: List<ChatMessage>,
     val unreadCount: Int = 0,
     val isPinned: Boolean = false,
-    val isService: Boolean = false
+    val isService: Boolean = false,
+    val draftText: String? = null
 ) {
     val lastMessage: ChatMessage? = messages.maxByOrNull(ChatMessage::timestampMillis)
 
@@ -350,6 +378,20 @@ data class AppSettingsSnapshot(
     val categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder,
     val recallMessagesEnabled: Boolean = true,
     val identifyMaliciousWebsites: Boolean = true,
+    val inAppSoundsEnabled: Boolean = true,
+    val pinchToZoomEnabled: Boolean = true,
+    val expressiveAnimationsEnabled: Boolean = true,
+    val bubblesEnabled: Boolean = true,
+    val autoPreviewsShowAll: Boolean = true,
+    val autoPreviewsWebLinksOnly: Boolean = false,
+    val autoPreviewsWifiOnly: Boolean = false,
+    val deliveryReportsEnabled: Boolean = false,
+    val mmsRequestReadReports: Boolean = false,
+    val mmsSendReadReports: Boolean = false,
+    val mmsAutoRetrieve: MmsAutoRetrieveMode = MmsAutoRetrieveMode.NOT_ROAMING,
+    val mmsDataDisabledMode: MmsDataDisabledMode = MmsDataDisabledMode.NOT_ROAMING,
+    val mmsCreationMode: MmsCreationMode = MmsCreationMode.FREE,
+    val smscNumber: String = "",
 )
 
 data class BackupRestorePayload(
@@ -442,6 +484,13 @@ object BackupManager {
         settingsObj.put("categoryOrder", ConversationFilter.serializeOrder(settings.categoryOrder))
         settingsObj.put("recallMessagesEnabled", settings.recallMessagesEnabled)
         settingsObj.put("identifyMaliciousWebsites", settings.identifyMaliciousWebsites)
+        settingsObj.put("inAppSoundsEnabled", settings.inAppSoundsEnabled)
+        settingsObj.put("pinchToZoomEnabled", settings.pinchToZoomEnabled)
+        settingsObj.put("expressiveAnimationsEnabled", settings.expressiveAnimationsEnabled)
+        settingsObj.put("bubblesEnabled", settings.bubblesEnabled)
+        settingsObj.put("autoPreviewsShowAll", settings.autoPreviewsShowAll)
+        settingsObj.put("autoPreviewsWebLinksOnly", settings.autoPreviewsWebLinksOnly)
+        settingsObj.put("autoPreviewsWifiOnly", settings.autoPreviewsWifiOnly)
 
         val contactWpObj = JSONObject()
         settings.contactWallpapers.forEach { (addr, wp) ->
@@ -482,10 +531,10 @@ object BackupManager {
 
         // 4. Deleted Threads (Trash)
         val deletedArray = JSONArray()
-        deletedThreads.forEach { entry ->
+        deletedThreads.forEach { (thread, deletedAtMillis) ->
             val entryObj = JSONObject()
-            entryObj.put("deletedAtMillis", entry.deletedAtMillis)
-            entryObj.put("thread", serializeThread(entry.thread))
+            entryObj.put("deletedAtMillis", deletedAtMillis)
+            entryObj.put("thread", serializeThread(thread))
             deletedArray.put(entryObj)
         }
         root.put("deletedThreads", deletedArray)
@@ -564,6 +613,13 @@ object BackupManager {
         val categoryOrder = ConversationFilter.deserializeOrder(settingsObj.optString("categoryOrder", ""))
         val recallMessagesEnabled = settingsObj.optBoolean("recallMessagesEnabled", true)
         val identifyMaliciousWebsites = settingsObj.optBoolean("identifyMaliciousWebsites", true)
+        val inAppSoundsEnabled = settingsObj.optBoolean("inAppSoundsEnabled", true)
+        val pinchToZoomEnabled = settingsObj.optBoolean("pinchToZoomEnabled", true)
+        val expressiveAnimationsEnabled = settingsObj.optBoolean("expressiveAnimationsEnabled", true)
+        val bubblesEnabled = settingsObj.optBoolean("bubblesEnabled", true)
+        val autoPreviewsShowAll = settingsObj.optBoolean("autoPreviewsShowAll", true)
+        val autoPreviewsWebLinksOnly = settingsObj.optBoolean("autoPreviewsWebLinksOnly", false)
+        val autoPreviewsWifiOnly = settingsObj.optBoolean("autoPreviewsWifiOnly", false)
 
         val contactWpMap = mutableMapOf<String, WallpaperConfig>()
         val contactWpObj = settingsObj.optJSONObject("contactWallpapers")
@@ -591,7 +647,14 @@ object BackupManager {
             uiOpacity = uiOpacity,
             categoryOrder = categoryOrder,
             recallMessagesEnabled = recallMessagesEnabled,
-            identifyMaliciousWebsites = identifyMaliciousWebsites
+            identifyMaliciousWebsites = identifyMaliciousWebsites,
+            inAppSoundsEnabled = inAppSoundsEnabled,
+            pinchToZoomEnabled = pinchToZoomEnabled,
+            expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+            bubblesEnabled = bubblesEnabled,
+            autoPreviewsShowAll = autoPreviewsShowAll,
+            autoPreviewsWebLinksOnly = autoPreviewsWebLinksOnly,
+            autoPreviewsWifiOnly = autoPreviewsWifiOnly,
         )
 
         // 2. Pins, Highlights, Blocked & Metadata

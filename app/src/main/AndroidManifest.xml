@@ -92,10 +92,14 @@
             </intent-filter>
         </service>
 
-        <!-- Internal BroadcastReceiver for Notification Direct Reply and 2FA Code Copy actions -->
+        <!-- Internal BroadcastReceiver for Notification Direct Reply, 2FA Code Copy, and SMS Delivery reports -->
         <receiver
             android:name=".telephony.NotificationActionReceiver"
-            android:exported="false" />
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.txtura.action.SMS_DELIVERED" />
+            </intent-filter>
+        </receiver>
 
         <!-- FileProvider for exporting/sharing local backup JSON files -->
         <provider

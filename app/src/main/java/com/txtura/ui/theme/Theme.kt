@@ -1,4 +1,4 @@
-@file:Suppress("SpellCheckingInspection")
+@file:Suppress("SpellCheckingInspection", "DestructuringDeclaration", "TrailingComma", "ClarifyingParentheses")
 
 package com.txtura.ui.theme
 
@@ -224,7 +224,7 @@ object WallpaperHarmonyEngine {
                 Color(
                     red = (fallbackR / totalPixels).coerceIn(0f, 1f),
                     green = (fallbackG / totalPixels).coerceIn(0f, 1f),
-                    blue = (fallbackB / totalPixels).coerceIn(0f, 1f)
+                    blue = (fallbackB / totalPixels).coerceIn(0f, 1f),
                 )
             }
             customImageColorCache[uriString] = extracted
@@ -347,7 +347,7 @@ object WallpaperHarmonyEngine {
     }
 
     private fun lerpFloat(start: Float, stop: Float, fraction: Float): Float {
-        return start + (stop - start) * fraction.coerceIn(0f, 1f)
+        return start + ((stop - start) * fraction.coerceIn(0f, 1f))
     }
 
     /**
@@ -369,7 +369,7 @@ object WallpaperHarmonyEngine {
         }
 
         // 1. Custom Gallery Photo Wallpaper -> compute true 180° & 145° split-complementary HSV palette
-        if (wallpaperConfig.isCustomGalleryImage && customDominantColor != null) {
+        if (wallpaperConfig.isCustomGalleryImage && (customDominantColor != null)) {
             val hsv = FloatArray(3)
             val argb = customDominantColor.toArgb()
             android.graphics.Color.RGBToHSV(
@@ -422,6 +422,7 @@ object WallpaperHarmonyEngine {
                 glassBorderBottom = customDominantColor.copy(alpha = if (isDark) 0.18f else 0.32f),
                 accentPrimary = accentPrimary,
                 accentSecondary = accentSecondary,
+                sendButtonColor = accentPrimary,
                 outgoingBubbleStart = bubbleStart,
                 outgoingBubbleEnd = bubbleEnd,
                 incomingBubbleSurface = tintedIncoming
@@ -451,7 +452,7 @@ object WallpaperHarmonyEngine {
                     accentSecondary = Color(0xFFD4D4D8),
                     dangerColor = RoseDanger,
                     safeColor = EmeraldSafe,
-                    sendButtonColor = SapphireAccent,
+                    sendButtonColor = Color.White,
                     outgoingBubbleStart = Color(0xFF27272A),
                     outgoingBubbleEnd = Color(0xFF18181B),
                     incomingBubbleSurface = Color(0xFF101012),
@@ -475,7 +476,7 @@ object WallpaperHarmonyEngine {
                     accentSecondary = Color(0xFFE2E8F0),
                     dangerColor = RoseDanger,
                     safeColor = EmeraldSafe,
-                    sendButtonColor = SapphireAccent,
+                    sendButtonColor = Color.White,
                     outgoingBubbleStart = Color(0xFF334155),
                     outgoingBubbleEnd = Color(0xFF1E293B),
                     incomingBubbleSurface = Color(0xFF242D3C),
@@ -503,7 +504,7 @@ object WallpaperHarmonyEngine {
                 accentSecondary = Color(0xFF3F3F46),
                 dangerColor = RoseDanger,
                 safeColor = EmeraldSafe,
-                sendButtonColor = IndigoRoyal,
+                sendButtonColor = Color.Black,
                 outgoingBubbleStart = Color(0xFFE4E4E7),
                 outgoingBubbleEnd = Color(0xFFD4D4D8),
                 incomingBubbleSurface = Color(0xFFF4F4F5),
@@ -513,7 +514,7 @@ object WallpaperHarmonyEngine {
             return applyOpacityMultiplier(adapted, uiOpacity, UiColorMode.MINIMALIST)
         }
 
-        val isMonochromeTheme = preset.isMonochrome || uiColorMode == UiColorMode.MONOCHROME
+        val isMonochromeTheme = preset.isMonochrome || (uiColorMode == UiColorMode.MONOCHROME)
 
         if (isMonochromeTheme) {
             val activeMonoPreset = if (preset.isMonochrome) preset else WallpaperPreset.MONO_SLATE
@@ -563,6 +564,7 @@ object WallpaperHarmonyEngine {
                 glassBorderBottom = singleAccent.copy(alpha = if (isDark) 0.18f else 0.22f),
                 accentPrimary = singleAccent,
                 accentSecondary = secondaryTone,
+                sendButtonColor = singleAccent,
                 outgoingBubbleStart = bubbleBase.copy(alpha = bubbleAlpha),
                 outgoingBubbleEnd = lerp(bubbleBase, Color.Black, 0.18f).copy(alpha = bubbleAlpha),
                 incomingBubbleSurface = monoIncoming
@@ -619,6 +621,7 @@ object WallpaperHarmonyEngine {
             glassBorderBottom = bgPrimary.copy(alpha = if (isDark) 0.22f else 0.32f),
             accentPrimary = compPrimary,
             accentSecondary = compSecondary,
+            sendButtonColor = compPrimary,
             outgoingBubbleStart = bubbleStart,
             outgoingBubbleEnd = bubbleEnd,
             incomingBubbleSurface = tintedIncoming
