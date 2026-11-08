@@ -7,6 +7,10 @@ import android.provider.Telephony
 import android.util.Log
 import com.txtura.data.SmsMmsRepository
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+
 /**
  * Required broadcast receiver for Default SMS Role (ROLE_SMS).
  * Protected in AndroidManifest.xml by android.permission.BROADCAST_SMS so only the
@@ -30,28 +34,35 @@ class SmsDeliverReceiver : BroadcastReceiver() {
             return
         }
 
-        try {
-            val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
-            if (messages.isNullOrEmpty()) return
+        val pendingResult = goAsync()
+        val appContext = context.applicationContext
 
-            val groupedBySender = messages.groupBy {
-                it.displayOriginatingAddress ?: it.originatingAddress ?: "Unknown"
-            }
-            for ((sender, parts) in groupedBySender) {
-                val fullBody = parts.joinToString(separator = "") {
-                    it.displayMessageBody ?: it.messageBody.orEmpty()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+                if (!messages.isNullOrEmpty()) {
+                    val groupedBySender = messages.groupBy {
+                        it.displayOriginatingAddress ?: it.originatingAddress ?: "Unknown"
+                    }
+                    for ((sender, parts) in groupedBySender) {
+                        val fullBody = parts.joinToString(separator = "") {
+                            it.displayMessageBody ?: it.messageBody.orEmpty()
+                        }
+                        if (fullBody.isNotBlank()) {
+                            SmsMmsRepository.onIncomingMessageReceived(
+                                context = appContext,
+                                senderAddress = sender,
+                                rawBody = fullBody,
+                                isMms = false,
+                            )
+                        }
+                    }
                 }
-                if (fullBody.isNotBlank()) {
-                    SmsMmsRepository.onIncomingMessageReceived(
-                        context = context.applicationContext,
-                        senderAddress = sender,
-                        rawBody = fullBody,
-                        isMms = false,
-                    )
-                }
+            } catch (e: Exception) {
+                Log.e("SmsDeliverReceiver", "Failed to parse incoming SMS PDU safely", e)
+            } finally {
+                pendingResult.finish()
             }
-        } catch (e: Exception) {
-            Log.e("SmsDeliverReceiver", "Failed to parse incoming SMS PDU safely", e)
         }
     }
 }

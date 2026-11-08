@@ -3,7 +3,9 @@
 package com.txtura.ui.components
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -36,7 +38,9 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -62,12 +66,14 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,7 +85,9 @@ import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
 import com.txtura.data.WallpaperTexture
+import com.txtura.ui.theme.LocalExpressiveAnimations
 import com.txtura.ui.theme.LocalGlassPalette
+import com.txtura.ui.theme.TxturaHaptics
 import com.txtura.ui.theme.WallpaperHarmonyEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -995,9 +1003,26 @@ fun GlassCard(
         )
     }
 
+    val isClickable = (onClick != null) || (onLongClick != null)
+    val resolvedSource = interactionSource ?: remember { MutableInteractionSource() }
+    val isPressed by resolvedSource.collectIsPressedAsState()
+    val isExpressive = LocalExpressiveAnimations.current
+
+    val pressScale by animateFloatAsState(
+        targetValue = if (isClickable && isPressed) 0.984f else 1.0f,
+        animationSpec = if (isExpressive) {
+            spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMedium
+            )
+        } else {
+            tween(durationMillis = 80)
+        },
+        label = "glassCardPressScale",
+    )
+
     val clickableModifier = when {
         (onClick != null) && (onLongClick != null) -> {
-            val resolvedSource = interactionSource ?: remember { MutableInteractionSource() }
             Modifier.combinedClickable(
                 interactionSource = resolvedSource,
                 indication = androidx.compose.foundation.LocalIndication.current,
@@ -1006,7 +1031,6 @@ fun GlassCard(
             )
         }
         onLongClick != null -> {
-            val resolvedSource = interactionSource ?: remember { MutableInteractionSource() }
             Modifier.combinedClickable(
                 interactionSource = resolvedSource,
                 indication = androidx.compose.foundation.LocalIndication.current,
@@ -1015,21 +1039,23 @@ fun GlassCard(
             )
         }
         onClick != null -> {
-            if (interactionSource != null) {
-                Modifier.clickable(
-                    interactionSource = interactionSource,
-                    indication = androidx.compose.foundation.LocalIndication.current,
-                    onClick = onClick,
-                )
-            } else {
-                Modifier.clickable(onClick = onClick)
-            }
+            Modifier.clickable(
+                interactionSource = resolvedSource,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                onClick = onClick,
+            )
         }
         else -> Modifier
     }
 
     Box(
         modifier = modifier
+            .graphicsLayer {
+                if (isClickable) {
+                    scaleX = pressScale
+                    scaleY = pressScale
+                }
+            }
             .clip(shape)
             .background(brush = surfaceBrush, shape = shape)
             .border(width = 1.dp, brush = borderBrush, shape = shape)
@@ -1050,14 +1076,46 @@ fun GlassIconButton(
     accentHighlight: Color? = null,
     size: Dp = 42.dp,
 ) {
+    val view = LocalView.current
+    val context = LocalContext.current
+    val isExpressive = LocalExpressiveAnimations.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val buttonScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.91f else 1.0f,
+        animationSpec = if (isExpressive) {
+            spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMedium
+            )
+        } else {
+            tween(durationMillis = 80)
+        },
+        label = "glassIconButtonScale",
+    )
+
     GlassCard(
-        modifier = modifier.size(size),
+        modifier = modifier
+            .size(size)
+            .graphicsLayer {
+                scaleX = buttonScale
+                scaleY = buttonScale
+            },
         shape = CircleShape,
         elevated = true,
         accentHighlight = accentHighlight,
         contentPadding = PaddingValues(0.dp),
-        onClick = onClick,
-        onLongClick = onLongClick,
+        interactionSource = interactionSource,
+        onClick = {
+            TxturaHaptics.click(view, context)
+            onClick()
+        },
+        onLongClick = onLongClick?.let { action ->
+            {
+                TxturaHaptics.longPress(view, context)
+                action()
+            }
+        },
     ) {
         Icon(
             imageVector = icon,
@@ -1083,10 +1141,13 @@ fun GlassModernSlider(
     tickFractions: List<Float> = listOf(0f, 0.25f, 0.5f, 0.75f, 1f),
 ) {
     val palette = LocalGlassPalette.current
+    val view = LocalView.current
+    val context = LocalContext.current
     val currentOnValueChange by rememberUpdatedState(onValueChange)
     val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0.0001f)
     val normalized = ((value - valueRange.start) / span).coerceIn(0f, 1f)
 
+    var lastHapticStep by remember { mutableIntStateOf(-1) }
     var isDragging by remember { mutableStateOf(value = false) }
     val thumbScale by animateFloatAsState(
         targetValue = if (isDragging) 1.18f else 1f,
@@ -1103,6 +1164,11 @@ fun GlassModernSlider(
                     val pad = 14.dp.toPx()
                     val usable = (size.width - pad * 2f).coerceAtLeast(1f)
                     val frac = ((offset.x - pad) / usable).coerceIn(0f, 1f)
+                    val step = (frac * 20f).toInt()
+                    if (step != lastHapticStep) {
+                        lastHapticStep = step
+                        TxturaHaptics.tick(view, context)
+                    }
                     currentOnValueChange(valueRange.start + frac * span)
                 }
             }
@@ -1113,6 +1179,11 @@ fun GlassModernSlider(
                         val pad = 14.dp.toPx()
                         val usable = (size.width - pad * 2f).coerceAtLeast(1f)
                         val frac = ((offset.x - pad) / usable).coerceIn(0f, 1f)
+                        val step = (frac * 20f).toInt()
+                        if (step != lastHapticStep) {
+                            lastHapticStep = step
+                            TxturaHaptics.tick(view, context)
+                        }
                         currentOnValueChange(valueRange.start + frac * span)
                     },
                     onDragEnd = { isDragging = false },
@@ -1122,6 +1193,11 @@ fun GlassModernSlider(
                     val pad = 14.dp.toPx()
                     val usable = (size.width - pad * 2f).coerceAtLeast(1f)
                     val frac = ((change.position.x - pad) / usable).coerceIn(0f, 1f)
+                    val step = (frac * 20f).toInt()
+                    if (step != lastHapticStep) {
+                        lastHapticStep = step
+                        TxturaHaptics.tick(view, context)
+                    }
                     currentOnValueChange(valueRange.start + frac * span)
                 }
             },
@@ -1254,6 +1330,31 @@ fun GlassAlertDialog(
         )
     }
 
+    val baseSurface = palette.popupContainerColor
+    val surfaceBrush = remember(baseSurface) {
+        Brush.linearGradient(
+            colors = listOf(
+                baseSurface,
+                baseSurface.copy(alpha = (baseSurface.alpha * 0.82f).coerceIn(0.04f, 0.98f)),
+            ),
+            start = Offset.Zero,
+            end = Offset(600f, 600f),
+        )
+    }
+
+    val isExpressive = LocalExpressiveAnimations.current
+    var isDialogVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { isDialogVisible = true }
+    val dialogScale by animateFloatAsState(
+        targetValue = if (isDialogVisible) 1.0f else 0.93f,
+        animationSpec = if (isExpressive) {
+            spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium)
+        } else {
+            tween(durationMillis = 100)
+        },
+        label = "glassDialogScale",
+    )
+
     AlertDialog(
         onDismissRequest = onDismissRequest,
         confirmButton = confirmButton,
@@ -1261,15 +1362,22 @@ fun GlassAlertDialog(
         title = title,
         text = text,
         shape = dialogShape,
-        containerColor = palette.popupContainerColor,
+        containerColor = Color.Transparent,
         titleContentColor = palette.textPrimary,
         textContentColor = palette.textSecondary,
         tonalElevation = 0.dp,
-        modifier = modifier.border(
-            width = 1.2.dp,
-            brush = borderBrush,
-            shape = dialogShape,
-        ),
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = dialogScale
+                scaleY = dialogScale
+            }
+            .clip(dialogShape)
+            .background(brush = surfaceBrush, shape = dialogShape)
+            .border(
+                width = 1.2.dp,
+                brush = borderBrush,
+                shape = dialogShape,
+            ),
     )
 }
 
@@ -1340,17 +1448,38 @@ fun GlassTooltipIconButton(
             )
         }
 
+        val view = LocalView.current
+        val context = LocalContext.current
+        val isExpressive = LocalExpressiveAnimations.current
+        val buttonScale by animateFloatAsState(
+            targetValue = if (isPressed) 0.91f else 1.0f,
+            animationSpec = if (isExpressive) {
+                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+            } else {
+                tween(durationMillis = 80)
+            },
+            label = "glassTooltipButtonScale",
+        )
+
         Box(
             modifier = modifier
                 .size(size)
+                .graphicsLayer {
+                    scaleX = buttonScale
+                    scaleY = buttonScale
+                }
                 .clip(CircleShape)
                 .background(brush = surfaceBrush, shape = CircleShape)
                 .border(width = 1.dp, brush = borderBrush, shape = CircleShape)
                 .combinedClickable(
                     interactionSource = interactionSource,
                     indication = androidx.compose.foundation.LocalIndication.current,
-                    onClick = onClick,
+                    onClick = {
+                        TxturaHaptics.click(view, context)
+                        onClick()
+                    },
                     onLongClick = {
+                        TxturaHaptics.tick(view, context)
                         scope.launch { tooltipState.show() }
                     },
                 ),
@@ -1824,6 +1953,32 @@ object TxturaIcons {
             }
         }.build()
 
+    val CreditCard: ImageVector by lazy {
+        ImageVector.Builder("CreditCard", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(3f, 6f)
+                lineTo(21f, 6f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 23f, 8f)
+                lineTo(23f, 18f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 21f, 20f)
+                lineTo(3f, 20f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 1f, 18f)
+                lineTo(1f, 8f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 3f, 6f)
+                close()
+                moveTo(1f, 10f)
+                lineTo(23f, 10f)
+                moveTo(5f, 15f)
+                lineTo(9f, 15f)
+            }
+        }.build()
+    }
+
     val CopyKey: ImageVector by lazy {
         ImageVector.Builder("CopyKey", 24.dp, 24.dp, 24f, 24f).apply {
             path(
@@ -2037,6 +2192,37 @@ object TxturaIcons {
     }
 
     /**
+     * Multiple Contacts / Users icon for multi-recipient broadcast sending.
+     */
+    val MultipleContacts: ImageVector by lazy {
+        ImageVector.Builder("MultipleContacts", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // Primary person
+                moveTo(17f, 21f)
+                lineTo(17f, 19f)
+                arcTo(horizontalEllipseRadius = 4f, verticalEllipseRadius = 4f, theta = 0f, isMoreThanHalf = false, isPositiveArc = false, x1 = 13f, y1 = 15f)
+                lineTo(7f, 15f)
+                arcTo(horizontalEllipseRadius = 4f, verticalEllipseRadius = 4f, theta = 0f, isMoreThanHalf = false, isPositiveArc = false, x1 = 3f, y1 = 19f)
+                lineTo(3f, 21f)
+                moveTo(10f, 11f)
+                arcTo(horizontalEllipseRadius = 4f, verticalEllipseRadius = 4f, theta = 0f, isMoreThanHalf = true, isPositiveArc = true, x1 = 10f, y1 = 3f)
+                arcTo(horizontalEllipseRadius = 4f, verticalEllipseRadius = 4f, theta = 0f, isMoreThanHalf = true, isPositiveArc = true, x1 = 10f, y1 = 11f)
+                // Secondary person behind
+                moveTo(21f, 21f)
+                lineTo(21f, 19f)
+                arcTo(horizontalEllipseRadius = 4f, verticalEllipseRadius = 4f, theta = 0f, isMoreThanHalf = false, isPositiveArc = false, x1 = 18f, y1 = 15.5f)
+                moveTo(16f, 3.13f)
+                arcTo(horizontalEllipseRadius = 4f, verticalEllipseRadius = 4f, theta = 0f, isMoreThanHalf = false, isPositiveArc = true, x1 = 16f, y1 = 10.87f)
+            }
+        }.build()
+    }
+
+    /**
      * Restore / Undo arrow icon for restoring messages from Deleted Messages (Trash).
      */
     val Restore: ImageVector by lazy {
@@ -2094,6 +2280,21 @@ object TxturaIcons {
                 moveTo(9f, 6f)
                 lineTo(15f, 12f)
                 lineTo(9f, 18f)
+            }
+        }.build()
+    }
+
+    val ChevronDown: ImageVector by lazy {
+        ImageVector.Builder("ChevronDown", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2.2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(6f, 9f)
+                lineTo(12f, 15f)
+                lineTo(18f, 9f)
             }
         }.build()
     }

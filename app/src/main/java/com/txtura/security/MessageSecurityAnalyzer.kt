@@ -40,6 +40,17 @@ data class DetectedSafeLink(
     val browserUrl: String,
 )
 
+data class DetectedBankAccount(
+    val rawText: String,
+    val formattedAccountNumber: String,
+    val standardDigits: String,
+    val bankName: String?,
+    val isIban: Boolean = false,
+) {
+    val accountNumber: String get() = formattedAccountNumber
+    val formattedNumber: String get() = formattedAccountNumber
+}
+
 /**
  * Multi-layer on-device SMS/MMS Threat & Phishing Intelligence Engine:
  * Inspired by OWASP Phishing/URL Heuristics, Google Safe Browsing URL canonicalization,
@@ -660,7 +671,7 @@ object MessageSecurityAnalyzer {
 
             val encodedName = URLEncoder.encode(asciiHost, "UTF-8")
             val endpoint = URL("https://security.cloudflare-dns.com/dns-query?name=$encodedName&type=A")
-            val conn = (endpoint.openConnection() as? HttpURLConnection) ?: return false
+            val conn = (AppSecurityManager.openSecureConnection(endpoint) as? HttpURLConnection) ?: return false
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/dns-json")
             conn.connectTimeout = 3500
@@ -718,7 +729,7 @@ object MessageSecurityAnalyzer {
         while (hops < 4) {
             hops++
             val conn = try {
-                (URL(currentUrlStr).openConnection() as? HttpURLConnection)
+                (AppSecurityManager.openSecureConnection(URL(currentUrlStr)) as? HttpURLConnection)
             } catch (_: Exception) {
                 null
             } ?: break
@@ -935,6 +946,120 @@ object MessageSecurityAnalyzer {
             }
         }
         return matches.distinct()
+    }
+
+    val SERBIAN_BANKS = mapOf(
+        "105" to "AIK Banka",
+        "115" to "Yettel Bank",
+        "145" to "Expobank",
+        "150" to "Eurobank Direktna",
+        "155" to "Halkbank",
+        "160" to "Banca Intesa",
+        "165" to "Addiko Bank",
+        "170" to "UniCredit Bank",
+        "190" to "ALTA Banka",
+        "200" to "Banka Poštanska štedionica",
+        "205" to "NLB Komercijalna Banka",
+        "220" to "ProCredit Bank",
+        "250" to "Eurobank",
+        "265" to "Raiffeisen Banka",
+        "295" to "Srpska Banka",
+        "325" to "OTP Banka",
+        "340" to "Erste Bank",
+        "370" to "3 Banka",
+        "375" to "API Bank",
+        "380" to "ProCredit Bank",
+        "385" to "Mirabank",
+        "840" to "Uprava za trezor",
+        "908" to "Narodna banka Srbije"
+    )
+
+    /**
+     * Extracts and validates domestic Serbian bank accounts (18 digits, Modulo 97 verified)
+     * as well as IBAN formatted accounts from message text.
+     */
+    fun extractBankAccounts(body: String): List<DetectedBankAccount> {
+        if (body.isBlank()) return emptyList()
+        val results = mutableListOf<DetectedBankAccount>()
+
+        // 1. Serbian IBAN format: RS35... (22 chars)
+        val ibanPattern = Regex("\\b(RS\\s*[0-9]{2}\\s*[0-9\\s]{16,20})\\b", RegexOption.IGNORE_CASE)
+        for (match in ibanPattern.findAll(body)) {
+            val raw = match.value.trim()
+            val digitsOnly = raw.filter(Char::isDigit)
+            if (digitsOnly.length == 20) {
+                val fullIban = "RS$digitsOnly"
+                val bankCode = fullIban.substring(4, 7)
+                val bankName = SERBIAN_BANKS[bankCode]
+                results.add(
+                    DetectedBankAccount(
+                        rawText = raw,
+                        formattedAccountNumber = fullIban,
+                        standardDigits = fullIban,
+                        bankName = bankName,
+                        isIban = true
+                    )
+                )
+            }
+        }
+
+        // 2. Domestic Serbian bank accounts: 3 digits - 1 to 13 digits - 2 digits
+        // e.g. 160-555555-55, 160-0000000555555-55, 265-1100300-22
+        val domesticHyphenPattern = Regex("\\b([0-9]{3})\\s*-\\s*([0-9]{1,13})\\s*-\\s*([0-9]{2})\\b")
+        for (match in domesticHyphenPattern.findAll(body)) {
+            val bankCode = match.groupValues[1]
+            val accPart = match.groupValues[2]
+            val ctrlPart = match.groupValues[3]
+
+            val paddedAcc = accPart.padStart(13, '0')
+            val full18 = "$bankCode$paddedAcc$ctrlPart"
+            if (isValidModulo97(full18)) {
+                val bankName = SERBIAN_BANKS[bankCode]
+                results.add(
+                    DetectedBankAccount(
+                        rawText = match.value.trim(),
+                        formattedAccountNumber = "$bankCode-$paddedAcc-$ctrlPart",
+                        standardDigits = full18,
+                        bankName = bankName,
+                        isIban = false
+                    )
+                )
+            }
+        }
+
+        // 3. Continuous 18-digit accounts: e.g. 16000000055555555
+        val continuousPattern = Regex("\\b([0-9]{18})\\b")
+        for (match in continuousPattern.findAll(body)) {
+            val candidate = match.value
+            val bankCode = candidate.substring(0, 3)
+            if (SERBIAN_BANKS.containsKey(bankCode) && isValidModulo97(candidate)) {
+                val bankName = SERBIAN_BANKS[bankCode]
+                val formatted = "${candidate.substring(0, 3)}-${candidate.substring(3, 16)}-${candidate.substring(16, 18)}"
+                if (results.none { it.standardDigits == candidate }) {
+                    results.add(
+                        DetectedBankAccount(
+                            rawText = candidate,
+                            formattedAccountNumber = formatted,
+                            standardDigits = candidate,
+                            bankName = bankName,
+                            isIban = false
+                        )
+                    )
+                }
+            }
+        }
+
+        return results.distinctBy { it.standardDigits }
+    }
+
+    private fun isValidModulo97(eighteenDigits: String): Boolean {
+        if (eighteenDigits.length != 18 || !eighteenDigits.all(Char::isDigit)) return false
+        var remainder = 0
+        for (i in 0 until 18) {
+            val digit = eighteenDigits[i] - '0'
+            remainder = (remainder * 10 + digit) % 97
+        }
+        return remainder == 1
     }
 }
 

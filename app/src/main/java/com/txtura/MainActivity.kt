@@ -3,6 +3,7 @@
 package com.txtura
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.app.role.RoleManager
 import android.content.ClipData
 import android.content.ClipDescription
@@ -19,6 +20,7 @@ import android.os.PersistableBundle
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.provider.Telephony
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -26,6 +28,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -58,17 +69,25 @@ import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
 import com.txtura.data.WallpaperTexture
+import com.txtura.security.AppSecurityManager
+import com.txtura.security.DeviceKeyMismatchException
 import com.txtura.security.MessageSecurityAnalyzer
+import com.txtura.security.SecurityCryptoManager
+import com.txtura.telephony.EmergencyAlertManager
 import com.txtura.ui.i18n.TxturaStrings
+import com.txtura.ui.screens.AppLockScreen
 import com.txtura.ui.screens.ConfirmMoveToTrashDialog
 import com.txtura.ui.screens.ConfirmRestoreDialog
 import com.txtura.ui.screens.ConversationDetailScreen
 import com.txtura.ui.screens.ConversationsListScreen
+import com.txtura.ui.screens.CreateEncryptedBackupDialog
 import com.txtura.ui.screens.DefaultSmsRolePromptDialog
 import com.txtura.ui.screens.DeletedMessagesScreen
 import com.txtura.ui.screens.NewMessageDialog
+import com.txtura.ui.screens.RestoreEncryptedBackupPasswordDialog
 import com.txtura.ui.screens.SettingsScreen
 import com.txtura.ui.screens.WallpaperPickerDialog
+import com.txtura.ui.theme.TxturaHaptics
 import com.txtura.ui.theme.TxturaTheme
 import com.txtura.ui.theme.TxturaThemeMode
 import java.io.File
@@ -78,6 +97,13 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private enum class MainAppScreen {
+    DELETED_MESSAGES,
+    SETTINGS,
+    CONVERSATION_DETAIL,
+    CONVERSATIONS_LIST
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -102,6 +128,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_IN_APP_SOUNDS_ENABLED = "in_app_sounds_enabled"
         private const val KEY_PINCH_TO_ZOOM_ENABLED = "pinch_to_zoom_enabled"
         private const val KEY_EXPRESSIVE_ANIMATIONS_ENABLED = "expressive_animations_enabled"
+        private const val KEY_HAPTICS_ENABLED = "haptics_enabled"
         private const val KEY_BUBBLES_ENABLED = "bubbles_enabled"
         private const val KEY_AUTO_PREVIEWS_SHOW_ALL = "auto_previews_show_all"
         private const val KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY = "auto_previews_web_links_only"
@@ -127,6 +154,7 @@ class MainActivity : ComponentActivity() {
     private var inAppSoundsEnabled by mutableStateOf(value = true)
     private var pinchToZoomEnabled by mutableStateOf(value = true)
     private var expressiveAnimationsEnabled by mutableStateOf(value = true)
+    private var hapticsEnabled by mutableStateOf(value = true)
     private var bubblesEnabled by mutableStateOf(value = true)
     private var autoPreviewsShowAll by mutableStateOf(value = true)
     private var autoPreviewsWebLinksOnly by mutableStateOf(value = false)
@@ -134,10 +162,15 @@ class MainActivity : ComponentActivity() {
 
     private var lastBackupTimestamp by mutableLongStateOf(0L)
     private var pendingRestorePayload by mutableStateOf<BackupRestorePayload?>(null)
+    private var pendingBackupPassword by mutableStateOf<String?>(null)
+    private var showCreateBackupDialog by mutableStateOf(false)
+    private var pendingEncryptedBackupContent by mutableStateOf<String?>(null)
+    private var showRestorePasswordPrompt by mutableStateOf(false)
 
     private var activeThreadId by mutableStateOf<Long?>(null)
     private var activeThreadAddress by mutableStateOf<String?>(null)
     private var showSettingsScreen by mutableStateOf(value = false)
+    private var focusUpdateSectionOnSettings by mutableStateOf(value = false)
     private var showDeletedMessagesScreen by mutableStateOf(value = false)
     private var showChatWallpaperDialogForThread by mutableStateOf<ConversationThread?>(null)
     private var wallpaperGalleryTargetKey by mutableStateOf<String?>(null)
@@ -149,6 +182,8 @@ class MainActivity : ComponentActivity() {
     private var prefilledBody by mutableStateOf("")
     private var rationaleBannerText by mutableStateOf<String?>(null)
     private var permissionRefreshTick by mutableIntStateOf(0)
+    private var isAppLocked by mutableStateOf(false)
+    private var lastPauseTimestamp by mutableLongStateOf(0L)
 
     private val requiredSmsPermissions: Array<String>
         get() = buildList {
@@ -161,6 +196,14 @@ class MainActivity : ComponentActivity() {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }.toTypedArray()
+
+    // Keyguard / Biometric / Device PIN Authentication Launcher
+    private val confirmCredentialsLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                isAppLocked = false
+            }
+        }
 
     // 3-State Runtime Permission Launcher (Check -> Rationale -> Launch -> Settings on permanent denial)
     private val smsPermissionLauncher =
@@ -193,9 +236,17 @@ class MainActivity : ComponentActivity() {
         }
 
     // Zero-Permission Photo Picker for MMS attachments (avoids READ_MEDIA_IMAGES / READ_EXTERNAL_STORAGE)
+    // Strips EXIF GPS coordinates and camera metadata when Zero Metadata Minimization is enabled
     private val photoPickerLauncher =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-            uri?.let { pendingMmsUri = it }
+            if (uri != null) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val safeUri = AppSecurityManager.stripExifMetadata(this@MainActivity, uri)
+                    withContext(Dispatchers.Main) {
+                        pendingMmsUri = safeUri
+                    }
+                }
+            }
         }
 
     // Zero-Permission Photo Picker for Custom Wallpapers (Main Window or Per-Contact Chat)
@@ -303,9 +354,11 @@ class MainActivity : ComponentActivity() {
                         blockedAddresses = blockedAddrs,
                         deletedThreadsMeta = deletedMeta,
                     )
-                    val success = BackupManager.saveBackupToUri(this@MainActivity, uri, json)
+                    val pwd = pendingBackupPassword
+                    val success = BackupManager.saveBackupToUri(this@MainActivity, uri, json, pwd)
                     if (success) {
-                        BackupManager.createInternalBackupFile(this@MainActivity, json)
+                        BackupManager.createInternalBackupFile(this@MainActivity, json, pwd)
+                        pendingBackupPassword = null
                         lastBackupTimestamp = System.currentTimeMillis()
                         val locStrings = TxturaStrings.forLocale()
                         val totalMsgs = currentThreads.sumOf { (_, _, _, _, _, _, messages) -> messages.size } +
@@ -326,9 +379,24 @@ class MainActivity : ComponentActivity() {
             if (uri != null) {
                 lifecycleScope.launch {
                     try {
-                        val json = BackupManager.readBackupFromUri(this@MainActivity, uri)
-                        val payload = BackupManager.parseBackupJson(json)
-                        pendingRestorePayload = payload
+                        val rawContent = BackupManager.readBackupFromUri(this@MainActivity, uri)
+                        if (SecurityCryptoManager.isEncryptedBackup(rawContent) &&
+                            SecurityCryptoManager.isPasswordProtectedBackup(rawContent)
+                        ) {
+                            pendingEncryptedBackupContent = rawContent
+                            showRestorePasswordPrompt = true
+                        } else {
+                            val payload = BackupManager.parseBackupJson(rawContent)
+                            pendingRestorePayload = payload
+                        }
+                    } catch (e: DeviceKeyMismatchException) {
+                        android.util.Log.e("MainActivity", "Device key mismatch", e)
+                        val locStrings = TxturaStrings.forLocale()
+                        Toast.makeText(
+                            this@MainActivity,
+                            locStrings.backupDeviceKeyMismatch,
+                            Toast.LENGTH_LONG,
+                        ).show()
                     } catch (e: Exception) {
                         android.util.Log.e("MainActivity", "Failed to read backup from $uri", e)
                         val locStrings = TxturaStrings.forLocale()
@@ -346,7 +414,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         loadSavedAppPreferences()
+        updateWindowSecurityFlags()
+        if (AppSecurityManager.isBiometricLockEnabled(this)) {
+            isAppLocked = true
+        }
         SmsMmsRepository.initializePersistedState(this)
+        EmergencyAlertManager.initialize(this)
         lastBackupTimestamp = BackupManager.getLastBackupTimestamp(this)
         handleIncomingSmsIntentSafely(intent)
         checkFirstStartupPermissionsAndRole()
@@ -374,15 +447,13 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "1.5.1"
-                }.getOrDefault("1.5.1")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0"
+                }.getOrDefault("2.0")
             }
             LaunchedEffect(Unit) {
                 while (true) {
-                    if (AppUpdateManager.shouldPerformPeriodicCheck(this@MainActivity)) {
-                        AppUpdateManager.checkForUpdates(this@MainActivity, currentAppVersionName)
-                    }
-                    delay(15.minutes) // Poll every 15m to see if 6h window elapsed
+                    AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
+                    delay(30.minutes)
                 }
             }
             DisposableEffect(Unit) {
@@ -399,9 +470,9 @@ class MainActivity : ComponentActivity() {
                                     networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
                                     networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
                                 )
-                        if (hasNet && AppUpdateManager.shouldPerformPeriodicCheck(this@MainActivity)) {
+                        if (hasNet) {
                             lifecycleScope.launch {
-                                AppUpdateManager.checkForUpdates(this@MainActivity, currentAppVersionName)
+                                AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
                             }
                         }
                     }
@@ -426,6 +497,7 @@ class MainActivity : ComponentActivity() {
                 }
 
             LaunchedEffect(selectedThread?.id, activeThreadAddress) {
+                SmsMmsRepository.setActiveForegroundThread(selectedThread?.id)
                 if (selectedThread != null) {
                     if (activeThreadId != selectedThread.id) {
                         activeThreadId = selectedThread.id
@@ -437,16 +509,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            var previousMessageCount by remember { mutableIntStateOf(0) }
+            var previousMessageCount by remember(selectedThread?.id) {
+                mutableIntStateOf(selectedThread?.messages?.size ?: 0)
+            }
             LaunchedEffect(selectedThread?.id, selectedThread?.messages?.size) {
                 val currentCount = selectedThread?.messages?.size ?: 0
-                if (selectedThread != null && currentCount > previousMessageCount && previousMessageCount > 0) {
+                if (selectedThread != null && currentCount > previousMessageCount) {
                     val lastMsg = selectedThread.messages.lastOrNull()
                     if (lastMsg != null && lastMsg.isIncoming && inAppSoundsEnabled) {
                         SmsMmsRepository.playInAppMessageReceivedSound(this@MainActivity)
                     }
                 }
                 previousMessageCount = currentCount
+            }
+
+            var lastActiveThread by remember { mutableStateOf<ConversationThread?>(null) }
+            if (selectedThread != null) {
+                lastActiveThread = selectedThread
             }
 
             val activeWallpaper = if ((selectedThread != null) && !showSettingsScreen && !showDeletedMessagesScreen) {
@@ -460,11 +539,99 @@ class MainActivity : ComponentActivity() {
                 wallpaperConfig = activeWallpaper,
                 uiOpacity = uiOpacity,
                 uiColorMode = uiColorMode,
+                expressiveAnimations = expressiveAnimationsEnabled,
             ) {
                 val strings = TxturaStrings.current()
 
-                when {
-                    showDeletedMessagesScreen -> {
+                if (isAppLocked) {
+                    BackHandler {
+                        finishAffinity()
+                    }
+                    LaunchedEffect(isAppLocked) {
+                        promptBiometricUnlock()
+                    }
+                    AppLockScreen(
+                        mainWallpaper = mainWallpaper,
+                        onUnlock = ::promptBiometricUnlock
+                    )
+                } else {
+                    val currentScreen = when {
+                        showDeletedMessagesScreen -> MainAppScreen.DELETED_MESSAGES
+                        showSettingsScreen -> MainAppScreen.SETTINGS
+                        selectedThread != null -> MainAppScreen.CONVERSATION_DETAIL
+                        else -> MainAppScreen.CONVERSATIONS_LIST
+                    }
+
+                AnimatedContent(
+                    targetState = currentScreen,
+                    transitionSpec = {
+                        if (expressiveAnimationsEnabled) {
+                            when {
+                                targetState == MainAppScreen.CONVERSATION_DETAIL -> {
+                                    (slideInHorizontally(
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        ),
+                                        initialOffsetX = { it / 3 }
+                                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
+                                        slideOutHorizontally(
+                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                            targetOffsetX = { -it / 5 }
+                                        ) + fadeOut()
+                                    )
+                                }
+                                initialState == MainAppScreen.CONVERSATION_DETAIL -> {
+                                    (slideInHorizontally(
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        ),
+                                        initialOffsetX = { -it / 5 }
+                                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
+                                        slideOutHorizontally(
+                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                            targetOffsetX = { it / 3 }
+                                        ) + fadeOut()
+                                    )
+                                }
+                                targetState == MainAppScreen.SETTINGS || targetState == MainAppScreen.DELETED_MESSAGES -> {
+                                    (slideInHorizontally(
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        ),
+                                        initialOffsetX = { it / 3 }
+                                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
+                                        slideOutHorizontally(
+                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                            targetOffsetX = { -it / 5 }
+                                        ) + fadeOut()
+                                    )
+                                }
+                                else -> {
+                                    (slideInHorizontally(
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioLowBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        ),
+                                        initialOffsetX = { -it / 5 }
+                                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
+                                        slideOutHorizontally(
+                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                            targetOffsetX = { it / 3 }
+                                        ) + fadeOut()
+                                    )
+                                }
+                            }
+                        } else {
+                            fadeIn(tween(140)).togetherWith(fadeOut(tween(100)))
+                        }
+                    },
+                    label = "mainScreenTransition"
+                ) { screen ->
+                    when (screen) {
+                        MainAppScreen.DELETED_MESSAGES -> {
                         BackHandler {
                             showDeletedMessagesScreen = false
                         }
@@ -501,11 +668,13 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    showSettingsScreen -> {
+                    MainAppScreen.SETTINGS -> {
                         BackHandler {
                             showSettingsScreen = false
                         }
                         SettingsScreen(
+                            focusUpdateSection = focusUpdateSectionOnSettings,
+                            onUpdateSectionFocused = { focusUpdateSectionOnSettings = false },
                             themeMode = themeMode,
                             showContactPhotos = showContactPhotos,
                             listLayoutMode = listLayoutMode,
@@ -547,6 +716,11 @@ class MainActivity : ComponentActivity() {
                             onToggleExpressiveAnimations = { enabled ->
                                 expressiveAnimationsEnabled = enabled
                                 saveExpressiveAnimationsEnabled(enabled)
+                            },
+                            hapticsEnabled = hapticsEnabled,
+                            onToggleHaptics = { enabled ->
+                                hapticsEnabled = enabled
+                                saveHapticsEnabled(enabled)
                             },
                             bubblesEnabled = bubblesEnabled,
                             onToggleBubbles = { enabled ->
@@ -675,6 +849,11 @@ class MainActivity : ComponentActivity() {
                                 mainWallpaper = cfg
                                 saveMainWallpaper(cfg)
                             },
+                            onSelectMainWallpaperAccentColor = { hex ->
+                                val cfg = mainWallpaper.copy(customAccentColorHex = hex)
+                                mainWallpaper = cfg
+                                saveMainWallpaper(cfg)
+                            },
                             onPickMainWallpaperFromGallery = {
                                 wallpaperGalleryTargetKey = GALLERY_TARGET_MAIN
                                 wallpaperPhotoPickerLauncher.launch(
@@ -719,28 +898,31 @@ class MainActivity : ComponentActivity() {
                             onShareBackupFile = ::handleShareBackupFile,
                             onRequestSmsPermissions = ::requestSmsPermissionsSafely,
                             onRequestDefaultSmsRole = ::requestDefaultSmsRoleSafely,
-                            onOpenSystemAppSettings = ::openAppDetailsSettings
+                            onOpenSystemAppSettings = ::openAppDetailsSettings,
+                            onLockAppNow = { isAppLocked = true }
                         )
                     }
 
-                    selectedThread != null -> {
-                        BackHandler {
-                            activeThreadId = null
-                            activeThreadAddress = null
-                            pendingMmsUri = null
-                        }
-                        val contactKey = contactWallpaperKey(selectedThread.address)
-                        val activeChatWallpaper = contactWallpapers[contactKey] ?: mainWallpaper
-                        val threadScheduledMessages = scheduledMessages.filter { (_, threadId) ->
-                            threadId == selectedThread.id
-                        }
+                    MainAppScreen.CONVERSATION_DETAIL -> {
+                        val activeDetailThread = selectedThread ?: lastActiveThread
+                        if (activeDetailThread != null) {
+                            BackHandler {
+                                activeThreadId = null
+                                activeThreadAddress = null
+                                pendingMmsUri = null
+                            }
+                            val contactKey = contactWallpaperKey(activeDetailThread.address)
+                            val activeChatWallpaper = contactWallpapers[contactKey] ?: mainWallpaper
+                            val threadScheduledMessages = scheduledMessages.filter { (_, threadId) ->
+                                threadId == activeDetailThread.id
+                            }
 
-                        ConversationDetailScreen(
-                            thread = selectedThread,
-                            showContactPhotos = showContactPhotos,
-                            recallMessagesEnabled = recallMessagesEnabled,
-                            bubbleZoomScale = bubbleZoomScale,
-                            onUpdateBubbleZoomScale = { newScale ->
+                            ConversationDetailScreen(
+                                thread = activeDetailThread,
+                                showContactPhotos = showContactPhotos,
+                                recallMessagesEnabled = recallMessagesEnabled,
+                                bubbleZoomScale = bubbleZoomScale,
+                                onUpdateBubbleZoomScale = { newScale ->
                                 bubbleZoomScale = newScale
                                 saveBubbleZoomScale(newScale)
                             },
@@ -759,16 +941,16 @@ class MainActivity : ComponentActivity() {
                                 pendingMmsUri = null
                             },
                             onTogglePinThread = {
-                                SmsMmsRepository.togglePinThread(this@MainActivity, selectedThread.id)
+                                SmsMmsRepository.togglePinThread(this@MainActivity, activeDetailThread.id)
                             },
                             onTogglePinMessage = { msgId ->
-                                SmsMmsRepository.togglePinMessage(this@MainActivity, selectedThread.id, msgId)
+                                SmsMmsRepository.togglePinMessage(this@MainActivity, activeDetailThread.id, msgId)
                             },
                             onToggleHighlightMessage = { msgId ->
-                                SmsMmsRepository.toggleHighlightMessage(this@MainActivity, selectedThread.id, msgId)
+                                SmsMmsRepository.toggleHighlightMessage(this@MainActivity, activeDetailThread.id, msgId)
                             },
                             onDeleteMessage = { msgId ->
-                                SmsMmsRepository.deleteMessage(this@MainActivity, selectedThread.id, msgId, autoDeleteDays)
+                                SmsMmsRepository.deleteMessage(this@MainActivity, activeDetailThread.id, msgId, autoDeleteDays)
                                 val locStrings = TxturaStrings.forLocale()
                                 Toast.makeText(
                                     this@MainActivity,
@@ -777,7 +959,7 @@ class MainActivity : ComponentActivity() {
                                 ).show()
                             },
                             onDeleteMessages = { msgIds ->
-                                SmsMmsRepository.deleteMessages(this@MainActivity, selectedThread.id, msgIds, autoDeleteDays)
+                                SmsMmsRepository.deleteMessages(this@MainActivity, activeDetailThread.id, msgIds, autoDeleteDays)
                                 val locStrings = TxturaStrings.forLocale()
                                 Toast.makeText(
                                     this@MainActivity,
@@ -796,6 +978,9 @@ class MainActivity : ComponentActivity() {
                                         preferredName = recipientName,
                                     )
                                 }
+                                if (inAppSoundsEnabled) {
+                                    SmsMmsRepository.playInAppMessageSentSound(this@MainActivity)
+                                }
                                 val targetThreadId = SmsMmsRepository.sendMessage(
                                     context = this@MainActivity,
                                     recipientAddress = recipientAddress,
@@ -812,19 +997,19 @@ class MainActivity : ComponentActivity() {
                                 activeThreadId = targetThreadId
                             },
                             onOpenChatWallpaperPicker = {
-                                showChatWallpaperDialogForThread = selectedThread
+                                showChatWallpaperDialogForThread = activeDetailThread
                             },
                             onCallSender = {
-                                dialPhoneNumberSafely(selectedThread.address)
+                                dialPhoneNumberSafely(activeDetailThread.address)
                             },
                             onOpenContact = {
                                 openOrInsertContactSafely(
-                                    phoneNumber = selectedThread.address,
-                                    displayName = selectedThread.contactName,
+                                    phoneNumber = activeDetailThread.address,
+                                    displayName = activeDetailThread.contactName,
                                 )
                             },
                             onBlockContact = {
-                                val blockedAddr = selectedThread.address
+                                val blockedAddr = activeDetailThread.address
                                 SmsMmsRepository.blockSender(this@MainActivity, blockedAddr)
                                 val locStrings = TxturaStrings.forLocale()
                                 Toast.makeText(
@@ -837,7 +1022,7 @@ class MainActivity : ComponentActivity() {
                                 pendingMmsUri = null
                             },
                             onToggleSenderCategory = {
-                                val newIsService = SmsMmsRepository.toggleSenderCategory(this@MainActivity, selectedThread.id)
+                                val newIsService = SmsMmsRepository.toggleSenderCategory(this@MainActivity, activeDetailThread.id)
                                 val locStrings = TxturaStrings.forLocale()
                                 val toastMsg = if (newIsService) {
                                     locStrings.senderMovedToServicesToast
@@ -858,7 +1043,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 SmsMmsRepository.sendMessage(
                                     context = this@MainActivity,
-                                    recipientAddress = selectedThread.address,
+                                    recipientAddress = activeDetailThread.address,
                                     rawBody = text,
                                     attachmentUri = attachment,
                                 )
@@ -867,8 +1052,8 @@ class MainActivity : ComponentActivity() {
                             onScheduleMessage = { text, attachment, scheduledAtMillis ->
                                 SmsMmsRepository.scheduleMessage(
                                     context = this@MainActivity,
-                                    threadId = selectedThread.id,
-                                    recipientAddress = selectedThread.address,
+                                    threadId = activeDetailThread.id,
+                                    recipientAddress = activeDetailThread.address,
                                     rawBody = text,
                                     attachmentUri = attachment,
                                     scheduledAtMillis = scheduledAtMillis,
@@ -876,13 +1061,18 @@ class MainActivity : ComponentActivity() {
                                 pendingMmsUri = null
                             },
                             onCancelScheduledMessage = { scheduledId ->
+                                if (inAppSoundsEnabled) {
+                                    SmsMmsRepository.playInAppMessageCancelledSound(this@MainActivity)
+                                }
                                 SmsMmsRepository.cancelScheduledMessage(scheduledId)
                             },
+                            inAppSoundsEnabled = inAppSoundsEnabled,
                             onCopyOtp = ::copyOtpConfidentially
                         )
                     }
+                    }
 
-                    else -> {
+                    MainAppScreen.CONVERSATIONS_LIST -> {
                         ConversationsListScreen(
                             threads = threads,
                             deletedCount = deletedThreads.size,
@@ -909,7 +1099,7 @@ class MainActivity : ComponentActivity() {
                                 threadPendingDeleteConfirmation = thread
                             },
                             onMarkThreadRead = { id ->
-                                SmsMmsRepository.markThreadRead(this@MainActivity, id)
+                                SmsMmsRepository.toggleThreadRead(this@MainActivity, id)
                             },
                             onDeleteSelectedThreads = { threadIds ->
                                 SmsMmsRepository.moveThreadsToTrash(
@@ -954,6 +1144,7 @@ class MainActivity : ComponentActivity() {
                         ) { showSettingsScreen = true }
                     }
                 }
+            }
 
                 // Per-Contact Chat Wallpaper Picker Dialog
                 val wallpaperDialogThread = showChatWallpaperDialogForThread
@@ -980,6 +1171,14 @@ class MainActivity : ComponentActivity() {
                         },
                         onSelectTexture = { selectedTex ->
                             val cfg = currentChatWp.copy(texture = selectedTex)
+                            val updated = contactWallpapers.toMutableMap().apply {
+                                put(contactKey, cfg)
+                            }
+                            contactWallpapers = updated
+                            saveContactWallpapers(updated)
+                        },
+                        onSelectAccentColor = { hex ->
+                            val cfg = currentChatWp.copy(customAccentColorHex = hex)
                             val updated = contactWallpapers.toMutableMap().apply {
                                 put(contactKey, cfg)
                             }
@@ -1033,6 +1232,7 @@ class MainActivity : ComponentActivity() {
                     NewMessageDialog(
                         initialRecipient = prefilledRecipient,
                         availableContacts = availableContacts,
+                        inAppSoundsEnabled = inAppSoundsEnabled,
                         onPickContact = ::launchSystemContactPicker,
                         onDismiss = { showNewMessageDialog = false },
                         onSelectRecipient = { recipient, preferredName ->
@@ -1100,6 +1300,48 @@ class MainActivity : ComponentActivity() {
                         pendingRestorePayload = null
                     }
                 }
+
+                if (showCreateBackupDialog) {
+                    CreateEncryptedBackupDialog(
+                        onConfirm = { pwd ->
+                            showCreateBackupDialog = false
+                            pendingBackupPassword = pwd
+                            val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                            createBackupLauncher.launch("txtura_backup_$dateStr.json")
+                        },
+                        onDismiss = {
+                            showCreateBackupDialog = false
+                        }
+                    )
+                }
+
+                if (showRestorePasswordPrompt) {
+                    RestoreEncryptedBackupPasswordDialog(
+                        onConfirm = { pwd ->
+                            val rawContent = pendingEncryptedBackupContent
+                            if (rawContent != null) {
+                                try {
+                                    val payload = BackupManager.parseBackupJson(rawContent, pwd)
+                                    showRestorePasswordPrompt = false
+                                    pendingEncryptedBackupContent = null
+                                    pendingRestorePayload = payload
+                                } catch (_: Exception) {
+                                    val locStrings = TxturaStrings.forLocale()
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        locStrings.backupPasswordIncorrect,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        },
+                        onDismiss = {
+                            showRestorePasswordPrompt = false
+                            pendingEncryptedBackupContent = null
+                        }
+                    )
+                }
+                }
             }
         }
     }
@@ -1117,6 +1359,63 @@ class MainActivity : ComponentActivity() {
         val firstStartupDone = prefs.getBoolean(KEY_FIRST_STARTUP_DONE, false)
         if (firstStartupDone && !SmsMmsRepository.isDefaultSmsApp(this)) {
             showDefaultSmsRolePrompt = true
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateWindowSecurityFlags()
+        if (AppSecurityManager.isBiometricLockEnabled(this)) {
+            val timeoutMinutes = AppSecurityManager.getBiometricLockTimeout(this)
+            val elapsed = System.currentTimeMillis() - lastPauseTimestamp
+            if (timeoutMinutes == 0 || (lastPauseTimestamp > 0L && elapsed >= timeoutMinutes * 60 * 1000L)) {
+                isAppLocked = true
+            }
+        }
+        SmsMmsRepository.setActiveForegroundThread(activeThreadId)
+        triggerAppEntryUpdateCheck()
+    }
+
+    private fun triggerAppEntryUpdateCheck() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val currentAppVersionName = runCatching {
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0"
+            }.getOrDefault("2.0")
+            AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        lastPauseTimestamp = System.currentTimeMillis()
+        SmsMmsRepository.setActiveForegroundThread(null)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun promptBiometricUnlock() {
+        val km = getSystemService(KeyguardManager::class.java)
+        if (km != null && km.isDeviceSecure) {
+            val isSr = TxturaStrings.isSerbianLocale()
+            val title = if (isSr) "Txtura Zaštita" else "Txtura Security"
+            val desc = if (isSr) "Otključajte Txtura aplikaciju biometrijom ili PIN-om" else "Unlock Txtura with biometric or device PIN"
+            val intent = km.createConfirmDeviceCredentialIntent(title, desc)
+            if (intent != null) {
+                confirmCredentialsLauncher.launch(intent)
+                return
+            }
+        }
+        isAppLocked = false
+    }
+
+    private fun updateWindowSecurityFlags() {
+        val metadataMinimization = AppSecurityManager.isMetadataMinimizationEnabled(this)
+        if (metadataMinimization) {
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE
+            )
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         }
     }
 
@@ -1166,6 +1465,8 @@ class MainActivity : ComponentActivity() {
         inAppSoundsEnabled = prefs.getBoolean(KEY_IN_APP_SOUNDS_ENABLED, true)
         pinchToZoomEnabled = prefs.getBoolean(KEY_PINCH_TO_ZOOM_ENABLED, true)
         expressiveAnimationsEnabled = prefs.getBoolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, true)
+        hapticsEnabled = prefs.getBoolean(KEY_HAPTICS_ENABLED, true)
+        TxturaHaptics.isEnabled = hapticsEnabled
         bubblesEnabled = prefs.getBoolean(KEY_BUBBLES_ENABLED, true)
         autoPreviewsShowAll = prefs.getBoolean(KEY_AUTO_PREVIEWS_SHOW_ALL, true)
         autoPreviewsWebLinksOnly = prefs.getBoolean(KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY, false)
@@ -1310,6 +1611,11 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, enabled) }
     }
 
+    private fun saveHapticsEnabled(enabled: Boolean) {
+        TxturaHaptics.isEnabled = enabled
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_HAPTICS_ENABLED, enabled) }
+    }
+
     private fun saveBubblesEnabled(enabled: Boolean) {
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_BUBBLES_ENABLED, enabled) }
     }
@@ -1346,6 +1652,7 @@ class MainActivity : ComponentActivity() {
             inAppSoundsEnabled = inAppSoundsEnabled,
             pinchToZoomEnabled = pinchToZoomEnabled,
             expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+            hapticsEnabled = hapticsEnabled,
             bubblesEnabled = bubblesEnabled,
             autoPreviewsShowAll = autoPreviewsShowAll,
             autoPreviewsWebLinksOnly = autoPreviewsWebLinksOnly,
@@ -1361,8 +1668,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleCreateLocalBackup() {
-        val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
-        createBackupLauncher.launch("txtura_backup_$dateStr.json")
+        showCreateBackupDialog = true
     }
 
     private fun handleRestoreLocalBackup() {
@@ -1460,6 +1766,9 @@ class MainActivity : ComponentActivity() {
         expressiveAnimationsEnabled = payload.settings.expressiveAnimationsEnabled
         saveExpressiveAnimationsEnabled(expressiveAnimationsEnabled)
 
+        hapticsEnabled = payload.settings.hapticsEnabled
+        saveHapticsEnabled(hapticsEnabled)
+
         bubblesEnabled = payload.settings.bubblesEnabled
         saveBubblesEnabled(bubblesEnabled)
 
@@ -1524,6 +1833,24 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingSmsIntentSafely(incoming: Intent?) {
         if (incoming == null) return
+
+        // 0. Handle tapping an app update notification
+        if (incoming.action == AppUpdateManager.ACTION_NAVIGATE_TO_UPDATES ||
+            incoming.getBooleanExtra(AppUpdateManager.EXTRA_NAVIGATE_TO_UPDATES, false)
+        ) {
+            AppUpdateManager.dismissUpdateNotification(this)
+            showSettingsScreen = true
+            focusUpdateSectionOnSettings = true
+            activeThreadId = null
+            activeThreadAddress = null
+            showDeletedMessagesScreen = false
+            showNewMessageDialog = false
+            showChatWallpaperDialogForThread = null
+            threadPendingDeleteConfirmation = null
+            incoming.action = null
+            incoming.removeExtra(AppUpdateManager.EXTRA_NAVIGATE_TO_UPDATES)
+            return
+        }
 
         // 1. Handle tapping an incoming SMS/MMS notification created by Txtura itself
         if (incoming.action == SmsMmsRepository.ACTION_OPEN_THREAD_NOTIFICATION) {
@@ -1733,6 +2060,7 @@ class MainActivity : ComponentActivity() {
         }
         @Suppress("UsePropertyAccessSyntax")
         clipboard.setPrimaryClip(clip)
+        TxturaHaptics.confirm(null, this)
         Toast.makeText(this, strings.codeCopiedToast(otpCode), Toast.LENGTH_SHORT).show()
     }
 }

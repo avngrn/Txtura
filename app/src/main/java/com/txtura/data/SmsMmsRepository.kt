@@ -26,13 +26,16 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.txtura.MainActivity
 import com.txtura.R
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.security.SecurityAnalysisResult
+import com.txtura.security.SecurityCryptoManager
 import com.txtura.security.SecurityRiskLevel
+import com.txtura.telephony.MmsPduHelper
 import com.txtura.telephony.NotificationActionReceiver
 import com.txtura.ui.i18n.TxturaStrings
 import kotlinx.coroutines.CoroutineScope
@@ -46,16 +49,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.milliseconds
+import org.json.JSONArray
+import org.json.JSONObject
 
 object SmsMmsRepository {
 
     private const val TAG = "SmsMmsRepository"
     const val ACTION_SMS_SENT = "com.txtura.action.SMS_SENT"
     const val ACTION_SMS_DELIVERED = "com.txtura.action.SMS_DELIVERED"
+    const val ACTION_MMS_SENT = "com.txtura.action.MMS_SENT"
     const val ACTION_OPEN_THREAD_NOTIFICATION = "com.txtura.action.OPEN_THREAD_NOTIFICATION"
     const val ACTION_NOTIFICATION_DIRECT_REPLY = "com.txtura.action.NOTIFICATION_DIRECT_REPLY"
     const val ACTION_NOTIFICATION_MARK_READ = "com.txtura.action.NOTIFICATION_MARK_READ"
@@ -88,6 +95,12 @@ object SmsMmsRepository {
     const val KEY_MMS_DATA_DISABLED_MODE = "mms_data_disabled_mode"
     const val KEY_MMS_CREATION_MODE = "mms_creation_mode"
     const val KEY_SMSC_NUMBER = "smsc_number"
+
+    private const val THREADS_CACHE_ENC_FILE = "threads_cache.enc"
+    private const val THREADS_CACHE_ENC_TMP_FILE = "threads_cache.enc.tmp"
+    private const val LEGACY_THREADS_CACHE_FILE = "threads_cache.json"
+    private val diskCacheLock = Any()
+    private var diskCacheSaveJob: Job? = null
 
     private val DEMO_THREAD_IDS = setOf(901L, 902L, 903L, 904L)
     private val DEMO_ADDRESSES = setOf("+381641122334", "BANK-OTP", "DEXPRESS", "+381690009911")
@@ -165,8 +178,13 @@ object SmsMmsRepository {
         }
     }
 
+    private var appContext: Context? = null
+
     fun initializePersistedState(context: Context) {
+        appContext = context.applicationContext
+        preloadInAppSounds(context)
         loadPersistedPins(context)
+        loadDiskCache(context)
         ensureNotificationChannel(context)
         scanAllThreadsForMaliciousWebsitesOnline(context)
     }
@@ -384,12 +402,317 @@ object SmsMmsRepository {
             putStringSet(KEY_DELETED_THREADS, serializedDeleted)
             putStringSet(KEY_DELETED_MSGS, serializedDeletedMsgs)
         }
+        saveDiskCacheAsync(context)
+    }
+
+    /**
+     * Instantly restores the last known conversation snapshot from hardware-encrypted storage
+     * so that upon app cold start, all conversations and messages are visible immediately in frame 1
+     * without any blank screen or multi-second IPC delay.
+     * The file is encrypted with AES-256-GCM using Android KeyStore, unreadable from PC or ADB.
+     */
+    fun loadDiskCache(context: Context) {
+        if (_threads.value.isNotEmpty()) return
+        try {
+            val encFile = File(context.filesDir, THREADS_CACHE_ENC_FILE)
+            val legacyFile = File(context.filesDir, LEGACY_THREADS_CACHE_FILE)
+            val isEncryptedMode = com.txtura.security.AppSecurityManager.isDbEncryptionEnabled(context)
+            val jsonContent: String = when {
+                isEncryptedMode && encFile.exists() && encFile.length() > 0L -> {
+                    val decryptedBytes = SecurityCryptoManager.decryptCache(encFile.readBytes())
+                    String(decryptedBytes, Charsets.UTF_8)
+                }
+                legacyFile.exists() && legacyFile.length() > 0L -> {
+                    legacyFile.readText()
+                }
+                encFile.exists() && encFile.length() > 0L -> {
+                    val decryptedBytes = SecurityCryptoManager.decryptCache(encFile.readBytes())
+                    String(decryptedBytes, Charsets.UTF_8)
+                }
+                else -> return
+            }
+
+            if (jsonContent.isBlank()) return
+
+            val root = JSONObject(jsonContent)
+            val threadsArray = root.optJSONArray("threads") ?: return
+
+            val cachedThreads = mutableListOf<ConversationThread>()
+            for (i in 0 until threadsArray.length()) {
+                val tObj = threadsArray.optJSONObject(i) ?: continue
+                val thread = parseCachedThread(tObj) ?: continue
+                if (isSenderBlocked(thread.address) || (thread.id in deletedThreadTimestamps)) {
+                    continue
+                }
+                cachedThreads.add(thread)
+            }
+
+            val cachedDeleted = mutableListOf<DeletedConversationEntry>()
+            root.optJSONArray("deletedThreads")?.let { dArr ->
+                for (i in 0 until dArr.length()) {
+                    val dObj = dArr.optJSONObject(i) ?: continue
+                    val deletedAt = dObj.optLong("deletedAtMillis", System.currentTimeMillis())
+                    val tObj = dObj.optJSONObject("thread") ?: continue
+                    val thread = parseCachedThread(tObj) ?: continue
+                    cachedDeleted.add(DeletedConversationEntry(thread = thread, deletedAtMillis = deletedAt))
+                }
+            }
+
+            if (cachedThreads.isNotEmpty()) {
+                _threads.value = sortThreads(cachedThreads)
+            }
+            if (cachedDeleted.isNotEmpty()) {
+                _deletedThreads.value = cachedDeleted
+            }
+
+            // Sync with current encryption setting if loaded from mismatched format
+            if (isEncryptedMode && !encFile.exists() && legacyFile.exists()) {
+                saveDiskCacheInternal(context)
+            } else if (!isEncryptedMode && encFile.exists() && !legacyFile.exists()) {
+                saveDiskCacheInternal(context)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load threads cache from disk", e)
+        }
+    }
+
+    /**
+     * Persists the current conversations and deleted threads snapshot to internal disk cache.
+     * When local database encryption is enabled, encrypts using hardware-backed AES-256-GCM (SQLCipher container format).
+     * Uses atomic rename via temporary file to guarantee crash resistance.
+     */
+    fun saveDiskCacheInternal(context: Context) {
+        synchronized(diskCacheLock) {
+            try {
+                val currentThreads = _threads.value
+                val currentDeleted = _deletedThreads.value
+                if (currentThreads.isEmpty() && currentDeleted.isEmpty()) return
+
+                val root = JSONObject()
+                root.put("version", 1)
+                root.put("timestamp", System.currentTimeMillis())
+
+                val threadsArr = JSONArray()
+                for (th in currentThreads) {
+                    threadsArr.put(serializeCachedThread(th))
+                }
+                root.put("threads", threadsArr)
+
+                val deletedArr = JSONArray()
+                for (d in currentDeleted) {
+                    val dObj = JSONObject()
+                    dObj.put("deletedAtMillis", d.deletedAtMillis)
+                    dObj.put("thread", serializeCachedThread(d.thread))
+                    deletedArr.put(dObj)
+                }
+                root.put("deletedThreads", deletedArr)
+
+                val jsonBytes = root.toString().toByteArray(Charsets.UTF_8)
+                val isEncrypted = com.txtura.security.AppSecurityManager.isDbEncryptionEnabled(context)
+
+                val encFile = File(context.filesDir, THREADS_CACHE_ENC_FILE)
+                val legacyFile = File(context.filesDir, LEGACY_THREADS_CACHE_FILE)
+
+                if (isEncrypted) {
+                    val encryptedBytes = SecurityCryptoManager.encryptCache(jsonBytes)
+                    val tmpFile = File(context.filesDir, THREADS_CACHE_ENC_TMP_FILE)
+                    tmpFile.writeBytes(encryptedBytes)
+                    if (!tmpFile.renameTo(encFile)) {
+                        tmpFile.copyTo(encFile, overwrite = true)
+                        tmpFile.delete()
+                    }
+                    if (legacyFile.exists()) {
+                        legacyFile.delete()
+                    }
+                } else {
+                    val tmpPlain = File(context.filesDir, "$LEGACY_THREADS_CACHE_FILE.tmp")
+                    tmpPlain.writeBytes(jsonBytes)
+                    if (!tmpPlain.renameTo(legacyFile)) {
+                        tmpPlain.copyTo(legacyFile, overwrite = true)
+                        tmpPlain.delete()
+                    }
+                    if (encFile.exists()) {
+                        encFile.delete()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to persist threads cache", e)
+            }
+        }
+    }
+
+    /**
+     * Re-encrypts or decrypts the local cache when user changes the encryption preference in settings.
+     */
+    fun reencryptCache(context: Context, encrypt: Boolean) {
+        saveDiskCacheAsync(context, immediate = true)
+    }
+
+    /**
+     * Debounced or immediate asynchronous persistence to disk cache.
+     */
+    fun saveDiskCacheAsync(context: Context, immediate: Boolean = false) {
+        val appCtx = context.applicationContext
+        if (immediate) {
+            ioScope.launch {
+                saveDiskCacheInternal(appCtx)
+            }
+        } else {
+            synchronized(diskCacheLock) {
+                diskCacheSaveJob?.cancel()
+                diskCacheSaveJob = ioScope.launch {
+                    delay(300.milliseconds)
+                    saveDiskCacheInternal(appCtx)
+                }
+            }
+        }
+    }
+
+    private fun parseCachedThread(obj: JSONObject): ConversationThread? {
+        val id = obj.optLong("id", 0L)
+        if (id <= 0L) return null
+        val name = obj.optString("contactName", "Unknown")
+        val address = obj.optString("address", "")
+        val initials = obj.optString("avatarInitials", "U")
+        val colorHex = obj.optLong("avatarAccentColorHex", 0xFF6366F1)
+        val photoUriStr = obj.optString("contactPhotoUri").takeIf { it.isNotBlank() }
+        val photoUri = photoUriStr?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        val unreadCount = obj.optInt("unreadCount", 0)
+        val isPinned = isAddressPinned(address) || obj.optBoolean("isPinned", false)
+        val draftText = obj.optString("draftText").takeIf { it.isNotBlank() }
+
+        val messages = mutableListOf<ChatMessage>()
+        val msgsArray = obj.optJSONArray("messages")
+        if (msgsArray != null) {
+            for (i in 0 until msgsArray.length()) {
+                val mObj = msgsArray.optJSONObject(i) ?: continue
+                val mId = mObj.optLong("id", 0L)
+                val mThreadId = mObj.optLong("threadId", id)
+                val mAddr = mObj.optString("address", address)
+                val mBody = mObj.optString("body", "")
+                val mTime = mObj.optLong("timestampMillis", 0L)
+                val isIncoming = mObj.optBoolean("isIncoming", true)
+                val typeStr = mObj.optString("type", MessageType.SMS.name)
+                val type = MessageType.entries.find { it.name == typeStr } ?: MessageType.SMS
+                val statusStr = mObj.optString("status", DeliveryStatus.DELIVERED.name)
+                val status = DeliveryStatus.entries.find { it.name == statusStr } ?: DeliveryStatus.DELIVERED
+                val isMsgPinned = (mId in pinnedMessageIds) || mObj.optBoolean("isPinned", false)
+                val isMsgHighlighted = (mId in highlightedMessageIds) || mObj.optBoolean("isHighlighted", false)
+
+                var attachment: MmsAttachment? = null
+                mObj.optJSONObject("attachment")?.let { aObj ->
+                    val uStr = aObj.optString("uri")
+                    if (uStr.isNotBlank()) {
+                        runCatching {
+                            attachment = MmsAttachment(
+                                uri = Uri.parse(uStr),
+                                mimeType = aObj.optString("mimeType", "image/jpeg"),
+                                caption = aObj.optString("caption", "MMS Photo")
+                            )
+                        }
+                    }
+                }
+
+                val riskStr = mObj.optString("securityRiskLevel", SecurityRiskLevel.SAFE.name)
+                val riskLevel = SecurityRiskLevel.entries.find { it.name == riskStr } ?: SecurityRiskLevel.SAFE
+                val otpCode = mObj.optString("otpCode").takeIf { it.isNotBlank() }
+                val secResult = SecurityAnalysisResult(
+                    riskLevel = riskLevel,
+                    reasons = emptyList(),
+                    extractedOtpCode = otpCode
+                )
+
+                messages.add(
+                    ChatMessage(
+                        id = mId,
+                        threadId = mThreadId,
+                        address = mAddr,
+                        body = mBody,
+                        timestampMillis = mTime,
+                        isIncoming = isIncoming,
+                        type = type,
+                        status = status,
+                        isPinned = isMsgPinned,
+                        isHighlighted = isMsgHighlighted,
+                        attachment = attachment,
+                        securityAnalysis = secResult
+                    )
+                )
+            }
+        }
+
+        val isService = isAddressService(address, messages)
+
+        return ConversationThread(
+            id = id,
+            contactName = name,
+            address = address,
+            avatarInitials = initials,
+            avatarAccentColorHex = colorHex,
+            contactPhotoUri = photoUri,
+            messages = messages,
+            unreadCount = unreadCount,
+            isPinned = isPinned,
+            isService = isService,
+            draftText = draftText
+        )
+    }
+
+    private fun serializeCachedThread(thread: ConversationThread): JSONObject {
+        val obj = JSONObject()
+        obj.put("id", thread.id)
+        obj.put("contactName", thread.contactName)
+        obj.put("address", thread.address)
+        obj.put("avatarInitials", thread.avatarInitials)
+        obj.put("avatarAccentColorHex", thread.avatarAccentColorHex)
+        thread.contactPhotoUri?.let { obj.put("contactPhotoUri", it.toString()) }
+        obj.put("unreadCount", thread.unreadCount)
+        obj.put("isPinned", thread.isPinned)
+        obj.put("isService", thread.isService)
+        thread.draftText?.let { obj.put("draftText", it) }
+
+        val msgsArr = JSONArray()
+        val messagesToCache = if (thread.messages.size > 100) {
+            thread.messages.takeLast(100)
+        } else {
+            thread.messages
+        }
+        for (m in messagesToCache) {
+            val mObj = JSONObject()
+            mObj.put("id", m.id)
+            mObj.put("threadId", m.threadId)
+            mObj.put("address", m.address)
+            mObj.put("body", m.body)
+            mObj.put("timestampMillis", m.timestampMillis)
+            mObj.put("isIncoming", m.isIncoming)
+            mObj.put("type", m.type.name)
+            mObj.put("status", m.status.name)
+            mObj.put("isPinned", m.isPinned)
+            mObj.put("isHighlighted", m.isHighlighted)
+            m.attachment?.let { att ->
+                val aObj = JSONObject()
+                aObj.put("uri", att.uri.toString())
+                aObj.put("mimeType", att.mimeType)
+                aObj.put("caption", att.caption)
+                mObj.put("attachment", aObj)
+            }
+            mObj.put("securityRiskLevel", m.securityAnalysis.riskLevel.name)
+            m.securityAnalysis.extractedOtpCode?.let { mObj.put("otpCode", it) }
+            msgsArr.put(mObj)
+        }
+        obj.put("messages", msgsArr)
+        return obj
     }
 
     /**
      * Checks if a sender address is currently blocked.
      */
     fun isSenderBlocked(address: String): Boolean {
+        appContext?.let {
+            if (!com.txtura.security.AppSecurityManager.isSpamFirewallEnabled(it)) {
+                return false
+            }
+        }
         val clean = address.trim()
         if (clean.isBlank()) return false
         val normKey = normalizeAddressKey(clean)
@@ -632,7 +955,7 @@ object SmsMmsRepository {
         }
     }
 
-    fun onMessageDelivered(messageId: Long) {
+    fun onMessageDelivered(messageId: Long, context: Context? = null) {
         _threads.update { currentThreads ->
             currentThreads.map { thread ->
                 if (thread.messages.any { it.id == messageId }) {
@@ -646,6 +969,24 @@ object SmsMmsRepository {
                 }
             }
         }
+        context?.let { saveDiskCacheAsync(it) }
+    }
+
+    fun onMessageFailed(messageId: Long, context: Context? = null) {
+        _threads.update { currentThreads ->
+            currentThreads.map { thread ->
+                if (thread.messages.any { it.id == messageId }) {
+                    thread.copy(
+                        messages = thread.messages.map { msg ->
+                            if (msg.id == messageId) msg.copy(status = DeliveryStatus.FAILED) else msg
+                        }
+                    )
+                } else {
+                    thread
+                }
+            }
+        }
+        context?.let { saveDiskCacheAsync(it) }
     }
 
     fun openEmergencyAlerts(context: Context) {
@@ -710,9 +1051,105 @@ object SmsMmsRepository {
         } catch (_: Exception) { }
     }
 
+    @Volatile
+    private var sentSoundPool: android.media.SoundPool? = null
+    @Volatile
+    private var sentSoundId: Int = 0
+    @Volatile
+    private var sentSoundLoaded: Boolean = false
+    @Volatile
+    private var receivedSoundId: Int = 0
+    @Volatile
+    private var receivedSoundLoaded: Boolean = false
+    @Volatile
+    private var cancelSoundId: Int = 0
+    @Volatile
+    private var cancelSoundLoaded: Boolean = false
+
+    @Volatile
+    private var activeForegroundThreadId: Long? = null
+
+    fun setActiveForegroundThread(threadId: Long?) {
+        activeForegroundThreadId = threadId
+    }
+
+    fun getActiveForegroundThread(): Long? = activeForegroundThreadId
+
+    fun preloadInAppSounds(context: Context) {
+        try {
+            if (sentSoundPool != null) return
+            val appContext = context.applicationContext
+            val audioAttributes = android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .build()
+
+            val pool = android.media.SoundPool.Builder()
+                .setMaxStreams(4)
+                .setAudioAttributes(audioAttributes)
+                .build()
+
+            pool.setOnLoadCompleteListener { _, sampleId, status ->
+                if (status == 0) {
+                    if (sampleId == sentSoundId) sentSoundLoaded = true
+                    if (sampleId == receivedSoundId) receivedSoundLoaded = true
+                    if (sampleId == cancelSoundId) cancelSoundLoaded = true
+                }
+            }
+
+            sentSoundId = pool.load(appContext, R.raw.odlazna, 1)
+            receivedSoundId = pool.load(appContext, R.raw.dolazna, 1)
+            cancelSoundId = pool.load(appContext, R.raw.cancel, 1)
+            sentSoundPool = pool
+        } catch (_: Exception) { }
+    }
+
     fun playInAppMessageSentSound(context: Context) {
         try {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            // Respect device silent/vibration modes
+            if (audioManager != null && audioManager.ringerMode != android.media.AudioManager.RINGER_MODE_NORMAL) {
+                return
+            }
+
+            // Ensure sound pool is initialized
+            if (sentSoundPool == null) {
+                preloadInAppSounds(context)
+            }
+
+            // If loaded in SoundPool, play instantly with zero latency
+            if (sentSoundLoaded && sentSoundId != 0) {
+                val streamId = sentSoundPool?.play(sentSoundId, 1.0f, 1.0f, 1, 0, 1.0f) ?: 0
+                if (streamId != 0) return
+            }
+
+            // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
+            val audioAttributes = android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .build()
+
+            val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.odlazna, audioAttributes, 0)
+                ?: android.media.MediaPlayer.create(context.applicationContext, R.raw.odlazna)
+
+            if (mediaPlayer != null) {
+                mediaPlayer.setOnCompletionListener { mp ->
+                    try {
+                        mp.reset()
+                        mp.release()
+                    } catch (_: Exception) { }
+                }
+                mediaPlayer.setOnErrorListener { mp, _, _ ->
+                    try {
+                        mp.reset()
+                        mp.release()
+                    } catch (_: Exception) { }
+                    true
+                }
+                mediaPlayer.start()
+                return
+            }
+
             audioManager?.playSoundEffect(android.media.AudioManager.FX_KEYPRESS_STANDARD, 0.75f)
         } catch (_: Exception) {
             try {
@@ -724,6 +1161,50 @@ object SmsMmsRepository {
 
     fun playInAppMessageReceivedSound(context: Context) {
         try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            // Respect device silent/vibration modes
+            if (audioManager != null && audioManager.ringerMode != android.media.AudioManager.RINGER_MODE_NORMAL) {
+                return
+            }
+
+            // Ensure sound pool is initialized
+            if (sentSoundPool == null) {
+                preloadInAppSounds(context)
+            }
+
+            // If loaded in SoundPool, play instantly with zero latency
+            if (receivedSoundLoaded && receivedSoundId != 0) {
+                val streamId = sentSoundPool?.play(receivedSoundId, 1.0f, 1.0f, 1, 0, 1.0f) ?: 0
+                if (streamId != 0) return
+            }
+
+            // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
+            val audioAttributes = android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .build()
+
+            val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.dolazna, audioAttributes, 0)
+                ?: android.media.MediaPlayer.create(context.applicationContext, R.raw.dolazna)
+
+            if (mediaPlayer != null) {
+                mediaPlayer.setOnCompletionListener { mp ->
+                    try {
+                        mp.reset()
+                        mp.release()
+                    } catch (_: Exception) { }
+                }
+                mediaPlayer.setOnErrorListener { mp, _, _ ->
+                    try {
+                        mp.reset()
+                        mp.release()
+                    } catch (_: Exception) { }
+                    true
+                }
+                mediaPlayer.start()
+                return
+            }
+
             val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             val ringtone = RingtoneManager.getRingtone(context, uri)
             ringtone?.play()
@@ -731,6 +1212,61 @@ object SmsMmsRepository {
             try {
                 android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 65)
                     .startTone(android.media.ToneGenerator.TONE_PROP_ACK, 80)
+            } catch (_: Exception) { }
+        }
+    }
+
+    fun playInAppMessageCancelledSound(context: Context) {
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            // Respect device silent/vibration modes
+            if (audioManager != null && audioManager.ringerMode != android.media.AudioManager.RINGER_MODE_NORMAL) {
+                return
+            }
+
+            // Ensure sound pool is initialized
+            if (sentSoundPool == null) {
+                preloadInAppSounds(context)
+            }
+
+            // If loaded in SoundPool, play instantly with zero latency
+            if (cancelSoundLoaded && cancelSoundId != 0) {
+                val streamId = sentSoundPool?.play(cancelSoundId, 1.0f, 1.0f, 1, 0, 1.0f) ?: 0
+                if (streamId != 0) return
+            }
+
+            // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
+            val audioAttributes = android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .build()
+
+            val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.cancel, audioAttributes, 0)
+                ?: android.media.MediaPlayer.create(context.applicationContext, R.raw.cancel)
+
+            if (mediaPlayer != null) {
+                mediaPlayer.setOnCompletionListener { mp ->
+                    try {
+                        mp.reset()
+                        mp.release()
+                    } catch (_: Exception) { }
+                }
+                mediaPlayer.setOnErrorListener { mp, _, _ ->
+                    try {
+                        mp.reset()
+                        mp.release()
+                    } catch (_: Exception) { }
+                    true
+                }
+                mediaPlayer.start()
+                return
+            }
+
+            audioManager?.playSoundEffect(android.media.AudioManager.FX_KEY_CLICK, 0.75f)
+        } catch (_: Exception) {
+            try {
+                android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 65)
+                    .startTone(android.media.ToneGenerator.TONE_PROP_NACK, 70)
             } catch (_: Exception) { }
         }
     }
@@ -1035,7 +1571,8 @@ object SmsMmsRepository {
                     dev.address.equals(inMemoryThread.address, ignoreCase = true) ||
                     normalizeAddressKey(dev.address) == normalizeAddressKey(inMemoryThread.address)
             }
-            if (!alreadyInDeviceList) {
+            val hasRecentMessage = inMemoryThread.messages.any { (System.currentTimeMillis() - it.timestampMillis) < 60_000L }
+            if (!alreadyInDeviceList && (hasRecentMessage || hasDraft)) {
                 mergedActiveList.add(inMemoryThread.copy(messages = activeInMemoryMsgs))
             }
         }
@@ -1072,6 +1609,7 @@ object SmsMmsRepository {
                 .toList()
         }
         scanAllThreadsForMaliciousWebsitesOnline(context)
+        saveDiskCacheAsync(context)
     }
 
     /**
@@ -1342,16 +1880,21 @@ object SmsMmsRepository {
             val result = LinkedHashMap<String, ContactPickerItem>()
             val activeThreads = _threads.value
 
-            // 1. Add existing conversation threads first (with existingThreadId)
+            // 1. Add existing conversation threads only if they have an actual contact name (not raw phone number)
             for (thread in activeThreads) {
-                val key = normalizeAddressKey(thread.address)
-                result[key] = ContactPickerItem(
-                    name = thread.contactName,
-                    address = thread.address,
-                    initials = thread.avatarInitials,
-                    photoUri = thread.contactPhotoUri,
-                    existingThreadId = thread.id
-                )
+                val hasRealName = thread.contactName.isNotBlank() &&
+                    thread.contactName != thread.address &&
+                    thread.contactName.any { it.isLetter() }
+                if (hasRealName) {
+                    val key = normalizeAddressKey(thread.address)
+                    result[key] = ContactPickerItem(
+                        name = thread.contactName,
+                        address = thread.address,
+                        initials = thread.avatarInitials,
+                        photoUri = thread.contactPhotoUri,
+                        existingThreadId = thread.id
+                    )
+                }
             }
 
             // 2. Query system Contacts if permission is granted
@@ -1589,7 +2132,70 @@ object SmsMmsRepository {
                 Log.w(TAG, "Hardware SMS send fallback to local thread", e)
             }
         } else if (isMms) {
-            deliveryStatus = DeliveryStatus.DELIVERED
+            try {
+                val requestReadReport = isMmsRequestReadReports(context)
+                val imageBytes = attachmentUri?.let { MmsPduHelper.downscaleImageForMms(context, it) }
+                val pduBytes = MmsPduHelper.buildSendReqPdu(
+                    context = context,
+                    recipient = cleanAddress,
+                    bodyText = cleanBody.takeIf { it.isNotBlank() },
+                    imageBytes = imageBytes,
+                    requestDeliveryReport = requestDeliveryReport,
+                    requestReadReport = requestReadReport,
+                )
+
+                val pduFile = File(context.cacheDir, "mms_send_$msgId.pdu")
+                pduFile.writeBytes(pduBytes)
+
+                val pduUri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    pduFile
+                )
+
+                context.grantUriPermission(
+                    "com.android.mms.service",
+                    pduUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+
+                val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    context.getSystemService(SmsManager::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    SmsManager.getDefault()
+                }
+
+                val sentIntent = Intent(ACTION_MMS_SENT).apply {
+                    setPackage(context.packageName)
+                    putExtra("message_id", msgId)
+                    putExtra("pdu_path", pduFile.absolutePath)
+                }
+                val sentPi = PendingIntent.getBroadcast(
+                    context,
+                    msgId.toInt(),
+                    sentIntent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+
+                val configOverrides = android.os.Bundle().apply {
+                    putBoolean(SmsManager.MMS_CONFIG_MMS_DELIVERY_REPORT_ENABLED, requestDeliveryReport)
+                    putBoolean(SmsManager.MMS_CONFIG_MMS_READ_REPORT_ENABLED, requestReadReport)
+                    putInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, 300 * 1024)
+                }
+
+                smsManager?.sendMultimediaMessage(
+                    context,
+                    pduUri,
+                    null,
+                    configOverrides,
+                    sentPi
+                )
+                deliveryStatus = if (requestDeliveryReport) DeliveryStatus.SENT else DeliveryStatus.DELIVERED
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send MMS message over cellular network", e)
+                deliveryStatus = DeliveryStatus.FAILED
+            }
         }
 
         val resolvedContactName = resolveContactNameSafely(context, cleanAddress) ?: cleanAddress
@@ -1646,6 +2252,7 @@ object SmsMmsRepository {
         }
 
         verifyMessageUrlsOnlineAsync(context, threadId, msgId, cleanBody)
+        saveDiskCacheAsync(context, immediate = true)
 
         return threadId
     }
@@ -1715,6 +2322,7 @@ object SmsMmsRepository {
         val cleanAddress = sanitizeSenderOrRecipientAddress(senderAddress)
 
         context?.let(::loadPersistedPins)
+        context?.let(::loadDiskCache)
         if (isSenderBlocked(cleanAddress)) {
             Log.i(TAG, "Dropped incoming message from blocked sender: $cleanAddress")
             return
@@ -1803,15 +2411,19 @@ object SmsMmsRepository {
         }
 
         context?.let { ctx ->
-            postIncomingMessageNotification(
-                context = ctx,
-                threadId = targetThreadId,
-                messageId = msgId,
-                senderName = resolvedName,
-                senderAddress = cleanAddress,
-                messageBody = cleanBody,
-                securityAnalysis = securityResult,
-            )
+            saveDiskCacheInternal(ctx)
+            val isCurrentActiveThread = (activeForegroundThreadId != null && activeForegroundThreadId == targetThreadId)
+            if (!isCurrentActiveThread) {
+                postIncomingMessageNotification(
+                    context = ctx,
+                    threadId = targetThreadId,
+                    messageId = msgId,
+                    senderName = resolvedName,
+                    senderAddress = cleanAddress,
+                    messageBody = cleanBody,
+                    securityAnalysis = securityResult,
+                )
+            }
             verifyMessageUrlsOnlineAsync(ctx, targetThreadId, msgId, cleanBody)
         }
     }
@@ -1940,6 +2552,20 @@ object SmsMmsRepository {
             .addAction(replyAction)
             .addAction(markReadAction)
 
+        // Metadata Minimization: redact public lock-screen version so sender/content is never leaked
+        if (com.txtura.security.AppSecurityManager.isMetadataMinimizationEnabled(context)) {
+            val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
+                .setSmallIcon(R.drawable.ic_stat_message)
+                .setContentTitle("Txtura")
+                .setContentText(if (isSr) "Nova poruka" else "New message")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .build()
+
+            builder.setPublicVersion(publicNotification)
+        }
+
         // 3. Copy 2FA / OTP Code action from Notification if a code is detected, otherwise Highlight action
         val extractedOtp = securityAnalysis.extractedOtpCode
         if (!extractedOtp.isNullOrBlank()) {
@@ -1998,10 +2624,59 @@ object SmsMmsRepository {
     }
 
     /**
+     * Toggles read/unread status for a conversation.
+     * If unreadCount > 0, marks as read (unreadCount = 0).
+     * If unreadCount == 0, marks as unread (unreadCount = 1).
+     */
+    fun toggleThreadRead(context: Context, threadId: Long) {
+        val current = _threads.value.find { it.id == threadId } ?: return
+        if (current.unreadCount > 0) {
+            markThreadRead(context, threadId)
+        } else {
+            markThreadUnread(context, threadId)
+        }
+    }
+
+    /**
      * Marks a conversation as read both in memory and in the Android Telephony database.
      */
     fun markThreadRead(context: Context, threadId: Long) {
         markThreadsRead(context, setOf(threadId))
+    }
+
+    /**
+     * Marks a conversation as unread both in memory and in the Android Telephony database.
+     */
+    fun markThreadUnread(context: Context, threadId: Long) {
+        _threads.update { list ->
+            list.map {
+                if (it.id == threadId) {
+                    it.copy(unreadCount = (it.unreadCount + 1).coerceAtLeast(1))
+                } else {
+                    it
+                }
+            }
+        }
+        val appCtx = context.applicationContext
+        ioScope.launch {
+            if (isDefaultSmsApp(appCtx)) {
+                try {
+                    val values = ContentValues().apply {
+                        put(Telephony.Sms.READ, 0)
+                        put(Telephony.Sms.SEEN, 0)
+                    }
+                    appCtx.contentResolver.update(
+                        Telephony.Sms.CONTENT_URI,
+                        values,
+                        "${Telephony.Sms.THREAD_ID} = ?",
+                        arrayOf(threadId.toString())
+                    )
+                } catch (_: Exception) {
+                    // Ignore if not default SMS app or read-only provider
+                }
+            }
+            saveDiskCacheAsync(appCtx)
+        }
     }
 
     /**
@@ -2049,6 +2724,7 @@ object SmsMmsRepository {
                     // Ignore if not default SMS app or read-only provider
                 }
             }
+            saveDiskCacheAsync(appCtx)
         }
     }
 
@@ -2510,6 +3186,7 @@ object SmsMmsRepository {
 
         _threads.value = sortThreads(payload.threads.filterNot { isSenderBlocked(it.address) })
         _deletedThreads.value = payload.deletedThreads
+        saveDiskCacheAsync(context)
 
         val totalThreads = payload.threads.size + payload.deletedThreads.size
         val totalMsgs = payload.totalMessagesCount
@@ -2641,6 +3318,7 @@ object SmsMmsRepository {
                 }
             }
         }
+        saveDiskCacheAsync(context)
     }
 
     fun clearDraftForThread(context: Context, threadId: Long) {

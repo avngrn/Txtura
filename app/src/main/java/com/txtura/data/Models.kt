@@ -2,6 +2,10 @@
 
 package com.txtura.data
 
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,11 +13,19 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import com.txtura.MainActivity
+import com.txtura.R
+import com.txtura.ui.i18n.TxturaStrings
+import com.txtura.security.AppSecurityManager
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.security.SecurityAnalysisResult
+import com.txtura.security.SecurityCryptoManager
 import com.txtura.security.SecurityRiskLevel
 import com.txtura.ui.theme.TxturaThemeMode
 import kotlinx.coroutines.Dispatchers
@@ -224,12 +236,17 @@ data class WallpaperConfig(
     val preset: WallpaperPreset = WallpaperPreset.DEFAULT,
     val customImageUri: String? = null,
     val texture: WallpaperTexture = WallpaperTexture.AUTO_THEME,
+    val customAccentColorHex: Long? = null,
 ) {
     val isCustomGalleryImage: Boolean
         get() = !customImageUri.isNullOrBlank()
 
     val resolvedTexture: WallpaperTexture
-        get() = if (texture == WallpaperTexture.AUTO_THEME) preset.defaultTexture else texture
+        get() = when {
+            isCustomGalleryImage && customAccentColorHex != null -> WallpaperTexture.NONE
+            texture == WallpaperTexture.AUTO_THEME -> preset.defaultTexture
+            else -> texture
+        }
 
     fun serialize(): String {
         val base = if (!customImageUri.isNullOrBlank()) {
@@ -237,20 +254,38 @@ data class WallpaperConfig(
         } else {
             "preset:${preset.name}"
         }
-        return if (texture == WallpaperTexture.AUTO_THEME) {
+        val withTex = if (texture == WallpaperTexture.AUTO_THEME) {
             base
         } else {
             "$base|tex:${texture.name}"
+        }
+        return if (customAccentColorHex != null) {
+            "$withTex|acc:${customAccentColorHex.toString(16)}"
+        } else {
+            withTex
         }
     }
 
     companion object {
         fun deserialize(raw: String?): WallpaperConfig {
             if (raw.isNullOrBlank()) return WallpaperConfig()
-            val parts = raw.split("|tex:", limit = 2)
-            val basePart = parts[0]
-            val parsedTexture = parts.getOrNull(1)?.let { texName ->
-                WallpaperTexture.entries.find { it.name == texName.trim() }
+            var accHex: Long? = null
+            var textureName: String? = null
+            var basePart = raw
+
+            if (basePart.contains("|acc:")) {
+                val accSplit = basePart.split("|acc:", limit = 2)
+                basePart = accSplit[0]
+                accHex = accSplit.getOrNull(1)?.trim()?.toLongOrNull(16)
+            }
+            if (basePart.contains("|tex:")) {
+                val texSplit = basePart.split("|tex:", limit = 2)
+                basePart = texSplit[0]
+                textureName = texSplit.getOrNull(1)?.trim()
+            }
+
+            val parsedTexture = textureName?.let { tex ->
+                WallpaperTexture.entries.find { it.name == tex }
             } ?: WallpaperTexture.AUTO_THEME
 
             return when {
@@ -261,16 +296,22 @@ data class WallpaperConfig(
                             preset = WallpaperPreset.DEFAULT,
                             customImageUri = uriStr,
                             texture = parsedTexture,
+                            customAccentColorHex = accHex,
                         )
                     } else {
-                        WallpaperConfig(texture = parsedTexture)
+                        WallpaperConfig(texture = parsedTexture, customAccentColorHex = accHex)
                     }
                 }
                 basePart.startsWith("preset:") -> {
                     val name = basePart.removePrefix("preset:")
                     val targetName = if (name == "CYBER_NEBULA") "VELVET_PLUM" else name
                     val found = WallpaperPreset.entries.find { it.name == targetName } ?: WallpaperPreset.DEFAULT
-                    WallpaperConfig(preset = found, customImageUri = null, texture = parsedTexture)
+                    WallpaperConfig(
+                        preset = found,
+                        customImageUri = null,
+                        texture = parsedTexture,
+                        customAccentColorHex = accHex,
+                    )
                 }
                 else -> WallpaperConfig()
             }
@@ -381,6 +422,7 @@ data class AppSettingsSnapshot(
     val inAppSoundsEnabled: Boolean = true,
     val pinchToZoomEnabled: Boolean = true,
     val expressiveAnimationsEnabled: Boolean = true,
+    val hapticsEnabled: Boolean = true,
     val bubblesEnabled: Boolean = true,
     val autoPreviewsShowAll: Boolean = true,
     val autoPreviewsWebLinksOnly: Boolean = false,
@@ -487,6 +529,7 @@ object BackupManager {
         settingsObj.put("inAppSoundsEnabled", settings.inAppSoundsEnabled)
         settingsObj.put("pinchToZoomEnabled", settings.pinchToZoomEnabled)
         settingsObj.put("expressiveAnimationsEnabled", settings.expressiveAnimationsEnabled)
+        settingsObj.put("hapticsEnabled", settings.hapticsEnabled)
         settingsObj.put("bubblesEnabled", settings.bubblesEnabled)
         settingsObj.put("autoPreviewsShowAll", settings.autoPreviewsShowAll)
         settingsObj.put("autoPreviewsWebLinksOnly", settings.autoPreviewsWebLinksOnly)
@@ -581,8 +624,14 @@ object BackupManager {
 
     /**
      * Parses and validates a JSON backup payload.
+     * Automatically handles decryption if the backup was encrypted with a hardware key or password.
      */
-    fun parseBackupJson(jsonString: String): BackupRestorePayload {
+    fun parseBackupJson(rawString: String, password: String? = null): BackupRestorePayload {
+        val jsonString = if (SecurityCryptoManager.isEncryptedBackup(rawString)) {
+            SecurityCryptoManager.decryptBackup(rawString, password)
+        } else {
+            rawString
+        }
         val root = JSONObject(jsonString)
         val version = root.optInt("version", 1)
         val createdAt = root.optLong("createdAtMillis", System.currentTimeMillis())
@@ -616,6 +665,7 @@ object BackupManager {
         val inAppSoundsEnabled = settingsObj.optBoolean("inAppSoundsEnabled", true)
         val pinchToZoomEnabled = settingsObj.optBoolean("pinchToZoomEnabled", true)
         val expressiveAnimationsEnabled = settingsObj.optBoolean("expressiveAnimationsEnabled", true)
+        val hapticsEnabled = settingsObj.optBoolean("hapticsEnabled", true)
         val bubblesEnabled = settingsObj.optBoolean("bubblesEnabled", true)
         val autoPreviewsShowAll = settingsObj.optBoolean("autoPreviewsShowAll", true)
         val autoPreviewsWebLinksOnly = settingsObj.optBoolean("autoPreviewsWebLinksOnly", false)
@@ -651,6 +701,7 @@ object BackupManager {
             inAppSoundsEnabled = inAppSoundsEnabled,
             pinchToZoomEnabled = pinchToZoomEnabled,
             expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+            hapticsEnabled = hapticsEnabled,
             bubblesEnabled = bubblesEnabled,
             autoPreviewsShowAll = autoPreviewsShowAll,
             autoPreviewsWebLinksOnly = autoPreviewsWebLinksOnly,
@@ -819,20 +870,26 @@ object BackupManager {
     }
 
     /**
-     * Writes the backup JSON into app internal storage under files/backups/.
+     * Writes the encrypted backup JSON into app internal storage under files/backups/.
+     * Prevents any unauthorized extraction if the device is connected to a PC.
      */
-    fun createInternalBackupFile(context: Context, jsonString: String): File {
+    fun createInternalBackupFile(context: Context, jsonString: String, password: String? = null): File {
         val dir = File(context.filesDir, "backups")
         if (!dir.exists()) {
             dir.mkdirs()
         }
+        val contentToWrite = if (SecurityCryptoManager.isEncryptedBackup(jsonString)) {
+            jsonString
+        } else {
+            SecurityCryptoManager.encryptBackup(jsonString, password)
+        }
         val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
         val timestampedFile = File(dir, "txtura_backup_$dateStr.json")
-        timestampedFile.writeText(jsonString, Charsets.UTF_8)
+        timestampedFile.writeText(contentToWrite, Charsets.UTF_8)
 
         // Also update latest snapshot file
         val latestFile = File(dir, "txtura_backup_latest.json")
-        latestFile.writeText(jsonString, Charsets.UTF_8)
+        latestFile.writeText(contentToWrite, Charsets.UTF_8)
 
         saveLastBackupTimestamp(context, System.currentTimeMillis())
         return timestampedFile
@@ -874,11 +931,17 @@ object BackupManager {
 
     /**
      * Saves backup content directly to a user-selected SAF document Uri.
+     * Guarantees AES-256-GCM encryption before writing to external storage or SAF.
      */
-    fun saveBackupToUri(context: Context, targetUri: Uri, jsonString: String): Boolean {
+    fun saveBackupToUri(context: Context, targetUri: Uri, jsonString: String, password: String? = null): Boolean {
         return try {
+            val contentToWrite = if (SecurityCryptoManager.isEncryptedBackup(jsonString)) {
+                jsonString
+            } else {
+                SecurityCryptoManager.encryptBackup(jsonString, password)
+            }
             context.contentResolver.openOutputStream(targetUri)?.use { out ->
-                out.write(jsonString.toByteArray(Charsets.UTF_8))
+                out.write(contentToWrite.toByteArray(Charsets.UTF_8))
                 out.flush()
             }
             saveLastBackupTimestamp(context, System.currentTimeMillis())
@@ -935,6 +998,110 @@ object AppUpdateManager {
     private const val ALL_RELEASES_API = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases?per_page=1"
     private const val ALL_TAGS_API = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/tags?per_page=1"
     const val RELEASES_WEB_URL = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases"
+    const val GITHUB_REPO_WEB_URL = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO"
+
+    const val CHANNEL_ID_UPDATES = "txtura_app_updates"
+    const val NOTIFICATION_ID_UPDATE = 9901
+    const val ACTION_NAVIGATE_TO_UPDATES = "com.txtura.action.NAVIGATE_TO_UPDATES"
+    const val EXTRA_NAVIGATE_TO_UPDATES = "extra_navigate_to_updates"
+
+    fun ensureNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            val locStrings = TxturaStrings.forLocale()
+            val channel = NotificationChannel(
+                CHANNEL_ID_UPDATES,
+                locStrings.updateNotificationChannelName,
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = locStrings.updateNotificationChannelDesc
+                enableLights(true)
+                setShowBadge(true)
+            }
+            nm.createNotificationChannel(channel)
+        }
+    }
+
+    fun postUpdateAvailableNotification(context: Context, releaseInfo: GitHubReleaseInfo) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasNotifPerm = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasNotifPerm) return
+        }
+
+        ensureNotificationChannel(context)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            action = ACTION_NAVIGATE_TO_UPDATES
+            putExtra(EXTRA_NAVIGATE_TO_UPDATES, true)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            NOTIFICATION_ID_UPDATE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val locStrings = TxturaStrings.forLocale()
+        val title = locStrings.updateNotificationTitle
+        val text = locStrings.updateNotificationText(releaseInfo.versionTag)
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID_UPDATES)
+            .setSmallIcon(R.drawable.ic_stat_message)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_UPDATE, notification)
+        } catch (_: SecurityException) {
+        }
+    }
+
+    fun dismissUpdateNotification(context: Context) {
+        try {
+            NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID_UPDATE)
+        } catch (_: Exception) {
+        }
+    }
+
+    suspend fun checkAndNotifyIfUpdateAvailable(
+        context: Context,
+        currentVersionName: String,
+        force: Boolean = false,
+    ) = withContext(Dispatchers.IO) {
+        if (!hasActiveInternetConnection(context)) return@withContext
+
+        val lastCheck = getLastCheckTimestamp(context)
+        val elapsed = System.currentTimeMillis() - lastCheck
+
+        if (!force && lastCheck > 0L && elapsed < 45_000L) {
+            val cached = getCachedReleaseInfo(context, currentVersionName)
+            if (cached?.isUpdateAvailable == true) {
+                postUpdateAvailableNotification(context, cached)
+            }
+            return@withContext
+        }
+
+        when (val res = checkForUpdates(context, currentVersionName)) {
+            is AppUpdateCheckResult.Success -> {
+                if (res.info.isUpdateAvailable) {
+                    postUpdateAvailableNotification(context, res.info)
+                } else {
+                    dismissUpdateNotification(context)
+                }
+            }
+            else -> Unit
+        }
+    }
 
     fun getLastCheckTimestamp(context: Context): Long {
         return context.getSharedPreferences(PREFS_UPDATE, Context.MODE_PRIVATE)
@@ -1085,7 +1252,7 @@ object AppUpdateManager {
     }
 
     private fun fetchLatestReleaseJson(): JSONObject? {
-        val conn = (URL(LATEST_RELEASE_API).openConnection() as? HttpURLConnection) ?: return null
+        val conn = (AppSecurityManager.openSecureConnection(URL(LATEST_RELEASE_API)) as? HttpURLConnection) ?: return null
         return try {
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/vnd.github+json")
@@ -1106,7 +1273,7 @@ object AppUpdateManager {
     }
 
     private fun fetchFirstArrayObject(urlStr: String): JSONObject? {
-        val conn = (URL(urlStr).openConnection() as? HttpURLConnection) ?: return null
+        val conn = (AppSecurityManager.openSecureConnection(URL(urlStr)) as? HttpURLConnection) ?: return null
         return try {
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/vnd.github+json")
@@ -1149,7 +1316,7 @@ object AppUpdateManager {
             val safeTag = releaseInfo.versionTag.replace(Regex("[^a-zA-Z0-9._-]"), "_")
             val targetApk = File(updatesDir, "Txtura-$safeTag.apk")
 
-            val conn = (URL(apkUrl).openConnection() as? HttpURLConnection) ?: return@withContext false
+            val conn = (AppSecurityManager.openSecureConnection(URL(apkUrl), context) as? HttpURLConnection) ?: return@withContext false
             conn.instanceFollowRedirects = true
             conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
             conn.connectTimeout = 10000
@@ -1215,5 +1382,9 @@ object AppUpdateManager {
         } catch (_: Exception) {
             // Ignore if no browser available
         }
+    }
+
+    fun openGitHubRepoInBrowser(context: Context, url: String = GITHUB_REPO_WEB_URL) {
+        openReleasePageInBrowser(context, url)
     }
 }

@@ -76,8 +76,12 @@ class AppStrings(val isSerbian: Boolean) {
     val writeSmsPlaceholder: String = s("Write an SMS message", "Napiši SMS poruku")
     val mmsModeIndicator: String = s("MMS Mode • Multimedia message", "MMS režim • Multimedijalna poruka")
     val send: String = s("Send", "Pošalji")
-    val cancel: String = s("Cancel", "Otkaži")
+    val cancel: String = s("Cancel", "Poništi")
+    val next: String = s("Next", "Dalje")
+    val enterNameOrPhoneNumber: String = s("Enter name or phone number", "Unesi ime ili broj telefona")
     val confirm: String = s("Confirm", "Potvrdi")
+    val closeDialog: String = s("Close", "Zatvori")
+    val toRecipientPrefix: String = s("To:", "Za:")
     val newSmsMmsDialogTitle: String = s("Choose Recipient", "Izaberi primaoca")
     val searchOrEnterNumberPlaceholder: String = s(
         "Search contact or type phone number",
@@ -158,6 +162,76 @@ class AppStrings(val isSerbian: Boolean) {
     )
 
     // Settings Screen Categories
+    val settingsCategoryAppearance: String = s("Appearance & Display", "Izgled i prilagođavanje")
+    val settingsCategoryNotifications: String = s("Notifications, Sounds & Haptics", "Obaveštenja, zvuk i odziv")
+    val settingsCategoryChat: String = s("Chat & Gestures", "Ponašanje četa i interakcije")
+    val settingsCategoryMessaging: String = s("Messaging & Network", "SMS i MMS podešavanja")
+    val settingsCategoryData: String = s("Data & Storage", "Podaci i skladište")
+    val settingsCategorySystem: String = s("System & About", "Sistem i aplikacija")
+    val settingsCategoryPrivacy: String = s("Privacy & Security", "Privatnost i bezbednost")
+
+    // Privacy & Security Details
+    val dbEncryptionTitle: String = s("Local Database Encryption", "Lokalna enkripcija baze podataka")
+    val dbEncryptionSub: String = s(
+        "Encrypted local database on device using SQLCipher",
+        "Šifrovanje lokalne baze podataka na uređaju pomoću SQLCipher-a",
+    )
+    val dbEncryptionBadge: String = s("SQLCipher 256-bit AES Active", "SQLCipher 256-bit AES Aktivan")
+    val biometricLockTitle: String = s(
+        "Biometric Protection & PIN/Passphrase",
+        "Biometrijska zaštita i PIN/Passphrase",
+    )
+    val biometricLockSub: String = s(
+        "App locking with fingerprint, face recognition or separate password",
+        "Omogućavanje zaključavanja same aplikacije otiskom prsta, prepoznavanjem lica ili odvojenom lozinkom",
+    )
+    val biometricLockEnabledLabel: String = s("Lock App When Closed", "Zaključavanje aplikacije pri izlasku")
+    val sslPinningTitle: String = s(
+        "HTTPS & TLS/SSL with Pinning (SSL Pinning)",
+        "HTTPS i TLS/SSL sa Pinning-om (SSL Pinning)",
+    )
+    val sslPinningSub: String = s(
+        "Strict encrypted connections with certificate pinning to prevent Man-in-the-Middle (MitM) attacks.",
+        "Striktna upotreba šifrovanih veza uz implementaciju sertifikat pinning-a kako bi se sprečili Man-in-the-Middle (MitM) napadi.",
+    )
+    val sslPinningBadge: String = s("TLS 1.3 / Pinning Active", "TLS 1.3 / Pinning Aktivan")
+    val metadataMinimizationTitle: String = s("Metadata Minimization", "Minimizacija metapodataka")
+    val metadataMinimizationSub: String = s(
+        "Retain minimal information about sender, recipient, timestamp and location (Zero metadata policies).",
+        "Čuvanje što manje informacija o tome ko šalje poruku kome, kada i odakle (Zero metadata politike).",
+    )
+    val metadataMinimizationBadge: String = s("Zero Metadata Active", "Zero Metadata Aktivna")
+    val rootDetectionTitle: String = s("Root State Detection", "Detekcija \"Root\" stanja")
+    val rootDetectionSub: String = s(
+        "Check if the operating system is compromised, preventing malicious apps from reading memory on rooted devices.",
+        "Provera da li je operativni sistem kompromitovan, jer na root-ovanim uređajima maliciozne aplikacije lakše čitaju memoriju.",
+    )
+    val rootStateSafe: String = s("System is secure (No Root detected)", "Sistem je bezbedan (Root nije detektovan)")
+    val rootStateCompromised: String = s("Warning: Compromised / Root access detected", "Upozorenje: Kompromitovan / Detektovan Root pristup")
+    val rootCheckBinarySafe: String = s("SU binary: Not found (Safe)", "SU binarni fajl: Nije pronađen (Bezbedno)")
+    val rootCheckBinaryRisk: String = s("SU binary: Found on system (Risk)", "SU binarni fajl: Pronađen u sistemu (Rizik)")
+    val rootCheckTagsSafe: String = s("Build tags: Official release-keys", "Build ključevi: Zvanični release-keys")
+    val rootCheckTagsRisk: String = s("Build tags: Test-keys detected", "Build ključevi: Detektovani test-keys")
+    val rootCheckAppsSafe: String = s("Root managers: None detected", "Root menadžeri: Nisu detektovani")
+    val rootCheckAppsRisk: String = s("Root managers: Management app present", "Root menadžeri: Prisutna root aplikacija")
+    val rootRescanButton: String = s("Re-scan Device Integrity", "Ponovi proveru integriteta")
+    val rootScanInProgress: String = s("Scanning device integrity...", "Provera integriteta uređaja...")
+    val addBlockedSenderTitle: String = s("Block New Number", "Blokiraj novi broj")
+    val blockSenderDialogHint: String = s("Enter phone number to block...", "Unesite broj telefona za blokiranje...")
+    val blockSenderAction: String = s("Block", "Blokiraj")
+    val lockTimeoutTitle: String = s("Lock Timeout", "Vreme do zaključavanja")
+    val lockTimeoutImmediate: String = s("Immediately on exit", "Odmah pri izlasku")
+    val lockTimeout1Min: String = s("After 1 minute", "Nakon 1 minuta")
+    val lockTimeout5Min: String = s("After 5 minutes", "Nakon 5 minuta")
+    val lockAppNowButton: String = s("Lock App Now (Test)", "Zaključaj aplikaciju odmah (Test)")
+    val dbEncryptionEnabledToast: String = s(
+        "Local database encrypted with SQLCipher 256-bit AES.",
+        "Lokalna baza podataka je šifrovana pomoću SQLCipher 256-bit AES-a.",
+    )
+    val dbEncryptionDisabledToast: String = s(
+        "Local database encryption disabled.",
+        "Lokalna enkripcija baze podataka je isključena.",
+    )
     val appearanceSectionTitle: String = s("Appearance adjustments", "Prilagođavanje izgleda")
     val uiTransparencyTitle: String = s("UI Transparency", "Providnost interfejsa")
     val permissionsSectionTitle: String = s("App Permissions", "Dozvole aplikacija")
@@ -197,7 +271,7 @@ class AppStrings(val isSerbian: Boolean) {
         "Multi-layer URL & threat analyzer: detects IDN homograph/brand spoofing, APK/EXE malware links, high-risk TLDs, and AI/crypto scams without flagging safe HTTPS links.",
         "Višeslojni filter pretnji: detektuje lažne brendove (homograf napade), malver fajlove (.apk/.exe), rizične domene i AI/kripto prevare, dok bezbedne sajtove propušta bez lažnih alarma.",
     )
-    val secItem2Title: String = s("IntentSanitizer & Redirection Guard", "IntentSanitizer & Zaštita od redirekcije")
+    val secItem2Title: String = s("IntentSanitizer & Redirection Guard", "IntentSanitizer i zaštita od redirekcije")
     val secItem2Sub: String = s(
         "All incoming SEND/SENDTO intents undergo strict scheme validation and forbidden URI flag stripping.",
         "Svi dolazni SEND/SENDTO intenti prolaze strogu validaciju šeme i uklanjanje neovlašćenih URI zastavica.",
@@ -219,6 +293,76 @@ class AppStrings(val isSerbian: Boolean) {
     val secItem5Sub: String = s(
         "Receivers are locked with permissions and unencrypted cloud backup is disabled.",
         "Prijemnici su zaključani dozvolama uz parametrizovane upite i isključen nešifrovani bekap.",
+    )
+    val secItem6Title: String = s(
+        "Local Database Encryption (AES-256-GCM / SQLCipher)",
+        "Lokalna enkripcija baze podataka (AES-256-GCM / SQLCipher)",
+    )
+    val secItem6Sub: String = s(
+        "Real-time authenticated encryption of the entire local message cache using hardware-backed Android Keystore keys.",
+        "Autentifikovano šifrovanje celokupnog lokalnog keša poruka u realnom vremenu uz hardversku zaštitu Android Keystore ključeva.",
+    )
+    val secItem7Title: String = s(
+        "Biometric Protection & PIN/Passphrase App Lock",
+        "Biometrijska zaštita i PIN/Passphrase zaključavanje",
+    )
+    val secItem7Sub: String = s(
+        "Locks the application with fingerprint, face recognition or device PIN, with customizable lock timeout and an impenetrable lock screen overlay.",
+        "Zaključava aplikaciju otiskom prsta, prepoznavanjem lica ili uređajnim PIN-om uz podesivo vreme zaključavanja i neprobojni ekran zaključavanja.",
+    )
+    val secItem8Title: String = s(
+        "HTTPS & TLS/SSL Certificate Pinning (SPKI)",
+        "HTTPS i TLS/SSL sertifikat pinning (SPKI)",
+    )
+    val secItem8Sub: String = s(
+        "Strict public key (SPKI) pinning for external connections to thwart Man-in-the-Middle (MitM) attacks, blocking unencrypted HTTP transfers.",
+        "Striktni SPKI sertifikat pinning za mrežne veze radi sprečavanja Man-in-the-Middle napada, uz potpuno blokiranje nešifrovanog HTTP saobraćaja.",
+    )
+    val secItem9Title: String = s(
+        "Zero Metadata Minimization & Anti-Screenshot Shield",
+        "Zero Metadata minimizacija i zaštita od snimanja ekrana",
+    )
+    val secItem9Sub: String = s(
+        "Automated stripping of EXIF GPS coordinates and camera tags from MMS photos, dynamic FLAG_SECURE screenshot prevention, and redacted lock-screen notifications.",
+        "Automatsko uklanjanje EXIF GPS koordinata i detalja kamere sa slika pre slanja, FLAG_SECURE zabrana snimanja ekrana i cenzurisana obaveštenja.",
+    )
+    val secItem10Title: String = s(
+        "Deep System Integrity & Root State Detection",
+        "Dubinsko skeniranje integriteta i detekcija Root stanja",
+    )
+    val secItem10Sub: String = s(
+        "Real-time scan for su binaries, which su execution, Magisk/KernelSU managers, system partition remounts, and test-keys build tags.",
+        "Skeniranje su binarnih fajlova u realnom vremenu, which su komande, Magisk/KernelSU menadžera, modifikovanih particija i test-keys potpisa.",
+    )
+    val secItem11Title: String = s(
+        "Hardware Encrypted Backup & PBKDF2 Password Protection",
+        "Hardverski šifrovani bekap i PBKDF2 zaštita lozinkom",
+    )
+    val secItem11Sub: String = s(
+        "Encrypted backup exports using AES-256-GCM protected by the unique device keystore key or custom user password with PBKDF2 key derivation.",
+        "Šifrovanje izvoza rezervnih kopija preko AES-256-GCM sa zaštitom jedinstvenim ključem uređaja ili korisničkom lozinkom uz PBKDF2 derivaciju.",
+    )
+    val secItem12Title: String = s(
+        "Inbound Spam & Blocked Senders Firewall",
+        "Zaštitni zid za spem i blokirane pošiljaoce",
+    )
+    val secItem12Sub: String = s(
+        "Strict inbound message filtering that silently drops SMS/MMS messages and notifications from blocked addresses without user disruption.",
+        "Strogo filtriranje dolaznih poruka koje nečujno odbacuje SMS i MMS poruke i obaveštenja sa blokiranih adresa bez ometanja korisnika.",
+    )
+
+    val securityStatusActive: String = s("Active", "Aktivno")
+    val securityStatusDisabled: String = s("Disabled", "Isključeno")
+    val securityStatusTapToConfigure: String = s("Tap to configure", "Dodirnite za podešavanje")
+    val securityStatusCompromised: String = s("Compromised (Root detected)", "Kompromitovano (Detektovan Root)")
+    val systemSecuritySectionTitle: String = s("System & IPC Security Guard", "Sistemska i IPC zaštita")
+    val rootDetectionActiveTitle: String = s(
+        "Active Root State & OS Integrity Monitoring",
+        "Aktivno praćenje Root stanja i integriteta sistema",
+    )
+    val rootDetectionActiveSub: String = s(
+        "Continuous scanning for su binaries, test-keys and privilege escalation managers",
+        "Kontinuirano skeniranje su binarnih fajlova, test-keys potpisa i root menadžera",
     )
 
     // Security Analyzer
@@ -298,11 +442,11 @@ class AppStrings(val isSerbian: Boolean) {
     val layoutModeCompact: String = s("Compact messages view", "Kompaktni prikaz poruka")
 
     // SMS & MMS Settings (Carrier, Delivery, Receipts, MMS, Alerts, SMSC, SIM)
-    val smsMmsSettingsSectionTitle: String = s("SMS and MMS settings", "SMS i MMS podešavanja")
-    val deliveryAndReceiptsSectionTitle: String = s("Delivery & receipts", "Isporuka i potvrde")
-    val mmsSectionTitle: String = s("Multimedia messages (MMS)", "Multimedijalne poruke (MMS)")
+    val smsMmsSettingsSectionTitle: String = s("SMS & MMS Settings", "SMS i MMS podešavanja")
+    val deliveryAndReceiptsSectionTitle: String = s("Delivery & receipts", "Potvrde i izveštaji")
+    val mmsSectionTitle: String = s("Download and creation of MMS", "Preuzimanje i kreiranje MMS-a")
     val soundAndAlertsSectionTitle: String = s("Sound & emergency alerts", "Tonovi i hitna upozorenja")
-    val simAndSmscSectionTitle: String = s("SIM card & SMS center", "SIM kartica i SMS centar")
+    val simAndSmscSectionTitle: String = s("SIM Card & SMS Center", "SIM i mrežni servisi")
 
     // 1. Delivery Reports
     val deliveryReportsTitle: String = s("Delivery reports", "Izveštaji o isporuci")
@@ -355,6 +499,44 @@ class AppStrings(val isSerbian: Boolean) {
         "Public safety alerts and emergency broadcast settings",
         "Sistemska bezbednosna i hitna upozorenja preko mreže",
     )
+    val emergencyLocationLabel: String = s("Current country / location", "Trenutna lokacija i zemlja")
+    val emergencyFilterDesc: String = s(
+        "Active protection: Only alerts for your current country and global catastrophes are received.",
+        "Aktivna zaštita: Prihvataju se isključivo upozorenja za zemlju u kojoj se telefon nalazi i globalne katastrofe."
+    )
+    val emergencyExtremeTitle: String = s("Extreme threats", "Ekstremne opasnosti")
+    val emergencyExtremeSub: String = s(
+        "Extreme threats to life and property",
+        "Ekstremne opasnosti po život i imovinu"
+    )
+    val emergencySevereTitle: String = s("Severe threats", "Ozbiljne opasnosti")
+    val emergencySevereSub: String = s(
+        "Severe weather and disaster alerts",
+        "Ozbiljne vremenske nepogode i vanredne situacije"
+    )
+    val emergencyAmberTitle: String = s("AMBER Alerts / Child abduction", "Pronađi me i Amber Alert")
+    val emergencyAmberSub: String = s(
+        "Emergency bulletins for abducted children",
+        "Hitna obaveštenja o nestalim licima i deci"
+    )
+    val emergencyGlobalTitle: String = s("Global catastrophes", "Globalne katastrofe")
+    val emergencyGlobalSub: String = s(
+        "Planetary crises, extreme disasters and presidential alerts (always on)",
+        "Planetarne nepogode, globalne katastrofe i vrhovna upozorenja (uvek aktivno)"
+    )
+    val emergencySoundTitle: String = s("Emergency sound alert", "Zvučni signal uzbune")
+    val emergencySoundSub: String = s(
+        "Play high-priority alert sound for incoming warnings",
+        "Reprodukcija zvučnog signala najvišeg prioriteta za uzbune"
+    )
+    val emergencyTestButton: String = s("Trigger test alert", "Testiraj uzbunu")
+    val emergencyTestToast: String = s("Test emergency alert dispatched", "Test upozorenje je poslato")
+    val emergencySystemSettingsButton: String = s("Device system settings", "Sistemska podešavanja telefona")
+    val emergencyNoAlertsTitle: String = s("No active emergency alerts", "Nema aktivnih hitnih upozorenja")
+    val emergencyNoAlertsSub: String = s(
+        "Your device is continuously monitoring for local and global emergency broadcasts.",
+        "Vaš uređaj neprekidno prati mrežu za lokalna i globalna hitna upozorenja."
+    )
 
     // 8. Message Tone
     val messageToneTitle: String = s("Message tone", "Ton poruke")
@@ -406,6 +588,11 @@ class AppStrings(val isSerbian: Boolean) {
         "Smooth bubble physics, transitions, and lively visual effects",
         "Glatke animacije mehurića, prelaza i vizuelnih detalja",
     )
+    val hapticsTitle: String = s("Haptic feedback", "Haptički odzivi")
+    val hapticsSub: String = s(
+        "Tactile vibration feedback on touches, selection, and message actions",
+        "Taktilne vibracije na dodir, selekciju i radnje sa porukama",
+    )
 
     // Bubbles (Screenshot 2)
     val bubblesSectionTitle: String = s("Bubbles", "Mehurići")
@@ -451,7 +638,9 @@ class AppStrings(val isSerbian: Boolean) {
     val swipeGestureUnpin: String = s("Unpin", "Otkači")
     val swipeActionDelete: String = s("Trash", "Obriši")
     val swipeActionCall: String = s("Call sender", "Pozovi kontakt")
-    val swipeActionMarkRead: String = s("Mark read", "Označi pročitano")
+    val swipeActionMarkRead: String = s("Mark read / unread", "Označi kao pročitano / nepročitano")
+    val swipeGestureMarkRead: String = s("Mark read", "Označi pročitano")
+    val swipeGestureMarkUnread: String = s("Mark unread", "Označi nepročitano")
     val swipeActionNone: String = s("Disabled", "Isključeno")
     val deletedMessagesTitle: String = s("Deleted Messages", "Obrisane poruke")
     val deletedMessagesSubtitle: (Int, Int) -> String = { count, days ->
@@ -744,6 +933,30 @@ class AppStrings(val isSerbian: Boolean) {
     }
     val confirmRestoreButton: String = s("Restore Data", "Vrati podatke")
 
+    // Encrypted Backup & Password strings
+    val createEncryptedBackupDialogTitle: String = s("Create Encrypted Backup", "Kreiraj šifrovanu kopiju")
+    val createEncryptedBackupDialogDesc: String = s(
+        "Your conversations and settings are encrypted with AES-256-GCM. Optionally set a password to allow restoring on a computer or another phone. If left blank, it will be encrypted with this device's hardware key.",
+        "Vaše poruke i podešavanja se šifruju pomoću AES-256-GCM standarda. Opciono unesite lozinku ako želite da kopiju možete otvoriti na računaru ili drugom telefonu. Ako ostavite prazno, biće šifrovana hardverskim ključem ovog telefona."
+    )
+    val backupPasswordPlaceholder: String = s("Optional password", "Opciona lozinka")
+    val backupPasswordConfirmButton: String = s("Encrypt & Save", "Šifruj i sačuvaj")
+    val restorePasswordDialogTitle: String = s("Enter Backup Password", "Unesite lozinku kopije")
+    val restorePasswordDialogDesc: String = s(
+        "This backup file is encrypted with a password. Enter the password used when creating the backup to decrypt and restore it.",
+        "Ova rezervna kopija je zaštićena lozinkom. Unesite lozinku koja je korišćena prilikom kreiranja kopije kako biste je dešifrovali."
+    )
+    val restorePasswordPlaceholder: String = s("Backup password", "Lozinka kopije")
+    val restorePasswordConfirmButton: String = s("Decrypt & Restore", "Dešifruj i učitaj")
+    val backupDeviceKeyMismatch: String = s(
+        "This backup was encrypted with another device's hardware key. A password-protected backup is required to restore on a different device.",
+        "Ova kopija je šifrovana hardverskim ključem drugog uređaja. Za prenos na novi telefon potrebno je kreirati kopiju sa lozinkom."
+    )
+    val backupPasswordIncorrect: String = s(
+        "Incorrect backup password or corrupted file.",
+        "Pogrešna lozinka rezervne kopije ili oštećen fajl."
+    )
+
     // Delayed 6s send & scheduled message strings
     val messageSendCancelledToast: String = s(
         "Message sending cancelled.",
@@ -828,9 +1041,7 @@ class AppStrings(val isSerbian: Boolean) {
     val updateAvailableTitle: (String) -> String = { ver ->
         if (isSerbian) "Dostupna je nova verzija: $ver" else "New version available: $ver"
     }
-    val downloadAndInstallUpdateButton: (String) -> String = { ver ->
-        if (isSerbian) "Preuzmi i instaliraj ($ver)" else "Download & Install ($ver)"
-    }
+    val downloadAndInstallUpdateButton: String = s("Download and Install", "Preuzmi i instaliraj")
     val downloadingUpdateLabel: (Int) -> String = { pct ->
         if (isSerbian) "Preuzimanje ažuriranja sa GitHub-a... $pct%" else "Downloading update from GitHub... $pct%"
     }
@@ -857,6 +1068,22 @@ class AppStrings(val isSerbian: Boolean) {
     val changelogAvailableUpdateBadge: (String) -> String = { tag ->
         if (isSerbian) "Najnovije izdanje: $tag" else "Latest release: $tag"
     }
+    val updateNotificationTitle: String = s(
+        "New update available",
+        "Dostupno je novo ažuriranje",
+    )
+    val updateNotificationText: (String) -> String = { tag ->
+        if (isSerbian) "Nova verzija $tag je dostupna. Dodirnite za preuzimanje i instalaciju."
+        else "A new version $tag is available. Tap to download and install."
+    }
+    val updateNotificationChannelName: String = s(
+        "App Updates",
+        "Ažuriranja aplikacije",
+    )
+    val updateNotificationChannelDesc: String = s(
+        "Notifications about new versions of Txtura",
+        "Obaveštenja o novim verzijama aplikacije Txtura",
+    )
     val changelogPreviousVersionsHeader: String = s("Previous Versions History", "Istorija prethodnih verzija")
 
     // Draft messages
@@ -868,11 +1095,19 @@ class AppStrings(val isSerbian: Boolean) {
     val scheduleBirthdayDefaultGreeting: String = s("Happy Birthday! Wishing you all the best!", "Srećan rođendan! Sve najbolje od srca!")
 
     // Multi-recipient broadcast messaging
+    val singleRecipientTab: String = s("Single contact", "Jedan kontakt")
+    val multipleRecipientsTab: String = s("Multiple contacts", "Više kontakata")
     val multiRecipientBadge: (Int) -> String = { count ->
         if (isSerbian) "$count primalaca • Zasebni razgovori" else "$count recipients • Separate chats"
     }
+    val multiRecipientCountBadge: (Int) -> String = { count ->
+        if (isSerbian) "Izabrano: $count primalaca" else "Selected: $count recipients"
+    }
     val sendToAllButton: (Int) -> String = { count ->
         if (isSerbian) "Pošalji svima ($count)" else "Send to all ($count)"
+    }
+    val sendBroadcastAction: (Int) -> String = { count ->
+        if (isSerbian) "Pošalji za $count primalaca" else "Send to $count recipients"
     }
     val broadcastMessagesSentToast: (Int) -> String = { count ->
         if (isSerbian) "Poruka poslata za $count primalaca u zasebnim četovima" else "Message sent to $count recipients in separate chats"
@@ -887,6 +1122,21 @@ class AppStrings(val isSerbian: Boolean) {
         "Send to multiple recipients in separate chats",
         "Pošalji i drugim kontaktima u zasebnim četovima",
     )
+    val addTypedNumberToRecipients: (String) -> String = { num ->
+        if (isSerbian) "+ Dodaj broj $num" else "+ Add number $num"
+    }
+    val noRecipientsSelectedHint: String = s(
+        "Select contacts below or type a phone number to add recipients",
+        "Izaberite kontakte ispod ili unesite broj telefona za dodavanje",
+    )
+    val clearAllRecipientsTooltip: String = s("Clear all", "Poništi sve")
+    val selectAllContactsLabel: String = s("Select all", "Označi sve")
+    val deselectAllContactsLabel: String = s("Deselect all", "Odznači sve")
+    val broadcastMessageTextLabel: String = s(
+        "Message text (sent individually to each contact)",
+        "Tekst poruke (šalje se svakome pojedinačno)",
+    )
+    val broadcastMessageTextPlaceholder: String = s("Type your message here...", "Unesite tekst poruke ovde...")
 
     // In-chat search
     val searchInChatPlaceholder: String = s("Search messages in this chat...", "Pretraži poruke u ovom razgovoru...")
@@ -915,6 +1165,22 @@ class AppStrings(val isSerbian: Boolean) {
     val emailSavedToClipboardToast: String = s("Email copied to clipboard", "Email adresa kopirana u privremenu memoriju")
     val detectedPhoneNumberLabel: String = s("Detected phone", "Prepoznat broj")
     val detectedEmailLabel: String = s("Detected email", "Prepoznat email")
+
+    // Smart Bank Account (Tekući račun) recognition strings
+    val bankAccountCardTitle: String = s("Bank Account", "Tekući račun")
+    val copyBankAccountAction: String = s("Copy Account Number", "Kopiraj broj računa")
+    val copyFull18DigitsAction: String = s("Copy full format (18 digits)", "Kopiraj puni format (18 cifara)")
+    val bankAccountCopiedToast: (String, String?) -> String = { num, bank ->
+        val bankSuffix = if (!bank.isNullOrBlank()) " ($bank)" else ""
+        if (isSerbian) "Broj računa kopiran: $num$bankSuffix" else "Bank account copied: $num$bankSuffix"
+    }
+
+    // Offered accent colors for custom gallery wallpaper
+    val customWallpaperAccentTitle: String = s("Accent Color", "Boja akcenta")
+    val customWallpaperAccentSub: String = s(
+        "Choose an accent color for bubbles and buttons when using this photo",
+        "Izaberite boju akcenta za oblačiće i dugmad uz ovu fotografiju"
+    )
 }
 
 private val EnglishStrings = AppStrings(isSerbian = false)

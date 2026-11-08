@@ -16,6 +16,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission
         android:name="android.permission.REQUEST_INSTALL_PACKAGES"
         tools:ignore="RequestInstallPackagesPolicy" />
@@ -92,12 +94,14 @@
             </intent-filter>
         </service>
 
-        <!-- Internal BroadcastReceiver for Notification Direct Reply, 2FA Code Copy, and SMS Delivery reports -->
+        <!-- Internal BroadcastReceiver for Notification Direct Reply, 2FA Code Copy, and SMS/MMS Delivery/Sent reports -->
         <receiver
             android:name=".telephony.NotificationActionReceiver"
             android:exported="false">
             <intent-filter>
+                <action android:name="com.txtura.action.SMS_SENT" />
                 <action android:name="com.txtura.action.SMS_DELIVERED" />
+                <action android:name="com.txtura.action.MMS_SENT" />
             </intent-filter>
         </receiver>
 

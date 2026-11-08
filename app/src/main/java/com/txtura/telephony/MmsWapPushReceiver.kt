@@ -7,6 +7,10 @@ import android.provider.Telephony
 import android.util.Log
 import com.txtura.data.SmsMmsRepository
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+
 /**
  * Required WAP Push receiver for Default SMS/MMS Role (ROLE_SMS).
  * Protected in AndroidManifest.xml by android.permission.BROADCAST_WAP_PUSH.
@@ -17,15 +21,21 @@ class MmsWapPushReceiver : BroadcastReceiver() {
         if (intent.action != Telephony.Sms.Intents.WAP_PUSH_DELIVER_ACTION) {
             return
         }
-        try {
-            SmsMmsRepository.onIncomingMessageReceived(
-                context = context.applicationContext,
-                senderAddress = "MMS",
-                rawBody = "Received new MMS multimedia message",
-                isMms = true,
-            )
-        } catch (e: Exception) {
-            Log.e("MmsWapPushReceiver", "Error handling MMS WAP push", e)
+        val pendingResult = goAsync()
+        val appContext = context.applicationContext
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                SmsMmsRepository.onIncomingMessageReceived(
+                    context = appContext,
+                    senderAddress = "MMS",
+                    rawBody = "Received new MMS multimedia message",
+                    isMms = true,
+                )
+            } catch (e: Exception) {
+                Log.e("MmsWapPushReceiver", "Error handling MMS WAP push", e)
+            } finally {
+                pendingResult.finish()
+            }
         }
     }
 }

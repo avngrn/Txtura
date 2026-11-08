@@ -72,29 +72,33 @@ data class GlassPalette(
 ) {
     val popupContainerColor: Color
         get() {
-            val orbRgb = orbPrimary.copy(alpha = 1f)
             val accentRgb = accentPrimary.copy(alpha = 1f)
-            val surfaceRgb = glassSurfaceElevated.copy(alpha = 1f)
             val baseTone = when {
                 !isDark -> lerp(
-                    lerp(Color(0xFFDCE5F2), orbRgb, 0.22f),
+                    Color(0xFFE4ECF5),
                     accentRgb,
-                    0.10f,
+                    0.05f
                 )
                 isAmoled -> lerp(
-                    lerp(Color(0xFF080B11), orbRgb, 0.28f),
+                    Color(0xFF06080D),
                     accentRgb,
-                    0.12f,
+                    0.04f
                 )
                 else -> lerp(
-                    lerp(backgroundBase.copy(alpha = 1f), orbRgb, 0.30f),
-                    surfaceRgb,
-                    0.18f,
+                    Color(0xFF141C28),
+                    accentRgb,
+                    0.05f
                 )
             }
-            // Rich frosted glass smokiness with high opacity (0.93f) so it looks like frosted glass,
-            // while strongly diffusing and muting text behind it without being a flat 100% solid slab
-            return baseTone.copy(alpha = 0.93f)
+            // Frosted glass translucency that scales smoothly with uiOpacity:
+            // 100% Providno -> crystal-clear translucent glass (~0.40f)
+            // 50% Providno (Podrazumevano) -> refined, balanced frosted glass (~0.64f)
+            // 0% Providno (Najzamućenije) -> dense smoked obsidian glass (~0.88f)
+            val solidity = (1.0f - uiOpacity.coerceIn(0f, 1f)).coerceIn(0f, 1f)
+            val minAlpha = if (isDark) 0.40f else 0.46f
+            val maxAlpha = if (isDark) 0.88f else 0.90f
+            val targetAlpha = minAlpha + ((maxAlpha - minAlpha) * solidity)
+            return baseTone.copy(alpha = targetAlpha)
         }
 }
 
@@ -156,6 +160,7 @@ val AmoledGlassPalette = GlassPalette(
 )
 
 val LocalGlassPalette = staticCompositionLocalOf { AmoledGlassPalette }
+val LocalExpressiveAnimations = staticCompositionLocalOf { true }
 
 /**
  * Complementary Color Harmony Engine:
@@ -368,8 +373,27 @@ object WallpaperHarmonyEngine {
             else -> DarkGlassPalette
         }
 
-        // 1. Custom Gallery Photo Wallpaper -> compute true 180° & 145° split-complementary HSV palette
-        if (wallpaperConfig.isCustomGalleryImage && (customDominantColor != null)) {
+        // 1. Custom Gallery Photo Wallpaper -> user-chosen accent color OR computed split-complementary HSV palette
+        if (wallpaperConfig.isCustomGalleryImage) {
+            val chosenAccentHex = wallpaperConfig.customAccentColorHex
+            if (chosenAccentHex != null) {
+                val accent = Color(chosenAccentHex)
+                val bubbleAlpha = if (isAmoled) 0.84f else 0.88f
+                val adapted = canonicalBase.copy(
+                    orbPrimary = accent.copy(alpha = 0.28f),
+                    orbSecondary = accent.copy(alpha = 0.18f),
+                    glassBorderTop = accent.copy(alpha = if (isDark) 0.50f else 0.68f),
+                    glassBorderBottom = accent.copy(alpha = if (isDark) 0.18f else 0.30f),
+                    accentPrimary = accent,
+                    accentSecondary = accent.copy(alpha = 0.85f),
+                    sendButtonColor = accent,
+                    outgoingBubbleStart = accent.copy(alpha = bubbleAlpha),
+                    outgoingBubbleEnd = accent.copy(alpha = bubbleAlpha * 0.92f)
+                )
+                return applyOpacityMultiplier(adapted, uiOpacity, uiColorMode)
+            }
+
+            if (customDominantColor != null) {
             val hsv = FloatArray(3)
             val argb = customDominantColor.toArgb()
             android.graphics.Color.RGBToHSV(
@@ -428,6 +452,7 @@ object WallpaperHarmonyEngine {
                 incomingBubbleSurface = tintedIncoming
             )
             return applyOpacityMultiplier(adapted, uiOpacity, uiColorMode)
+        }
         }
 
         // 2. Built-in Wallpaper Preset
@@ -684,6 +709,7 @@ fun TxturaTheme(
     wallpaperConfig: WallpaperConfig = WallpaperConfig(),
     uiOpacity: Float = 0.50f,
     uiColorMode: UiColorMode = UiColorMode.COLORFUL,
+    expressiveAnimations: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val systemDark = isSystemInDarkTheme()
@@ -757,7 +783,13 @@ fun TxturaTheme(
         }
     }
 
-    CompositionLocalProvider(LocalGlassPalette provides adaptedPalette) {
+    val adaptiveMetrics = rememberAdaptiveMetrics()
+
+    CompositionLocalProvider(
+        LocalGlassPalette provides adaptedPalette,
+        LocalAdaptiveMetrics provides adaptiveMetrics,
+        LocalExpressiveAnimations provides expressiveAnimations
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = Typography,

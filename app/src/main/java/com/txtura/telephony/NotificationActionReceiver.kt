@@ -14,6 +14,9 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import com.txtura.data.SmsMmsRepository
 import com.txtura.ui.i18n.TxturaStrings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Handles inline notification actions without opening the app:
@@ -36,7 +39,22 @@ class NotificationActionReceiver : BroadcastReceiver() {
             SmsMmsRepository.ACTION_SMS_DELIVERED -> {
                 val deliveredMsgId = intent.getLongExtra("message_id", -1L)
                 if (deliveredMsgId > 0L) {
-                    SmsMmsRepository.onMessageDelivered(deliveredMsgId)
+                    SmsMmsRepository.onMessageDelivered(deliveredMsgId, appContext)
+                }
+            }
+            SmsMmsRepository.ACTION_SMS_SENT,
+            SmsMmsRepository.ACTION_MMS_SENT -> {
+                val sentMsgId = intent.getLongExtra("message_id", -1L)
+                val pduPath = intent.getStringExtra("pdu_path")
+                if (!pduPath.isNullOrBlank()) {
+                    try { java.io.File(pduPath).delete() } catch (_: Exception) {}
+                }
+                if (sentMsgId > 0L) {
+                    if (resultCode == android.app.Activity.RESULT_OK) {
+                        SmsMmsRepository.onMessageDelivered(sentMsgId, appContext)
+                    } else {
+                        SmsMmsRepository.onMessageFailed(sentMsgId, appContext)
+                    }
                 }
             }
             SmsMmsRepository.ACTION_NOTIFICATION_DIRECT_REPLY -> {
@@ -48,28 +66,33 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     .orEmpty()
 
                 if (replyText.isNotEmpty() && senderAddress.isNotEmpty()) {
-                    try {
-                        SmsMmsRepository.initializePersistedState(appContext)
-                        SmsMmsRepository.sendMessage(
-                            context = appContext,
-                            recipientAddress = senderAddress,
-                            rawBody = replyText,
-                            attachmentUri = null,
-                        )
-                        if (threadId > 0L) {
-                            SmsMmsRepository.markThreadRead(appContext, threadId)
+                    val pendingResult = goAsync()
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            SmsMmsRepository.initializePersistedState(appContext)
+                            SmsMmsRepository.sendMessage(
+                                context = appContext,
+                                recipientAddress = senderAddress,
+                                rawBody = replyText,
+                                attachmentUri = null,
+                            )
+                            if (threadId > 0L) {
+                                SmsMmsRepository.markThreadRead(appContext, threadId)
+                            }
+                            if (notificationId > 0) {
+                                NotificationManagerCompat.from(appContext).cancel(notificationId)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to send direct reply from notification", e)
+                        } finally {
+                            pendingResult.finish()
                         }
-                        if (notificationId > 0) {
-                            NotificationManagerCompat.from(appContext).cancel(notificationId)
-                        }
-                        Toast.makeText(
-                            appContext,
-                            strings.notificationReplySentToast,
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to send direct reply from notification", e)
                     }
+                    Toast.makeText(
+                        appContext,
+                        strings.notificationReplySentToast,
+                        Toast.LENGTH_SHORT,
+                    ).show()
                 }
             }
 
