@@ -10,12 +10,14 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.biometrics.BiometricPrompt
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.PersistableBundle
 import android.provider.ContactsContract
 import android.provider.Settings
@@ -183,7 +185,17 @@ class MainActivity : ComponentActivity() {
     private var rationaleBannerText by mutableStateOf<String?>(null)
     private var permissionRefreshTick by mutableIntStateOf(0)
     private var isAppLocked by mutableStateOf(false)
+    private var isAuthenticating by mutableStateOf(false)
     private var lastPauseTimestamp by mutableLongStateOf(0L)
+    private var lastUnlockTimestamp by mutableLongStateOf(0L)
+    private var biometricCancellationSignal: CancellationSignal? = null
+
+    private fun onAuthenticationSuccess() {
+        isAuthenticating = false
+        isAppLocked = false
+        lastUnlockTimestamp = System.currentTimeMillis()
+        lastPauseTimestamp = System.currentTimeMillis()
+    }
 
     private val requiredSmsPermissions: Array<String>
         get() = buildList {
@@ -201,7 +213,9 @@ class MainActivity : ComponentActivity() {
     private val confirmCredentialsLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
-                isAppLocked = false
+                onAuthenticationSuccess()
+            } else {
+                isAuthenticating = false
             }
         }
 
@@ -416,7 +430,12 @@ class MainActivity : ComponentActivity() {
         loadSavedAppPreferences()
         updateWindowSecurityFlags()
         if (AppSecurityManager.isBiometricLockEnabled(this)) {
-            isAppLocked = true
+            if (AppSecurityManager.isDeviceLockConfigured(this)) {
+                isAppLocked = true
+            } else {
+                AppSecurityManager.setBiometricLockEnabled(this, false)
+                isAppLocked = false
+            }
         }
         SmsMmsRepository.initializePersistedState(this)
         EmergencyAlertManager.initialize(this)
@@ -447,8 +466,8 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0"
-                }.getOrDefault("2.0")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "2.1"
+                }.getOrDefault("2.1")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -899,7 +918,21 @@ class MainActivity : ComponentActivity() {
                             onRequestSmsPermissions = ::requestSmsPermissionsSafely,
                             onRequestDefaultSmsRole = ::requestDefaultSmsRoleSafely,
                             onOpenSystemAppSettings = ::openAppDetailsSettings,
-                            onLockAppNow = { isAppLocked = true }
+                            onLockAppNow = {
+                                if (AppSecurityManager.isDeviceLockConfigured(this@MainActivity)) {
+                                    lastPauseTimestamp = 1L
+                                    lastUnlockTimestamp = 0L
+                                    isAppLocked = true
+                                } else {
+                                    val isSr = TxturaStrings.isSerbianLocale()
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        if (isSr) "Uređaj nema podešen PIN, šablon niti biometriju zaključavanja ekrana."
+                                        else "Device does not have a screen lock PIN, pattern, or biometrics set up.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
                         )
                     }
 
@@ -1234,7 +1267,11 @@ class MainActivity : ComponentActivity() {
                         availableContacts = availableContacts,
                         inAppSoundsEnabled = inAppSoundsEnabled,
                         onPickContact = ::launchSystemContactPicker,
-                        onDismiss = { showNewMessageDialog = false },
+                        onDismiss = {
+                            showNewMessageDialog = false
+                            prefilledRecipient = ""
+                            prefilledBody = ""
+                        },
                         onSelectRecipient = { recipient, preferredName ->
                             val threadId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                                 context = this@MainActivity,
@@ -1253,27 +1290,34 @@ class MainActivity : ComponentActivity() {
                                 prefilledBody = ""
                             }
                             showNewMessageDialog = false
+                            prefilledRecipient = ""
                             activeThreadId = threadId
                         },
-                    ) { recipients, messageBody ->
-                        if (inAppSoundsEnabled) {
-                            SmsMmsRepository.playInAppMessageSentSound(this@MainActivity)
+                        onSendBroadcastMessage = { recipients, messageBody ->
+                            if (inAppSoundsEnabled) {
+                                SmsMmsRepository.playInAppMessageSentSound(this@MainActivity)
+                            }
+                            TxturaHaptics.confirm(null, this@MainActivity)
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                recipients.forEach { rec ->
+                                    SmsMmsRepository.sendMessage(
+                                        context = this@MainActivity,
+                                        recipientAddress = rec.address,
+                                        rawBody = messageBody
+                                    )
+                                }
+                            }
+                            val locStrings = TxturaStrings.forLocale()
+                            Toast.makeText(
+                                this@MainActivity,
+                                locStrings.broadcastMessagesSentToast(recipients.size),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            showNewMessageDialog = false
+                            prefilledRecipient = ""
+                            prefilledBody = ""
                         }
-                        recipients.forEach { (_, address) ->
-                            SmsMmsRepository.sendMessage(
-                                context = this@MainActivity,
-                                recipientAddress = address,
-                                rawBody = messageBody
-                            )
-                        }
-                        val locStrings = TxturaStrings.forLocale()
-                        Toast.makeText(
-                            this@MainActivity,
-                            locStrings.broadcastMessagesSentToast(recipients.size),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        showNewMessageDialog = false
-                    }
+                    )
                 }
 
                 // Prompt user to set Txtura as the Default SMS & MMS app whenever it is not currently default
@@ -1365,11 +1409,21 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         updateWindowSecurityFlags()
-        if (AppSecurityManager.isBiometricLockEnabled(this)) {
-            val timeoutMinutes = AppSecurityManager.getBiometricLockTimeout(this)
-            val elapsed = System.currentTimeMillis() - lastPauseTimestamp
-            if (timeoutMinutes == 0 || (lastPauseTimestamp > 0L && elapsed >= timeoutMinutes * 60 * 1000L)) {
-                isAppLocked = true
+        if (isAuthenticating) {
+            return
+        }
+        if (AppSecurityManager.isBiometricLockEnabled(this) && !isAppLocked) {
+            if (!AppSecurityManager.isDeviceLockConfigured(this)) {
+                AppSecurityManager.setBiometricLockEnabled(this, false)
+            } else {
+                val timeoutMinutes = AppSecurityManager.getBiometricLockTimeout(this)
+                val elapsed = System.currentTimeMillis() - lastPauseTimestamp
+                val gracePeriod = System.currentTimeMillis() - lastUnlockTimestamp
+                if (gracePeriod > 3000L && lastPauseTimestamp > 0L) {
+                    if (timeoutMinutes == 0 || elapsed >= timeoutMinutes * 60 * 1000L) {
+                        isAppLocked = true
+                    }
+                }
             }
         }
         SmsMmsRepository.setActiveForegroundThread(activeThreadId)
@@ -1379,32 +1433,147 @@ class MainActivity : ComponentActivity() {
     private fun triggerAppEntryUpdateCheck() {
         lifecycleScope.launch(Dispatchers.IO) {
             val currentAppVersionName = runCatching {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0"
-            }.getOrDefault("2.0")
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "2.1"
+            }.getOrDefault("2.1")
             AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
         }
     }
 
     override fun onPause() {
         super.onPause()
-        lastPauseTimestamp = System.currentTimeMillis()
+        if (!isAuthenticating) {
+            lastPauseTimestamp = System.currentTimeMillis()
+        }
         SmsMmsRepository.setActiveForegroundThread(null)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        biometricCancellationSignal?.cancel()
     }
 
     @Suppress("DEPRECATION")
     private fun promptBiometricUnlock() {
+        if (isAuthenticating) return
+
+        val isSr = TxturaStrings.isSerbianLocale()
+        val title = if (isSr) "Txtura Zaštita" else "Txtura Security"
+        val desc = if (isSr) "Otključajte Txtura aplikaciju biometrijom ili PIN-om" else "Unlock Txtura with biometric or device PIN"
+
+        if (!AppSecurityManager.isDeviceLockConfigured(this)) {
+            AppSecurityManager.setBiometricLockEnabled(this, false)
+            onAuthenticationSuccess()
+            Toast.makeText(
+                this,
+                if (isSr) "Uređaj nema podešen PIN niti biometriju. Aplikacija je otključana i zaštita je isključena."
+                else "Device has no screen lock configured. App unlocked and lock disabled.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        biometricCancellationSignal?.cancel()
+        val cancellationSignal = CancellationSignal().also { biometricCancellationSignal = it }
+        val executor = ContextCompat.getMainExecutor(this)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                isAuthenticating = true
+                val prompt = BiometricPrompt.Builder(this)
+                    .setTitle(title)
+                    .setDescription(desc)
+                    .setAllowedAuthenticators(
+                        android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                            android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                            android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                    )
+                    .build()
+
+                prompt.authenticate(
+                    cancellationSignal,
+                    executor,
+                    object : BiometricPrompt.AuthenticationCallback() {
+                        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                            super.onAuthenticationSucceeded(result)
+                            onAuthenticationSuccess()
+                        }
+
+                        override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                            super.onAuthenticationError(errorCode, errString)
+                            isAuthenticating = false
+                            val km = getSystemService(KeyguardManager::class.java)
+                            val hasKeyguard = km != null && km.isDeviceSecure
+                            if (!hasKeyguard || errorCode == 11 || errorCode == 14 || errorCode == 12) {
+                                AppSecurityManager.setBiometricLockEnabled(this@MainActivity, false)
+                                onAuthenticationSuccess()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (isSr) "Zaključavanje ekrana nije podešeno. Aplikacija je otključana."
+                                    else "No device credentials enrolled. App unlocked.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }
+                )
+                return
+            } catch (_: Exception) {
+                isAuthenticating = false
+            }
+        } else {
+            try {
+                isAuthenticating = true
+                @Suppress("DEPRECATION")
+                val prompt = BiometricPrompt.Builder(this)
+                    .setTitle(title)
+                    .setDescription(desc)
+                    .setDeviceCredentialAllowed(true)
+                    .build()
+
+                prompt.authenticate(
+                    cancellationSignal,
+                    executor,
+                    object : BiometricPrompt.AuthenticationCallback() {
+                        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                            super.onAuthenticationSucceeded(result)
+                            onAuthenticationSuccess()
+                        }
+
+                        override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                            super.onAuthenticationError(errorCode, errString)
+                            isAuthenticating = false
+                            val km = getSystemService(KeyguardManager::class.java)
+                            val hasKeyguard = km != null && km.isDeviceSecure
+                            if (!hasKeyguard || errorCode == 11 || errorCode == 14 || errorCode == 12) {
+                                AppSecurityManager.setBiometricLockEnabled(this@MainActivity, false)
+                                onAuthenticationSuccess()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (isSr) "Zaključavanje ekrana nije podešeno. Aplikacija je otključana."
+                                    else "No device credentials enrolled. App unlocked.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }
+                )
+                return
+            } catch (_: Exception) {
+                isAuthenticating = false
+            }
+        }
+
         val km = getSystemService(KeyguardManager::class.java)
         if (km != null && km.isDeviceSecure) {
-            val isSr = TxturaStrings.isSerbianLocale()
-            val title = if (isSr) "Txtura Zaštita" else "Txtura Security"
-            val desc = if (isSr) "Otključajte Txtura aplikaciju biometrijom ili PIN-om" else "Unlock Txtura with biometric or device PIN"
             val intent = km.createConfirmDeviceCredentialIntent(title, desc)
             if (intent != null) {
+                isAuthenticating = true
                 confirmCredentialsLauncher.launch(intent)
                 return
             }
         }
-        isAppLocked = false
+        AppSecurityManager.setBiometricLockEnabled(this, false)
+        onAuthenticationSuccess()
     }
 
     private fun updateWindowSecurityFlags() {

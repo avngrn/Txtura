@@ -1,5 +1,33 @@
 # Txtura Changelog & Improvements
 
+## [v2.1] - 2026-11-09
+
+### Messaging & Broadcast (Poruke i višestruko slanje)
+- **Simultaneous Multi-Recipient Broadcast (Slanje jedne poruke na više brojeva istovremeno):**
+  - Reimplemented new message flow allowing selection of multiple contacts and typed numbers at once.
+  - Direct individual SMS transmission without group MMS conversion.
+  - Live character count and SMS segment calculator (`N karaktera • M SMS`), Select All / Deselect All suggestions toggle, and contextual "Pošalji svima (N)" button.
+  - Dedicated "Pošalji na više brojeva" action directly in conversation details menu.
+
+### Security & Biometrics (Bezbednost i biometrija)
+- **Biometric & Lock Screen Reliability (Otključavanje i pouzdanost biometrije):**
+  - Added native `android.permission.USE_BIOMETRIC` permission.
+  - Native Android BiometricPrompt (API 29–37) with strong/weak biometrics and device credential support, with seamless KeyguardManager fallback.
+  - Complete protection against lockout loops on devices without lock screen PIN or biometrics: auto-unlock, safe disable, clear guidance, and shortcut to system lock screen settings.
+  - Fixed activity lifecycle re-lock issues on resume.
+
+### Contacts & Categories (Kontakti i pametne kategorije)
+- **Smart Service Identification (Ispravka kategorije Usluge):**
+  - Named contacts in phonebook and threads with user replies are protected from false service categorization.
+  - Removed accidental service flags triggered by OTP / verification code patterns in personal messages.
+
+### UX, Gestures & Localization (Korisničko iskustvo i lokalizacija)
+- **Haptic Feedback on Swipe Gestures (Haptika na prevlačenju):**
+  - Tactile haptic feedback on conversation card swipes, drag threshold snap crossing, pinned message carousel switching, and category drag-reordering.
+- **Serbian UI & Layout Polish (Lokalizacija na srpskom jeziku):**
+  - Fixed category tab weights and auto-sizing so "Nepročitano" is never truncated.
+  - Shortened Serbian labels in 2-column cards, trash buttons ("Isprazni sve"), and lock screen buttons with ellipsis protection.
+
 ## [v2.0] - 2026-11-08
 
 ### Privacy & Security (Privatnost i bezbednost)

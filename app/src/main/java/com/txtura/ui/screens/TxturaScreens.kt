@@ -404,7 +404,8 @@ fun ConversationsListScreen(
         )
     } else {
         val filteredThreads = remember(threads, searchQuery, selectedFilter) {
-            val list = threads.filter { (_, contactName, address, _, _, _, messages, unreadCount, _, isService) ->
+            val deduplicated = SmsMmsRepository.deduplicateAndMergeThreads(threads)
+            val list = deduplicated.filter { (_, contactName, address, _, _, _, messages, unreadCount, _, isService) ->
                 val matchesSearch = searchQuery.isBlank() ||
                     contactName.contains(searchQuery, ignoreCase = true) ||
                     address.contains(searchQuery, ignoreCase = true) ||
@@ -1442,9 +1443,15 @@ private fun DraggableCategoryBar(
                 val isDragged = filter == draggedFilter
                 val label = filterLabel(filter, strings)
 
+                val itemWeight = when (filter) {
+                    ConversationFilter.UNREAD -> 1.32f
+                    ConversationFilter.ALL -> 0.68f
+                    else -> 1.0f
+                }
+
                 Box(
                     modifier = Modifier
-                        .weight(1f)
+                        .weight(itemWeight)
                         .zIndex(if (isDragged) 10f else 0f)
                         .onSizeChanged { size ->
                             itemWidthsPx[filter] = size.width
@@ -1500,6 +1507,7 @@ private fun DraggableCategoryBar(
                                 onDragEnd = {
                                     draggedFilter = null
                                     dragOffsetX = 0f
+                                    TxturaHaptics.confirm(view, context)
                                     onUpdateCategoryOrder(localOrder)
                                 },
                                 onDragCancel = {
@@ -1526,7 +1534,9 @@ private fun DraggableCategoryBar(
                     ) {
                         Text(
                             text = label,
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontSize = if (label.length >= 10) 11.sp else 12.sp
+                            ),
                             color = when {
                                 isDragged -> palette.safeColor
                                 selected -> palette.accentPrimary
@@ -1639,10 +1649,10 @@ fun SettingsScreen(
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val vName = pkgInfo.versionName ?: "2.0"
+            val vName = pkgInfo.versionName ?: "2.1"
             val vCode = pkgInfo.longVersionCode
             vName to vCode
-        }.getOrDefault("2.0" to 4L)
+        }.getOrDefault("2.1" to 5L)
     }
 
     val coroutineScope = rememberCoroutineScope()
@@ -3234,11 +3244,25 @@ fun SettingsScreen(
 
                                         SettingsSwitchRow(
                                             title = strings.biometricLockEnabledLabel,
-                                            subtitle = if (isDeviceSecure) null else "Preporučuje se postavljanje zaključavanja ekrana u Android podešavanjima",
-                                            checked = biometricLockEnabled,
+                                            subtitle = if (isDeviceSecure) null else (if (strings.isSerbian) "Zahteva podešavanje PIN-a ili biometrije u podešavanjima telefona" else "Requires device PIN or biometrics in Android Settings"),
+                                            checked = biometricLockEnabled && isDeviceSecure,
                                             onCheckedChange = { checked ->
-                                                biometricLockEnabled = checked
-                                                AppSecurityManager.setBiometricLockEnabled(context, checked)
+                                                if (checked && !isDeviceSecure) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (strings.isSerbian) "Prvo podesite PIN ili biometriju u podešavanjima telefona pre zaključavanja aplikacije."
+                                                        else "Please configure a device PIN or biometrics in Android Settings first.",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                    runCatching {
+                                                        context.startActivity(Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS).apply {
+                                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                        })
+                                                    }
+                                                } else {
+                                                    biometricLockEnabled = checked
+                                                    AppSecurityManager.setBiometricLockEnabled(context, checked)
+                                                }
                                             }
                                         )
 
@@ -5587,9 +5611,41 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v2.0",
+                        versionName = "v2.1",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Višestruko slanje poruka" else "Multi-Recipient Messaging",
+                                items = listOf(
+                                    if (strings.isSerbian) "Simultano slanje poruke: Slanje jedne poruke na više izabranih kontakata i unetih brojeva istovremeno kao pojedinačni SMS bez kreiranja grupnih MMS poruka" else "Simultaneous broadcast: Send a single message to multiple chosen contacts and typed numbers concurrently as direct 1-on-1 SMS without group MMS",
+                                    if (strings.isSerbian) "Pametni birač primalaca: Biranje kontakata putem čipova, mogućnost izbora ili poništavanja svih predloga jednim dodirom, brojač karaktera i SMS segmenata (N • M SMS)" else "Smart recipient picker: Chip selection, Select All/Deselect All toggle, live character count and SMS segment calculator",
+                                    if (strings.isSerbian) "Brza akcija u razgovoru: Nova opcija 'Pošalji na više brojeva' unutar menija sa tri tačkice u aktivnom razgovoru" else "Conversation shortcut: New 'Send to multiple numbers' action directly in chat details menu"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Pouzdanost biometrije i zaštite" else "Biometrics & Security Reliability",
+                                items = listOf(
+                                    if (strings.isSerbian) "Ispravka otključavanja: Dodata sistemska USE_BIOMETRIC dozvola i izvorna Android BiometricPrompt podrška (API 29–37) za otisak, lice i PIN ekrana" else "Unlock fix: Added native USE_BIOMETRIC permission and native BiometricPrompt (API 29–37) for fingerprint, face, and device PIN",
+                                    if (strings.isSerbian) "Zaštita od blokiranja bez PIN-a: Ako uređaj nema podešeno zaključavanje ekrana, aplikacija omogućava trenutno otključavanje jednim dodirom i sprečava greške" else "No-lockout protection: If device has no screen lock or biometrics configured, the app enables instant one-tap unlocking and prevents lockouts",
+                                    if (strings.isSerbian) "Sprečeno lažno ponovno zaključavanje: Rešena petlja ponovnog zaključavanja prilikom povratka iz sistemskog dijaloga" else "Lifecycle fix: Resolved re-lock loop when returning from system authentication dialogues"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Usluge, Haptika i Poliranje interfejsa" else "Services, Haptics & UI Polish",
+                                items = listOf(
+                                    if (strings.isSerbian) "Pametno prepoznavanje usluga: Imenovani kontakti iz imenika i prepiske sa vašim odgovorima nikada se više ne svrstavaju greškom u 'Usluge'" else "Smart service categorization: Named contacts and threads with user replies are protected from false service classification",
+                                    if (strings.isSerbian) "Haptika na prevlačenju: Taktički vibracioni odziv na swipe akcije, prag prevlačenja kartica, listanje zakačenih poruka i raspoređivanje kategorija" else "Swipe haptics: Tactile vibration feedback on conversation swipes, threshold crossing, pinned message carousel, and category reordering",
+                                    if (strings.isSerbian) "Poliranje srpskog prikaza: Prilagođene širine kartica kategorija tako da se 'Nepročitano' nikada ne seče ili sabija, i optimizovan tekst tastera u korpi ('Isprazni sve')" else "Serbian UI polish: Optimized category tab weights preventing 'Nepročitano' truncation, with clean button styling"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v2.0",
+                        releaseDate = "08.11.2026.",
+                        isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Privatnost i bezbednost" else "Privacy & Security",
@@ -6917,6 +6973,27 @@ fun ConversationDetailScreen(
                             DropdownMenuItem(
                                 text = {
                                     Text(
+                                        text = strings.sendToOtherContactsOption,
+                                        color = palette.textPrimary
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = TxturaIcons.Forward,
+                                        contentDescription = null,
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    showBroadcastDialog = true
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
                                         text = strings.viewContactDetails,
                                         color = palette.textPrimary
                                     )
@@ -6975,16 +7052,21 @@ fun ConversationDetailScreen(
                         .pointerInput(pinnedMessages.size, safePinnedIndex) {
                             if (pinnedMessages.size > 1) {
                                 detectVerticalDragGestures(
-                                    onDragStart = { dragAccumY = 0f },
+                                    onDragStart = {
+                                        dragAccumY = 0f
+                                        TxturaHaptics.tick(view, context)
+                                    },
                                     onVerticalDrag = { change, dragAmount ->
                                         change.consume()
                                         dragAccumY += dragAmount
                                         if (dragAccumY <= -24f) {
                                             activePinnedIndex = (safePinnedIndex + 1) % pinnedMessages.size
                                             dragAccumY = 0f
+                                            TxturaHaptics.tick(view, context)
                                         } else if (dragAccumY >= 24f) {
                                             activePinnedIndex = (safePinnedIndex - 1 + pinnedMessages.size) % pinnedMessages.size
                                             dragAccumY = 0f
+                                            TxturaHaptics.tick(view, context)
                                         }
                                     }
                                 )
@@ -6993,16 +7075,21 @@ fun ConversationDetailScreen(
                         .pointerInput(pinnedMessages.size, safePinnedIndex) {
                             if (pinnedMessages.size > 1) {
                                 detectHorizontalDragGestures(
-                                    onDragStart = { dragAccumX = 0f },
+                                    onDragStart = {
+                                        dragAccumX = 0f
+                                        TxturaHaptics.tick(view, context)
+                                    },
                                     onHorizontalDrag = { change, dragAmount ->
                                         change.consume()
                                         dragAccumX += dragAmount
                                         if (dragAccumX <= -32f) {
                                             activePinnedIndex = (safePinnedIndex + 1) % pinnedMessages.size
                                             dragAccumX = 0f
+                                            TxturaHaptics.tick(view, context)
                                         } else if (dragAccumX >= 32f) {
                                             activePinnedIndex = (safePinnedIndex - 1 + pinnedMessages.size) % pinnedMessages.size
                                             dragAccumX = 0f
+                                            TxturaHaptics.tick(view, context)
                                         }
                                     }
                                 )
@@ -9242,6 +9329,7 @@ fun NewMessageDialog(
     val strings = TxturaStrings.current()
 
     var queryOrNumber by remember(initialRecipient) { mutableStateOf(initialRecipient) }
+    var messageBody by remember { mutableStateOf("") }
     val selectedRecipients = remember { mutableStateListOf<ContactPickerItem>() }
 
     val trimmedQuery = queryOrNumber.trim()
@@ -9258,19 +9346,12 @@ fun NewMessageDialog(
                     val addrDigits = contact.address.filter { it.isDigit() || it == '+' }
 
                     val score = when {
-                        // Exact name match
                         nameLower == q -> 0
-                        // Name starts with query
                         nameLower.startsWith(q) -> 1
-                        // Any word in name starts with query
                         nameLower.split(" ", "-", "_", ".").any { it.startsWith(q) } -> 2
-                        // Name contains query letters
                         nameLower.contains(q) -> 3
-                        // Exact phone number match
                         qDigits.isNotEmpty() && addrDigits == qDigits -> 4
-                        // Phone number starts with query
                         qDigits.isNotEmpty() && addrDigits.startsWith(qDigits) -> 5
-                        // Phone number or address contains query
                         contact.address.contains(q, ignoreCase = true) || (qDigits.isNotEmpty() && addrDigits.contains(qDigits)) -> 6
                         else -> null
                     }
@@ -9294,12 +9375,23 @@ fun NewMessageDialog(
         onDismissRequest = onDismiss,
         accentBorderColor = palette.accentPrimary,
         title = {
-            Text(
-                text = title ?: strings.newMessage,
-                style = MaterialTheme.typography.titleLarge,
-                color = palette.textPrimary,
-                fontWeight = FontWeight.Bold
-            )
+            Column {
+                Text(
+                    text = title ?: strings.newMessage,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+                if (selectedRecipients.size > 1) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = strings.multiRecipientCountBadge(selectedRecipients.size),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.accentPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
         },
         text = {
             Column(
@@ -9453,7 +9545,7 @@ fun NewMessageDialog(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        // Header with match count
+                        // Header with match count + Select All / Deselect All
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -9470,6 +9562,43 @@ fun NewMessageDialog(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = palette.textSecondary
                             )
+                            if (filteredContacts.isNotEmpty()) {
+                                val allFiltered = filteredContacts.all { c -> selectedRecipients.any { it.address == c.address } }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            TxturaHaptics.tick(view, context)
+                                            if (allFiltered) {
+                                                filteredContacts.forEach { fc ->
+                                                    selectedRecipients.removeAll { it.address == fc.address }
+                                                }
+                                            } else {
+                                                filteredContacts.forEach { fc ->
+                                                    if (selectedRecipients.none { it.address == fc.address }) {
+                                                        selectedRecipients.add(fc)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (allFiltered) TxturaIcons.DeselectAll else TxturaIcons.SelectAll,
+                                        contentDescription = null,
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (allFiltered) strings.deselectAllContactsLabel else strings.selectAllContactsLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.accentPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
 
                         // Suggestions / Contacts List
@@ -9477,7 +9606,7 @@ fun NewMessageDialog(
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 140.dp, max = 340.dp)
+                                .heightIn(min = 100.dp, max = 220.dp)
                         ) {
                             // Unmemorized / typed number suggestion
                             if (trimmedQuery.isNotBlank() && !isExactMatchInContacts) {
@@ -9487,9 +9616,8 @@ fun NewMessageDialog(
                                     val selectCustom: () -> Unit = {
                                         TxturaHaptics.tick(view, context)
                                         if (isSelected) {
-                                            selectedRecipients.clear()
+                                            selectedRecipients.removeAll { it.address == trimmedQuery }
                                         } else {
-                                            selectedRecipients.clear()
                                             selectedRecipients.add(
                                                 ContactPickerItem(
                                                     name = trimmedQuery,
@@ -9497,6 +9625,7 @@ fun NewMessageDialog(
                                                     initials = if (isNumber) "#" else trimmedQuery.take(2).uppercase()
                                                 )
                                             )
+                                            queryOrNumber = ""
                                         }
                                     }
 
@@ -9549,7 +9678,7 @@ fun NewMessageDialog(
                                                     maxLines = 1
                                                 )
                                                 Text(
-                                                    text = if (isNumber) strings.openChatWithNumberButton(trimmedQuery) else strings.newChatBadge,
+                                                    text = if (isNumber) strings.addTypedNumberToRecipients(trimmedQuery) else strings.newChatBadge,
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = palette.accentPrimary
                                                 )
@@ -9569,7 +9698,6 @@ fun NewMessageDialog(
                                     if (isSelected) {
                                         selectedRecipients.removeAll { it.address == item.address }
                                     } else {
-                                        selectedRecipients.clear()
                                         selectedRecipients.add(item)
                                     }
                                 }
@@ -9634,35 +9762,136 @@ fun NewMessageDialog(
                         }
                     }
                 }
+
+                // 3. Message Text Input Field
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    elevated = true,
+                    contentPadding = PaddingValues(10.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            if (messageBody.isEmpty()) {
+                                Text(
+                                    text = if (selectedRecipients.size > 1) {
+                                        strings.broadcastMessageTextPlaceholder
+                                    } else {
+                                        strings.writeSmsPlaceholder
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = palette.textSecondary.copy(alpha = 0.50f)
+                                )
+                            }
+                            BasicTextField(
+                                value = messageBody,
+                                onValueChange = { messageBody = it },
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = palette.textPrimary),
+                                cursorBrush = SolidColor(palette.accentPrimary),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 44.dp, max = 88.dp)
+                            )
+                        }
+                        if (messageBody.isNotEmpty()) {
+                            Row(
+                                horizontalArrangement = Arrangement.End,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                val smsCount = ((messageBody.length - 1) / 160) + 1
+                                Text(
+                                    text = "${messageBody.length} • $smsCount SMS",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 4. Multi-recipient notice if 2 or more selected
+                if (selectedRecipients.size > 1) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(palette.accentPrimary.copy(alpha = 0.12f))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = TxturaIcons.ShieldCheck,
+                            contentDescription = null,
+                            tint = palette.accentPrimary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = strings.broadcastSeparateNotice,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.accentPrimary
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
-            val canProceed = selectedRecipients.isNotEmpty() || trimmedQuery.isNotBlank()
+            val hasMultiple = selectedRecipients.size > 1
+            val hasSingle = selectedRecipients.size == 1
+            val hasQueryOnly = selectedRecipients.isEmpty() && trimmedQuery.isNotBlank()
+            val canProceed = when {
+                hasMultiple -> messageBody.isNotBlank()
+                hasSingle -> true
+                hasQueryOnly -> true
+                else -> false
+            }
 
             TextButton(
                 enabled = canProceed,
                 onClick = {
                     TxturaHaptics.tick(view, context)
-                    if (selectedRecipients.isNotEmpty()) {
-                        val singleRecipient = selectedRecipients.first()
-                        onSelectRecipient(singleRecipient.address, singleRecipient.name)
-                        onDismiss()
-                    } else if (trimmedQuery.isNotBlank()) {
-                        val matched = filteredContacts.firstOrNull {
-                            it.name.equals(trimmedQuery, ignoreCase = true) || it.address.equals(trimmedQuery, ignoreCase = true)
-                        } ?: if (filteredContacts.size == 1) filteredContacts.first() else null
-
-                        if (matched != null) {
-                            onSelectRecipient(matched.address, matched.name)
-                        } else {
-                            onSelectRecipient(trimmedQuery, null)
+                    when {
+                        hasMultiple -> {
+                            TxturaHaptics.confirm(view, context)
+                            onSendBroadcastMessage?.invoke(selectedRecipients.toList(), messageBody)
+                            onDismiss()
                         }
-                        onDismiss()
+                        hasSingle -> {
+                            val singleRecipient = selectedRecipients.first()
+                            if (messageBody.isNotBlank()) {
+                                onSendBroadcastMessage?.invoke(listOf(singleRecipient), messageBody)
+                            } else {
+                                onSelectRecipient(singleRecipient.address, singleRecipient.name)
+                            }
+                            onDismiss()
+                        }
+                        hasQueryOnly -> {
+                            val matched = filteredContacts.firstOrNull {
+                                it.name.equals(trimmedQuery, ignoreCase = true) || it.address.equals(trimmedQuery, ignoreCase = true)
+                            } ?: if (filteredContacts.size == 1) filteredContacts.first() else null
+
+                            val address = matched?.address ?: trimmedQuery
+                            val name = matched?.name
+                            if (messageBody.isNotBlank()) {
+                                onSendBroadcastMessage?.invoke(
+                                    listOf(ContactPickerItem(name = name ?: address, address = address, initials = "#")),
+                                    messageBody
+                                )
+                            } else {
+                                onSelectRecipient(address, name)
+                            }
+                            onDismiss()
+                        }
                     }
                 }
             ) {
+                val buttonText = when {
+                    hasMultiple -> strings.sendToAllButton(selectedRecipients.size)
+                    messageBody.isNotBlank() -> strings.send
+                    else -> strings.next
+                }
                 Text(
-                    text = strings.next,
+                    text = buttonText,
                     color = if (canProceed) palette.accentPrimary else palette.textSecondary.copy(alpha = 0.5f),
                     fontWeight = FontWeight.Bold
                 )
@@ -10526,6 +10755,9 @@ private fun SwipeableConversationCard(
             .fillMaxWidth()
             .pointerInput(thread.id, swipeRightAction, swipeLeftAction) {
                 detectHorizontalDragGestures(
+                    onDragStart = {
+                        TxturaHaptics.tick(view, context)
+                    },
                     onHorizontalDrag = { change, dragAmount ->
                         change.consume()
                         val proposed = offsetX.value + dragAmount
@@ -10540,6 +10772,7 @@ private fun SwipeableConversationCard(
                             TxturaHaptics.swipeSnap(view, context)
                         } else if (!isTriggered && hasSnappedThreshold) {
                             hasSnappedThreshold = false
+                            TxturaHaptics.tick(view, context)
                         }
                         scope.launch {
                             offsetX.snapTo(clamped)
@@ -10550,9 +10783,19 @@ private fun SwipeableConversationCard(
                         val finalOffset = offsetX.value
                         when {
                             finalOffset >= thresholdPx && swipeRightAction != SwipeAction.NONE -> {
+                                if (swipeRightAction == SwipeAction.DELETE) {
+                                    TxturaHaptics.reject(view, context)
+                                } else {
+                                    TxturaHaptics.confirm(view, context)
+                                }
                                 onExecuteSwipeAction(swipeRightAction)
                             }
                             finalOffset <= -thresholdPx && swipeLeftAction != SwipeAction.NONE -> {
+                                if (swipeLeftAction == SwipeAction.DELETE) {
+                                    TxturaHaptics.reject(view, context)
+                                } else {
+                                    TxturaHaptics.confirm(view, context)
+                                }
                                 onExecuteSwipeAction(swipeLeftAction)
                             }
                         }
@@ -11117,7 +11360,8 @@ fun DeletedMessagesScreen(
                                 color = palette.dangerColor,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
-                                softWrap = false
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -12595,6 +12839,8 @@ fun AppLockScreen(
     mainWallpaper: WallpaperConfig,
     onUnlock: () -> Unit
 ) {
+    val context = LocalContext.current
+    val isDeviceSecure = remember(context) { AppSecurityManager.isDeviceLockConfigured(context) }
     val palette = LocalGlassPalette.current
     val isSr = TxturaStrings.isSerbianLocale()
 
@@ -12643,7 +12889,13 @@ fun AppLockScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = if (isSr) "Biometrijska zaštita i PIN su aktivni. Potvrdite identitet za pregled poruka." else "Biometric protection and PIN are active. Confirm identity to access messages.",
+                            text = if (isSr) {
+                                if (isDeviceSecure) "Biometrijska zaštita i PIN su aktivni. Potvrdite identitet za pregled poruka."
+                                else "Telefon nema podešen PIN niti biometriju zaključavanja ekrana. Dodirnite dugme ispod da otključate aplikaciju."
+                            } else {
+                                if (isDeviceSecure) "Biometric protection and PIN are active. Confirm identity to access messages."
+                                else "Device has no screen lock (PIN or biometrics) set up. Tap below to unlock the app."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = palette.textSecondary,
                             textAlign = TextAlign.Center
@@ -12673,10 +12925,34 @@ fun AppLockScreen(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = if (isSr) "Otključaj biometrijom / PIN-om" else "Unlock with Biometrics / PIN",
+                                text = if (isSr) {
+                                    if (isDeviceSecure) "Otključaj biometrijom / PIN-om" else "Otključaj aplikaciju"
+                                } else {
+                                    if (isDeviceSecure) "Unlock with Biometrics / PIN" else "Unlock App"
+                                },
                                 style = MaterialTheme.typography.titleSmall,
                                 color = palette.accentPrimary,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    if (!isDeviceSecure) {
+                        TextButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    })
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = if (isSr) "Podesi zaključavanje ekrana" else "Set up screen lock",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.accentPrimary
                             )
                         }
                     }

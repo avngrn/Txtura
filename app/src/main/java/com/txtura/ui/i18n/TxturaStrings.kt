@@ -637,8 +637,8 @@ class AppStrings(val isSerbian: Boolean) {
     val swipeGesturePin: String = s("Pin", "Zakači")
     val swipeGestureUnpin: String = s("Unpin", "Otkači")
     val swipeActionDelete: String = s("Trash", "Obriši")
-    val swipeActionCall: String = s("Call sender", "Pozovi kontakt")
-    val swipeActionMarkRead: String = s("Mark read / unread", "Označi kao pročitano / nepročitano")
+    val swipeActionCall: String = s("Call", "Pozovi")
+    val swipeActionMarkRead: String = s("Mark read / unread", "Pročitano / Nepročitano")
     val swipeGestureMarkRead: String = s("Mark read", "Označi pročitano")
     val swipeGestureMarkUnread: String = s("Mark unread", "Označi nepročitano")
     val swipeActionNone: String = s("Disabled", "Isključeno")
@@ -655,7 +655,7 @@ class AppStrings(val isSerbian: Boolean) {
         if (isSerbian) "$days dana" else "$days days"
     }
     val groupingModeTitle: String = s("Sort & group deleted messages by", "Grupisanje i sortiranje obrisanih poruka")
-    val groupByDateLabel: String = s("By Deletion Time", "Po vremenu brisanja")
+    val groupByDateLabel: String = s("By Date", "Po datumu")
     val groupByContactLabel: String = s("By Contact", "Po kontaktu")
     val confirmDeleteTitle: String = s("Move to Trash?", "Premesti u obrisane poruke?")
     val confirmDeleteMessage: (String, Int) -> String = { name, days ->
@@ -677,7 +677,7 @@ class AppStrings(val isSerbian: Boolean) {
     val confirmPermanentDeleteButton: String = s("Delete Forever", "Trajno obriši")
     val restoreButton: String = s("Restore", "Vrati poruku")
     val deletePermanentlyButton: String = s("Delete forever", "Trajno obriši")
-    val emptyTrashButton: String = s("Empty Trash", "Isprazni obrisane")
+    val emptyTrashButton: String = s("Empty Trash", "Isprazni sve")
     val emptyTrashMessage: String = s("No deleted messages in Trash.", "Nema poruka u folderu Obrisane poruke.")
     val daysRemainingBadge: (Int) -> String = { days ->
         if (isSerbian) "Još $days d." else "${days}d left"

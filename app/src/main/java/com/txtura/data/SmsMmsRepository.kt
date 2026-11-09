@@ -641,7 +641,7 @@ object SmsMmsRepository {
             }
         }
 
-        val isService = isAddressService(address, messages)
+        val isService = isAddressService(address, messages, name)
 
         return ConversationThread(
             id = id,
@@ -729,7 +729,11 @@ object SmsMmsRepository {
      * Determines whether an address should be categorized as a Service message.
      * Takes manual user overrides into account first, followed by standard heuristics.
      */
-    fun isAddressService(address: String, messages: List<ChatMessage> = emptyList()): Boolean {
+    fun isAddressService(
+        address: String,
+        messages: List<ChatMessage> = emptyList(),
+        contactName: String? = null
+    ): Boolean {
         val clean = address.trim()
         val norm = normalizeAddressKey(clean)
         val isForcedPerson = synchronized(forcedPersonAddresses) {
@@ -742,14 +746,30 @@ object SmsMmsRepository {
         }
         if (isForcedService) return true
 
-        // Default heuristic:
+        // 1. If this sender has a saved contact in the user's phone contacts (not just the raw number), it is a PERSON!
+        val hasKnownContactName = !contactName.isNullOrBlank() &&
+            contactName != clean &&
+            contactName.any { it.isLetter() }
+        if (hasKnownContactName) return false
+
+        // 2. If the user has sent outgoing messages in this thread (bidirectional chat), it is a PERSON!
+        val hasOutgoingMessages = messages.any { !it.isIncoming }
+        if (hasOutgoingMessages) return false
+
+        // 3. True alphanumeric sender (e.g. "Yettel", "BankaIntesa", "Google", "DHL") without standard phone digits
         val cleanDigits = clean.filter { it.isDigit() }
-        val isAlphaSender = clean.any { it.isLetter() }
-        val inShortCodeLength = (cleanDigits.length in 3..7)
-        val isNotInternationalPlus = !clean.startsWith("+")
-        val isShortCode = inShortCodeLength && isNotInternationalPlus
-        val hasOtpMessage = messages.any { it.securityAnalysis.extractedOtpCode != null }
-        return isAlphaSender || isShortCode || hasOtpMessage
+        val hasLetters = clean.any { it.isLetter() }
+        val isAlphaSender = hasLetters && cleanDigits.length <= 2
+        if (isAlphaSender) return true
+
+        // 4. Short codes (typically 3 to 6 digits, without international '+' prefix)
+        val isNotInternational = !clean.startsWith("+")
+        val isShortCode = isNotInternational && cleanDigits.isNotEmpty() && (cleanDigits.length in 3..6)
+        if (isShortCode) return true
+
+        // 5. Standard phone numbers (7+ digits or with '+'):
+        // Full phone numbers are people by default. OTP messages do not turn full phone numbers into services.
+        return false
     }
 
     /**
@@ -1452,10 +1472,16 @@ object SmsMmsRepository {
 
         val deviceThreads = loadedMessages
             .groupBy { msg ->
-                if (msg.threadId > 0L) {
-                    "thread_${msg.threadId}"
-                } else {
-                    "addr_${normalizeAddressKey(msg.address)}"
+                val normAddr = normalizeAddressKey(msg.address)
+                val resolvedName = contactNameCache.getOrPut(msg.address) {
+                    resolveContactNameSafely(context, msg.address) ?: msg.address
+                }
+                val hasRealName = resolvedName.isNotBlank() && resolvedName != msg.address && resolvedName.any { it.isLetter() }
+                when {
+                    hasRealName -> "contact_${resolvedName.trim().lowercase(Locale.ROOT)}"
+                    normAddr.isNotBlank() -> "addr_$normAddr"
+                    msg.threadId > 0L -> "thread_${msg.threadId}"
+                    else -> "addr_${msg.address.trim().lowercase(Locale.ROOT)}"
                 }
             }
             .entries
@@ -1470,10 +1496,11 @@ object SmsMmsRepository {
                     resolveContactPhotoUriSafely(context, primaryAddress)
                 }
                 val initials = computeInitials(resolvedName)
-                val threadId = sortedMsgs.first().threadId.takeIf { it > 0L }
+                val threadId = sortedMsgs.lastOrNull { it.threadId > 0L }?.threadId
+                    ?: sortedMsgs.first().threadId.takeIf { it > 0L }
                     ?: (primaryAddress.hashCode().toLong() and 0x7FFFFFFFL)
                 val isContactPinned = isAddressPinned(primaryAddress)
-                val unread = unreadCountByThread[threadId] ?: 0
+                val unread = sortedMsgs.map { it.threadId }.distinct().sumOf { unreadCountByThread[it] ?: 0 }
 
                 ConversationThread(
                     id = threadId,
@@ -1485,7 +1512,7 @@ object SmsMmsRepository {
                     messages = sortedMsgs,
                     unreadCount = unread,
                     isPinned = isContactPinned,
-                    isService = isAddressService(primaryAddress, sortedMsgs)
+                    isService = isAddressService(primaryAddress, sortedMsgs, resolvedName)
                 )
             }
 
@@ -1531,10 +1558,7 @@ object SmsMmsRepository {
         val previousInMemoryThreads = _threads.value.filterNot { it.id in DEMO_THREAD_IDS || it.address in DEMO_ADDRESSES }
         val mergedActiveList = activeList.asSequence().map { deviceThread ->
             val matchingInMemory = previousInMemoryThreads.find { prev ->
-                prev.id == deviceThread.id ||
-                    arePhoneNumbersEqual(prev.address, deviceThread.address) ||
-                    prev.address.equals(deviceThread.address, ignoreCase = true) ||
-                    normalizeAddressKey(prev.address) == normalizeAddressKey(deviceThread.address)
+                areThreadsSameContact(prev, deviceThread)
             }
             if (matchingInMemory != null) {
                 val missingMessages = matchingInMemory.messages.filter { memMsg ->
@@ -1566,10 +1590,7 @@ object SmsMmsRepository {
                 continue
             }
             val alreadyInDeviceList = mergedActiveList.any { dev ->
-                dev.id == inMemoryThread.id ||
-                    arePhoneNumbersEqual(dev.address, inMemoryThread.address) ||
-                    dev.address.equals(inMemoryThread.address, ignoreCase = true) ||
-                    normalizeAddressKey(dev.address) == normalizeAddressKey(inMemoryThread.address)
+                areThreadsSameContact(dev, inMemoryThread)
             }
             val hasRecentMessage = inMemoryThread.messages.any { (System.currentTimeMillis() - it.timestampMillis) < 60_000L }
             if (!alreadyInDeviceList && (hasRecentMessage || hasDraft)) {
@@ -1973,11 +1994,13 @@ object SmsMmsRepository {
     ): ConversationThread? {
         val cleanAddress = sanitizeSenderOrRecipientAddress(rawAddress)
         if (cleanAddress.isBlank()) return null
+        val normKey = normalizeAddressKey(cleanAddress)
         return threads.find {
             arePhoneNumbersEqual(it.address, cleanAddress) ||
                 it.address.equals(cleanAddress, ignoreCase = true) ||
                 it.contactName.equals(cleanAddress, ignoreCase = true) ||
-                normalizeAddressKey(it.address) == normalizeAddressKey(cleanAddress)
+                (normKey.isNotBlank() && normalizeAddressKey(it.address) == normKey) ||
+                (normKey.isNotBlank() && it.messages.any { m -> normalizeAddressKey(m.address) == normKey })
         }
     }
 
@@ -1993,7 +2016,7 @@ object SmsMmsRepository {
     ): Long {
         val cleanAddress = sanitizeSenderOrRecipientAddress(recipientAddress)
 
-        // 1. Check active threads
+        // 1. Check active threads by address
         val existingActive = findThreadByAddress(_threads.value, cleanAddress)
         if (existingActive != null) {
             markThreadRead(context, existingActive.id)
@@ -2011,11 +2034,23 @@ object SmsMmsRepository {
             return existingDeleted.thread.id
         }
 
-        // 3. Create a brand-new conversation thread
-        val newThreadId = nextId.incrementAndGet()
         val resolvedName = preferredName?.takeIf { it.isNotBlank() }
             ?: resolveContactNameSafely(context, cleanAddress)
             ?: cleanAddress
+
+        // 3. Check active threads by resolved contact name (prevents duplicate contact threads)
+        if (resolvedName != cleanAddress && resolvedName.any { it.isLetter() }) {
+            val existingByName = _threads.value.find {
+                it.contactName.trim().equals(resolvedName.trim(), ignoreCase = true)
+            }
+            if (existingByName != null) {
+                markThreadRead(context, existingByName.id)
+                return existingByName.id
+            }
+        }
+
+        // 4. Create a brand-new conversation thread
+        val newThreadId = nextId.incrementAndGet()
         val resolvedPhotoUri = resolveContactPhotoUriSafely(context, cleanAddress)
 
         val newThread = ConversationThread(
@@ -2028,7 +2063,7 @@ object SmsMmsRepository {
             messages = emptyList(),
             unreadCount = 0,
             isPinned = isAddressPinned(cleanAddress),
-            isService = isAddressService(cleanAddress)
+            isService = isAddressService(cleanAddress, emptyList(), resolvedName)
         )
 
         _threads.update { current ->
@@ -2244,7 +2279,7 @@ object SmsMmsRepository {
                     messages = listOf(newMessage),
                     unreadCount = 0,
                     isPinned = isAddressPinned(cleanAddress),
-                    isService = isAddressService(cleanAddress, listOf(newMessage))
+                    isService = isAddressService(cleanAddress, listOf(newMessage), resolvedContactName)
                 )
                 listOf(newThread) + current
             }
@@ -2403,7 +2438,7 @@ object SmsMmsRepository {
                     messages = listOf(incomingMessage),
                     unreadCount = 1,
                     isPinned = isAddressPinned(cleanAddress),
-                    isService = isAddressService(cleanAddress, listOf(incomingMessage))
+                    isService = isAddressService(cleanAddress, listOf(incomingMessage), resolvedName)
                 )
                 listOf(created) + current
             }
@@ -3276,11 +3311,117 @@ object SmsMmsRepository {
         }
     }
 
-    private fun sortThreads(list: List<ConversationThread>): List<ConversationThread> {
-        return list.sortedWith(
+    /**
+     * Determines whether two [ConversationThread] entries represent the same real-world contact,
+     * comparing normalized phone numbers, overlapping message senders, or identical device contact names.
+     */
+    fun areThreadsSameContact(a: ConversationThread, b: ConversationThread): Boolean {
+        if (a.id == b.id) return true
+
+        // 1. Exact string or telephony phone number match
+        if (arePhoneNumbersEqual(a.address, b.address)) return true
+        if (a.address.isNotBlank() && b.address.isNotBlank() && a.address.equals(b.address, ignoreCase = true)) return true
+
+        // 2. Normalized phone number key match
+        val normA = normalizeAddressKey(a.address)
+        val normB = normalizeAddressKey(b.address)
+        if (normA.isNotBlank() && normB.isNotBlank() && normA == normB) return true
+
+        // 3. Overlapping message addresses (e.g., local 064... vs international +38164...)
+        val aAddrs = buildSet {
+            if (normA.isNotBlank()) add(normA)
+            a.messages.forEach { m ->
+                val k = normalizeAddressKey(m.address)
+                if (k.isNotBlank()) add(k)
+            }
+        }
+        val bAddrs = buildSet {
+            if (normB.isNotBlank()) add(normB)
+            b.messages.forEach { m ->
+                val k = normalizeAddressKey(m.address)
+                if (k.isNotBlank()) add(k)
+            }
+        }
+        if (aAddrs.intersect(bAddrs).isNotEmpty()) return true
+
+        // 4. Same named contact from device contacts (must contain letters, not raw numbers)
+        val aHasRealName = a.contactName.isNotBlank() && a.contactName != a.address && a.contactName.any { it.isLetter() }
+        val bHasRealName = b.contactName.isNotBlank() && b.contactName != b.address && b.contactName.any { it.isLetter() }
+        if (aHasRealName && bHasRealName && a.contactName.trim().equals(b.contactName.trim(), ignoreCase = true)) {
+            return true
+        }
+
+        // 5. Same service name (e.g., both "Yettel", "MTS", "Banka")
+        if (a.isService && b.isService && a.contactName.isNotBlank() && a.contactName.trim().equals(b.contactName.trim(), ignoreCase = true)) {
+            return true
+        }
+
+        return false
+    }
+
+    /**
+     * Deduplicates and merges multiple conversation threads that correspond to the same contact,
+     * consolidating their chat history, unread counters, pin status, and draft text.
+     */
+    fun deduplicateAndMergeThreads(threads: List<ConversationThread>): List<ConversationThread> {
+        if (threads.size <= 1) return threads
+
+        val merged = mutableListOf<ConversationThread>()
+
+        for (thread in threads) {
+            val existingIndex = merged.indexOfFirst { existing ->
+                areThreadsSameContact(existing, thread)
+            }
+            if (existingIndex >= 0) {
+                val existing = merged[existingIndex]
+                val combinedMessages = (existing.messages + thread.messages)
+                    .distinctBy { it.id }
+                    .sortedBy { it.timestampMillis }
+
+                val mostRecentMsg = combinedMessages.lastOrNull()
+                val primaryAddress = mostRecentMsg?.address?.takeIf { it.isNotBlank() && it != "Unknown" }
+                    ?: if (thread.messages.isNotEmpty()) thread.address else existing.address
+
+                val bestName = when {
+                    existing.contactName.any { it.isLetter() } && existing.contactName != existing.address -> existing.contactName
+                    thread.contactName.any { it.isLetter() } && thread.contactName != thread.address -> thread.contactName
+                    existing.contactName.isNotBlank() -> existing.contactName
+                    else -> thread.contactName
+                }
+
+                val primaryId = when {
+                    existing.id > 0L && existing.id !in DEMO_THREAD_IDS -> existing.id
+                    thread.id > 0L && thread.id !in DEMO_THREAD_IDS -> thread.id
+                    else -> existing.id
+                }
+
+                val mergedThread = existing.copy(
+                    id = primaryId,
+                    contactName = bestName,
+                    address = primaryAddress,
+                    avatarInitials = computeInitials(bestName),
+                    avatarAccentColorHex = existing.avatarAccentColorHex,
+                    contactPhotoUri = existing.contactPhotoUri ?: thread.contactPhotoUri,
+                    messages = combinedMessages,
+                    unreadCount = existing.unreadCount + thread.unreadCount,
+                    isPinned = existing.isPinned || thread.isPinned,
+                    isService = existing.isService && thread.isService,
+                    draftText = if (!existing.draftText.isNullOrBlank()) existing.draftText else thread.draftText
+                )
+                merged[existingIndex] = mergedThread
+            } else {
+                merged.add(thread)
+            }
+        }
+
+        return merged.sortedWith(
             compareByDescending<ConversationThread> { it.isPinned }
                 .thenByDescending { it.lastMessage?.timestampMillis ?: 0L }
         )
+    }
+
+    private fun sortThreads(list: List<ConversationThread>): List<ConversationThread> {
+        return deduplicateAndMergeThreads(list)
     }
 
     fun computeInitials(name: String): String {
