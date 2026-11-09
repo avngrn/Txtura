@@ -1649,10 +1649,10 @@ fun SettingsScreen(
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val vName = pkgInfo.versionName ?: "2.1"
+            val vName = pkgInfo.versionName ?: "2.2"
             val vCode = pkgInfo.longVersionCode
             vName to vCode
-        }.getOrDefault("2.1" to 5L)
+        }.getOrDefault("2.2" to 6L)
     }
 
     val coroutineScope = rememberCoroutineScope()
@@ -5611,9 +5611,24 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v2.1",
+                        versionName = "v2.2",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Deduplikacija i konsolidacija kontakata" else "Contact Deduplication & Consolidation",
+                                items = listOf(
+                                    if (strings.isSerbian) "Napredno spajanje konverzacija: Otklonjena pojava istih kontakata više puta na listi, uz automatsko objedinjavanje poruka, nepročitanih brojača i statusa zakačenosti" else "Advanced thread merging: Completely eliminates duplicate conversation cards for the same person, automatically consolidating messages, unread counts, and pins",
+                                    if (strings.isSerbian) "Višefaktorsko prepoznavanje: Pametno uparivanje po imenu kontakta iz imenika, normalizovanim ciframa broja telefona i preklapanju brojeva unutar poruka" else "Multi-factor matching: Smart pairing using saved address book names, normalized phone digits, and overlapping message phone numbers"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v2.1",
+                        releaseDate = "09.11.2026.",
+                        isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Višestruko slanje poruka" else "Multi-Recipient Messaging",

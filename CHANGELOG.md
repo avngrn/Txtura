@@ -1,6 +1,12 @@
 # Txtura Changelog & Improvements
 
-## [v2.1] - 2026-11-09
+## [v2.2] - 2026-11-09
+
+### Deduplication & Optimization (Deduplikacija i optimizacija)
+- **Advanced Thread Deduplication (Napredna deduplikacija konverzacija):**
+  - Robust merging of fragmented threads from disparate telephony database IDs into unified conversation entries.
+  - Multi-factor contact matching based on normalized phone digits, shared message senders, and device phonebook names.
+  - Consistent and consolidated view across inbox and main conversation filters.
 
 ### Messaging & Broadcast (Poruke i višestruko slanje)
 - **Simultaneous Multi-Recipient Broadcast (Slanje jedne poruke na više brojeva istovremeno):**

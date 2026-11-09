@@ -466,8 +466,8 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "2.1"
-                }.getOrDefault("2.1")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "2.2"
+                }.getOrDefault("2.2")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -1433,8 +1433,8 @@ class MainActivity : ComponentActivity() {
     private fun triggerAppEntryUpdateCheck() {
         lifecycleScope.launch(Dispatchers.IO) {
             val currentAppVersionName = runCatching {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "2.1"
-            }.getOrDefault("2.1")
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "2.2"
+            }.getOrDefault("2.2")
             AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
         }
     }
