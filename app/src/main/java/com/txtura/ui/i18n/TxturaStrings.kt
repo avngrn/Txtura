@@ -186,6 +186,18 @@ class AppStrings(val isSerbian: Boolean) {
         "Omogućavanje zaključavanja same aplikacije otiskom prsta, prepoznavanjem lica ili odvojenom lozinkom",
     )
     val biometricLockEnabledLabel: String = s("Lock App When Closed", "Zaključavanje aplikacije pri izlasku")
+    val blockScreenshotsTitle: String = s(
+        "Block Screenshots in Chats & Messages",
+        "Zabrana skrinšotovanja četova i liste poruka"
+    )
+    val blockScreenshotsSub: String = s(
+        "Prevent taking screenshots and screen recordings in conversations and the message list to protect personal privacy.",
+        "Sprečava pravljenje snimaka ekrana i video snimanja unutar razgovora i liste poruka radi zaštite privatnosti.",
+    )
+    val blockScreenshotsSwitchLabel: String = s(
+        "Block Screenshots",
+        "Zabrani snimanje ekrana"
+    )
     val sslPinningTitle: String = s(
         "HTTPS & TLS/SSL with Pinning (SSL Pinning)",
         "HTTPS i TLS/SSL sa Pinning-om (SSL Pinning)",
@@ -319,12 +331,12 @@ class AppStrings(val isSerbian: Boolean) {
         "Striktni SPKI sertifikat pinning za mrežne veze radi sprečavanja Man-in-the-Middle napada, uz potpuno blokiranje nešifrovanog HTTP saobraćaja.",
     )
     val secItem9Title: String = s(
-        "Zero Metadata Minimization & Anti-Screenshot Shield",
-        "Zero Metadata minimizacija i zaštita od snimanja ekrana",
+        "Metadata Minimization & Zero-Telemetry",
+        "Minimizacija metapodataka i nulta telemetrija",
     )
     val secItem9Sub: String = s(
-        "Automated stripping of EXIF GPS coordinates and camera tags from MMS photos, dynamic FLAG_SECURE screenshot prevention, and redacted lock-screen notifications.",
-        "Automatsko uklanjanje EXIF GPS koordinata i detalja kamere sa slika pre slanja, FLAG_SECURE zabrana snimanja ekrana i cenzurisana obaveštenja.",
+        "Automated stripping of EXIF GPS coordinates and camera tags from MMS photos and redacted lock-screen notifications.",
+        "Automatsko uklanjanje EXIF GPS koordinata i detalja kamere sa slika pre slanja i cenzurisana obaveštenja na zaključanom ekranu.",
     )
     val secItem10Title: String = s(
         "Deep System Integrity & Root State Detection",
@@ -538,11 +550,16 @@ class AppStrings(val isSerbian: Boolean) {
         "Vaš uređaj neprekidno prati mrežu za lokalna i globalna hitna upozorenja."
     )
 
-    // 8. Message Tone
-    val messageToneTitle: String = s("Message tone", "Ton poruke")
+    // 8. Message Tone & Notification Sound
+    val smsNotificationSoundTitle: String = s("Notification sound", "Ton obaveštenja")
+    val smsNotificationSoundSub: String = s(
+        "Choose notification tone for incoming messages",
+        "Izaberite melodiju obaveštenja za nove poruke",
+    )
+    val messageToneTitle: String = s("Set system sound", "Podesi zvuk sistema")
     val messageToneSub: String = s(
-        "Notification sound for incoming messages",
-        "Melodija i zvuk obaveštenja za poruke",
+        "Notification sound for incoming messages in system settings",
+        "Melodija i zvuk obaveštenja za poruke u sistemskim podešavanjima",
     )
 
     // 9. SMS Center Number (SMSC)
@@ -573,7 +590,7 @@ class AppStrings(val isSerbian: Boolean) {
     val simMessageDeletedToast: String = s("Message deleted from SIM", "Poruka je obrisana sa SIM kartice")
 
     // In-app interaction & sound settings (Screenshot 1)
-    val inAppSoundsTitle: String = s("Hear outgoing and incoming message sounds", "Emituj zvuk za odlazne i dolazne poruke")
+    val inAppSoundsTitle: String = s("Outgoing and incoming message sounds", "Zvuk za odlazne i dolazne poruke")
     val inAppSoundsSub: String = s(
         "Play sound effects while chatting when sending and receiving messages",
         "Zvučni signali pri slanju i prijemu poruka unutar razgovora",
@@ -660,9 +677,9 @@ class AppStrings(val isSerbian: Boolean) {
     val confirmDeleteTitle: String = s("Move to Trash?", "Premesti u obrisane poruke?")
     val confirmDeleteMessage: (String, Int) -> String = { name, days ->
         if (isSerbian) {
-            "Da li ste sigurni da želite da obrišete razgovor sa „$name“? Poruka neće biti odmah trajno obrisana, već se premešta u Obrisane poruke odakle će biti automatski izbrisana nakon $days dana."
+            "Da li ste sigurni da želite da obrišete razgovor sa $name?\nPoruka neće biti odmah trajno obrisana, već se premešta u Obrisane poruke odakle će biti automatski izbrisana nakon $days dana."
         } else {
-            "Are you sure you want to delete the conversation with \"$name\"? It will be moved to Deleted Messages and automatically permanently deleted after $days days."
+            "Are you sure you want to delete the conversation with \"$name\"?\n It will be moved to Deleted Messages and automatically permanently deleted after $days days."
         }
     }
     val confirmMoveToTrashButton: String = s("Trash", "Obriši")

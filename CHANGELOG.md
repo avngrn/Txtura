@@ -1,5 +1,33 @@
 # Txtura Changelog & Improvements
 
+## [v2.4] - 2026-11-09
+
+### Audio & Notifications (Audio i obaveštenja)
+- **Custom In-App Notification Sounds (Prilagođeni tonovi obaveštenja za poruke):**
+  - Integrated 6 curated, studio-mastered offline SMS notification tones: *Dupli puls* (Double Pulse), *Kristalni zvončić* (Crystal Chime), *Meki pop* (Soft Pop), *Ritam kod* (Rhythm Code), *Topla kalimba* (Warm Kalimba), and *Diskretni oblak* (Discreet Cloud).
+  - Dynamic preview audio playback instantly when selecting any notification sound in Settings.
+- **Dedicated System Sound Configuration (Podešavanje zvuka sistema):**
+  - Added dynamic "Podesi zvuk sistema" (Set system sound) action row that surfaces specifically when "Sistemski ton" (System tone) is selected.
+  - Tapping directly opens the Android system notification channel settings where users can customize default system melodies, ringtones, and vibration patterns.
+  - Rephrased sound toggles to concise "Outgoing and incoming message sounds" / "Zvuk za odlazne i dolazne poruke".
+- **Tactile In-App Action Audio Effects (Zvučni efekti akcija u aplikaciji):**
+  - Crisp audio feedback for key message interactions: highlighting (`highlight_poruke.wav`), unhighlighting (`unhighlight_poruke.wav`), moving to trash (`kanta_brisanje.wav`), permanent deletion (`kanta_poklopac_pop.wav`), pinning (`pin_poruke.wav`), unpinning (`unpin_poruke.wav`), and marking read/unread (`procitano.wav` / `neprocitano.wav`).
+
+### Privacy & Security (Privatnost i bezbednost)
+- **Selective Chat & Message List Screenshot Protection (Zabrana skrinšotovanja četova i liste poruka):**
+  - Replaced former unconditional whole-app screenshot blocking with a dedicated setting in *Privatnost i bezbednost* placed directly below Biometric Protection.
+  - Dynamically enforces `FLAG_SECURE` only when actively viewing conversation lists, active chats, or deleted messages, allowing users to safely screenshot settings and auxiliary views when needed.
+
+### UX, Navigation & Messaging (Korisničko iskustvo i navigacija)
+- **New Message Recipient Experience (Prošireno polje za unos primalaca):**
+  - Removed contact picker icon inside the recipient input field to grant full screen width and clear visibility of all recipient chips and typed numbers.
+- **Conversation Screen Keep-Awake (Zadržavanje uključenog ekrana u razgovoru):**
+  - Automatically holds the device screen awake (`FLAG_KEEP_SCREEN_ON`) while inside an active chat window, preventing unexpected display timeouts during reading or typing.
+- **Single Active Dropdown Menu (Isključivost padajućih menija):**
+  - Enforced single-menu exclusivity across all action bars to eliminate overlapping popup menus.
+- **Smooth Main Screen Transition (Optimizacija brzine povratka na glavni ekran):**
+  - Eliminated the 2–3s delay/stutter when navigating back to the main conversations screen.
+
 ## [v2.2] - 2026-11-09
 
 ### Deduplication & Optimization (Deduplikacija i optimizacija)

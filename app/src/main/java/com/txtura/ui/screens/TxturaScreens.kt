@@ -2,13 +2,16 @@
 
 package com.txtura.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.ContactsContract
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,6 +19,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.net.toUri
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Spring
@@ -94,7 +98,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -179,6 +185,7 @@ import com.txtura.data.MmsDataDisabledMode
 import com.txtura.data.ScheduledSmsMessage
 import com.txtura.data.SimCardMessage
 import com.txtura.data.SmsMmsRepository
+import com.txtura.data.SmsNotificationSound
 import com.txtura.data.SwipeAction
 import com.txtura.telephony.EmergencyAlert
 import com.txtura.telephony.EmergencyAlertManager
@@ -404,20 +411,24 @@ fun ConversationsListScreen(
         )
     } else {
         val filteredThreads = remember(threads, searchQuery, selectedFilter) {
-            val deduplicated = SmsMmsRepository.deduplicateAndMergeThreads(threads)
+            val deduplicated = if (threads.size <= 1) threads else SmsMmsRepository.deduplicateAndMergeThreads(threads)
+            val isBlankSearch = searchQuery.isBlank()
             val list = deduplicated.filter { (_, contactName, address, _, _, _, messages, unreadCount, _, isService) ->
-                val matchesSearch = searchQuery.isBlank() ||
-                    contactName.contains(searchQuery, ignoreCase = true) ||
-                    address.contains(searchQuery, ignoreCase = true) ||
-                    messages.any { it.body.contains(searchQuery, ignoreCase = true) }
-
                 val matchesFilter = when (selectedFilter) {
                     ConversationFilter.PEOPLE -> !isService
                     ConversationFilter.SERVICES -> isService
                     ConversationFilter.UNREAD -> unreadCount > 0
                     ConversationFilter.ALL -> true
                 }
-                matchesSearch && matchesFilter
+                if (!matchesFilter) return@filter false
+
+                if (isBlankSearch) {
+                    true
+                } else {
+                    contactName.contains(searchQuery, ignoreCase = true) ||
+                        address.contains(searchQuery, ignoreCase = true) ||
+                        messages.any { it.body.contains(searchQuery, ignoreCase = true) }
+                }
             }
             list.sortedWith(
                 compareByDescending<ConversationThread> { it.isPinned }
@@ -688,7 +699,7 @@ fun ConversationsListScreen(
                                 .then(
                                     if (isExpressive) {
                                         Modifier.animateItem(
-                                            fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                            fadeInSpec = null,
                                             fadeOutSpec = spring(stiffness = Spring.StiffnessMediumLow),
                                             placementSpec = spring(
                                                 dampingRatio = Spring.DampingRatioLowBouncy,
@@ -1576,6 +1587,14 @@ private enum class SettingsCategoryWindow {
 }
 
 /**
+ * Single Active Dropdown / Collapsible Coordinator:
+ * Enforces that at most one dropdown menu or expandable card can be open at any given time across the UI.
+ */
+val LocalActiveDropdownId = compositionLocalOf<MutableState<String?>> {
+    mutableStateOf(null)
+}
+
+/**
  * Dedicated Settings Screen ("Settings" / "Podešavanja") organized into modern category windows.
  * Clicking on any category opens that category in its own full-screen window (rather than an inline dropdown menu).
  */
@@ -1602,6 +1621,10 @@ fun SettingsScreen(
     onToggleExpressiveAnimations: (Boolean) -> Unit = {},
     hapticsEnabled: Boolean = true,
     onToggleHaptics: (Boolean) -> Unit = {},
+    smsNotificationSound: SmsNotificationSound = SmsNotificationSound.SYSTEM,
+    onSelectSmsNotificationSound: (SmsNotificationSound) -> Unit = {},
+    blockScreenshotsEnabled: Boolean = false,
+    onToggleBlockScreenshots: (Boolean) -> Unit = {},
     bubblesEnabled: Boolean = true,
     onToggleBubbles: (Boolean) -> Unit = {},
     onOpenSystemBubbleSettings: () -> Unit = {},
@@ -1649,10 +1672,10 @@ fun SettingsScreen(
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val vName = pkgInfo.versionName ?: "2.2"
+            val vName = pkgInfo.versionName ?: "2.4"
             val vCode = pkgInfo.longVersionCode
             vName to vCode
-        }.getOrDefault("2.2" to 6L)
+        }.getOrDefault("2.4" to 7L)
     }
 
     val coroutineScope = rememberCoroutineScope()
@@ -1708,10 +1731,16 @@ fun SettingsScreen(
         activeCategoryWindow = null
     }
 
-    GlassBackground(wallpaperConfig = mainWallpaper) {
-        val palette = LocalGlassPalette.current
+    val activeDropdownId = rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(activeCategoryWindow) {
+        activeDropdownId.value = null
+    }
 
-        val isExpressive = LocalExpressiveAnimations.current
+    CompositionLocalProvider(LocalActiveDropdownId provides activeDropdownId) {
+        GlassBackground(wallpaperConfig = mainWallpaper) {
+            val palette = LocalGlassPalette.current
+
+            val isExpressive = LocalExpressiveAnimations.current
 
         AnimatedContent(
             targetState = activeCategoryWindow,
@@ -2235,8 +2264,9 @@ fun SettingsScreen(
                                     }
                                 }
 
-                                var themesExpanded by rememberSaveable { mutableStateOf(false) }
-                                var texturesExpanded by rememberSaveable { mutableStateOf(false) }
+                                val activeDropdown = LocalActiveDropdownId.current
+                                val themesExpanded = activeDropdown.value == "themes"
+                                val texturesExpanded = activeDropdown.value == "textures"
 
                                 val themesRotation by animateFloatAsState(targetValue = if (themesExpanded) 180f else 0f)
                                 val currentPresetSubtitle = if (mainWallpaper.isCustomGalleryImage) {
@@ -2252,7 +2282,9 @@ fun SettingsScreen(
                                     elevated = themesExpanded,
                                     accentHighlight = if (themesExpanded) palette.accentPrimary else null,
                                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-                                    onClick = { themesExpanded = !themesExpanded }
+                                    onClick = {
+                                        activeDropdown.value = if (activeDropdown.value == "themes") null else "themes"
+                                    }
                                 ) {
                                     Column(modifier = Modifier.fillMaxWidth()) {
                                         Row(
@@ -2324,7 +2356,9 @@ fun SettingsScreen(
                                     elevated = texturesExpanded,
                                     accentHighlight = if (texturesExpanded) palette.accentPrimary else null,
                                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-                                    onClick = { texturesExpanded = !texturesExpanded }
+                                    onClick = {
+                                        activeDropdown.value = if (activeDropdown.value == "textures") null else "textures"
+                                    }
                                 ) {
                                     Column(modifier = Modifier.fillMaxWidth()) {
                                         Row(
@@ -2404,12 +2438,33 @@ fun SettingsScreen(
                             }
 
                             SettingsCategoryWindow.NOTIFICATIONS_SOUNDS_HAPTICS -> {
-                                // 2A. Ton poruke (Message Tone)
-                                SettingsActionRow(
-                                    title = strings.messageToneTitle,
-                                    subtitle = strings.messageToneSub,
-                                    onClick = { SmsMmsRepository.openMessageSoundSettings(context) }
+                                var currentSmsSound by remember(smsNotificationSound) {
+                                    mutableStateOf(smsNotificationSound)
+                                }
+
+                                // 2A-0. Izbor tona obaveštenja za poruke (SMS Notification Sound Selector)
+                                SettingsSelectorRow(
+                                    title = strings.smsNotificationSoundTitle,
+                                    subtitle = strings.smsNotificationSoundSub,
+                                    currentValueLabel = currentSmsSound.getDisplayName(strings.isSerbian),
+                                    options = SmsNotificationSound.entries.map { sound ->
+                                        Pair(sound, sound.getDisplayName(strings.isSerbian))
+                                    },
+                                    selectedOption = currentSmsSound,
+                                    onSelect = { selectedSound ->
+                                        currentSmsSound = selectedSound
+                                        onSelectSmsNotificationSound(selectedSound)
+                                    }
                                 )
+
+                                // 2A. Podesi zvuk sistema (prikazuje se samo kada je u izboru zvuka odabran Sistemski ton / System tone)
+                                if (currentSmsSound == SmsNotificationSound.SYSTEM) {
+                                    SettingsActionRow(
+                                        title = strings.messageToneTitle,
+                                        subtitle = strings.messageToneSub,
+                                        onClick = { SmsMmsRepository.openMessageSoundSettings(context) }
+                                    )
+                                }
 
                                 // 2B. Emituj zvuk za odlazne i dolazne poruke (Hear Outgoing and Incoming Message Sounds)
                                 SettingsSwitchRow(
@@ -3321,6 +3376,56 @@ fun SettingsScreen(
                                     }
                                 }
 
+                                // 2B. Zabrana skrinšotovanja četova i liste poruka (Block Screenshots)
+                                var currentBlockScreenshots by remember(blockScreenshotsEnabled) {
+                                    mutableStateOf(blockScreenshotsEnabled)
+                                }
+                                GlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(18.dp),
+                                    contentPadding = PaddingValues(14.dp)
+                                ) {
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(
+                                                imageVector = TxturaIcons.ShieldCheck,
+                                                contentDescription = null,
+                                                tint = palette.accentPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Text(
+                                                text = strings.blockScreenshotsTitle,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = palette.textPrimary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        Text(
+                                            text = strings.blockScreenshotsSub,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = palette.textSecondary
+                                        )
+
+                                        SettingsSwitchRow(
+                                            title = strings.blockScreenshotsSwitchLabel,
+                                            checked = currentBlockScreenshots,
+                                            onCheckedChange = { checked ->
+                                                currentBlockScreenshots = checked
+                                                AppSecurityManager.setBlockScreenshotsEnabled(context, checked)
+                                                onToggleBlockScreenshots(checked)
+                                            }
+                                        )
+                                    }
+                                }
+
                                 // 3. Lokalna enkripcija baze podataka (Local Database Encryption)
                                 GlassCard(
                                     modifier = Modifier.fillMaxWidth(),
@@ -3528,16 +3633,6 @@ fun SettingsScreen(
                                             onCheckedChange = { checked ->
                                                 metadataMinimizationEnabled = checked
                                                 AppSecurityManager.setMetadataMinimizationEnabled(context, checked)
-                                                (context as? android.app.Activity)?.let { act ->
-                                                    if (checked) {
-                                                        act.window.setFlags(
-                                                            android.view.WindowManager.LayoutParams.FLAG_SECURE,
-                                                            android.view.WindowManager.LayoutParams.FLAG_SECURE
-                                                        )
-                                                    } else {
-                                                        act.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
-                                                    }
-                                                }
                                             }
                                         )
                                     }
@@ -3828,6 +3923,7 @@ fun SettingsScreen(
             )
         }
     }
+    }
 }
 
 @Composable
@@ -3839,7 +3935,8 @@ private fun BubblesCollapsibleCard(
 ) {
     val palette = LocalGlassPalette.current
     val isExpressive = LocalExpressiveAnimations.current
-    var expanded by rememberSaveable { mutableStateOf(false) }
+    val activeDropdown = LocalActiveDropdownId.current
+    val expanded = activeDropdown.value == "bubbles"
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = if (isExpressive) {
@@ -3868,7 +3965,9 @@ private fun BubblesCollapsibleCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .clickable { expanded = !expanded }
+                    .clickable {
+                        activeDropdown.value = if (activeDropdown.value == "bubbles") null else "bubbles"
+                    }
                     .padding(vertical = 4.dp)
             ) {
                 Row(
@@ -4052,7 +4151,8 @@ private fun ExternalLinksCollapsibleCard(
 ) {
     val palette = LocalGlassPalette.current
     val isExpressive = LocalExpressiveAnimations.current
-    var expanded by rememberSaveable { mutableStateOf(false) }
+    val activeDropdown = LocalActiveDropdownId.current
+    val expanded = activeDropdown.value == "external_links"
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = if (isExpressive) {
@@ -4081,7 +4181,9 @@ private fun ExternalLinksCollapsibleCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .clickable { expanded = !expanded }
+                    .clickable {
+                        activeDropdown.value = if (activeDropdown.value == "external_links") null else "external_links"
+                    }
                     .padding(vertical = 4.dp)
             ) {
                 Row(
@@ -4351,13 +4453,17 @@ private fun <T> SettingsSelectorRow(
     val palette = LocalGlassPalette.current
     val view = LocalView.current
     val context = LocalContext.current
-    var menuExpanded by remember { mutableStateOf(false) }
+    val activeDropdown = LocalActiveDropdownId.current
+    val dropdownKey = "selector_${title.hashCode()}"
+    val menuExpanded = activeDropdown.value == dropdownKey
 
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-        onClick = { menuExpanded = true }
+        onClick = {
+            activeDropdown.value = if (activeDropdown.value == dropdownKey) null else dropdownKey
+        }
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -4404,7 +4510,11 @@ private fun <T> SettingsSelectorRow(
                 val menuShape = RoundedCornerShape(16.dp)
                 DropdownMenu(
                     expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false },
+                    onDismissRequest = {
+                        if (activeDropdown.value == dropdownKey) {
+                            activeDropdown.value = null
+                        }
+                    },
                     shape = menuShape,
                     containerColor = palette.popupContainerColor,
                     tonalElevation = 0.dp,
@@ -4438,7 +4548,7 @@ private fun <T> SettingsSelectorRow(
                             onClick = {
                                 TxturaHaptics.click(view, context)
                                 onSelect(value)
-                                menuExpanded = false
+                                activeDropdown.value = null
                             }
                         )
                     }
@@ -4791,7 +4901,9 @@ private fun SwipeDirectionInteractiveCard(
 ) {
     val palette = LocalGlassPalette.current
     val enabled = currentAction != SwipeAction.NONE
-    var expanded by rememberSaveable { mutableStateOf(false) }
+    val activeDropdown = LocalActiveDropdownId.current
+    val dropdownKey = "swipe_${title.hashCode()}"
+    val expanded = activeDropdown.value == dropdownKey
     val selectableActions = remember {
         SwipeAction.entries.filter { it != SwipeAction.NONE }
     }
@@ -4813,7 +4925,9 @@ private fun SwipeDirectionInteractiveCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .clickable { expanded = !expanded }
+                    .clickable {
+                        activeDropdown.value = if (activeDropdown.value == dropdownKey) null else dropdownKey
+                    }
                     .padding(vertical = 4.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -4835,10 +4949,12 @@ private fun SwipeDirectionInteractiveCard(
                     onCheckedChange = { turnOn ->
                         if (turnOn) {
                             onSelectAction(defaultFallbackAction)
-                            expanded = true
+                            activeDropdown.value = dropdownKey
                         } else {
                             onSelectAction(SwipeAction.NONE)
-                            expanded = false
+                            if (activeDropdown.value == dropdownKey) {
+                                activeDropdown.value = null
+                            }
                         }
                     },
                     colors = SwitchDefaults.colors(
@@ -4930,7 +5046,8 @@ private fun DeletedMessagesCollapsibleCard(
 ) {
     val palette = LocalGlassPalette.current
     val isExpressive = LocalExpressiveAnimations.current
-    var expanded by rememberSaveable { mutableStateOf(false) }
+    val activeDropdown = LocalActiveDropdownId.current
+    val expanded = activeDropdown.value == "deleted_messages"
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = if (isExpressive) {
@@ -4965,7 +5082,9 @@ private fun DeletedMessagesCollapsibleCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .clickable { expanded = !expanded }
+                    .clickable {
+                        activeDropdown.value = if (activeDropdown.value == "deleted_messages") null else "deleted_messages"
+                    }
                     .padding(vertical = 4.dp)
             ) {
                 Row(
@@ -5611,9 +5730,39 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v2.2",
+                        versionName = "v2.4",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Tonovi obaveštenja i zvučni efekti" else "Notification Sounds & Audio Effects",
+                                items = listOf(
+                                    if (strings.isSerbian) "Prilagođeni tonovi obaveštenja: 6 novih visokokvalitetnih melodija (Dupli puls, Kristalni zvončić, Meki pop, Ritam kod, Topla kalimba, Diskretni oblak) uz trenutni pregled zvuka" else "Custom notification tones: 6 curated high-quality notification melodies (Double Pulse, Crystal Chime, Soft Pop, Rhythm Code, Warm Kalimba, Discreet Cloud) with instant preview",
+                                    if (strings.isSerbian) "Sistemski meni za zvuk: Dinamičko podešavanje 'Podesi zvuk sistema' koje se pojavljuje kada je odabran Sistemski ton i vodi direktno na sistemski meni kanala za izbor melodije" else "System sound integration: Dynamic 'Set system sound' option when System tone is chosen, directly opening the system notification channel sound settings",
+                                    if (strings.isSerbian) "Zvučni efekti akcija: Novi namenski zvuci za hajlajtovanje, uklanjanje hajlajta, brisanje u kantu, trajno brisanje, pinovanje, otpinovanje i označavanje statusa poruka" else "Action sound effects: Distinct in-app sound effects for highlighting, unhighlighting, trash deletion, permanent deletion, pinning, unpinning, and message status"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Privatnost i bezbednost" else "Privacy & Security",
+                                items = listOf(
+                                    if (strings.isSerbian) "Selektivna zabrana snimanja ekrana: Nova opcija u Privatnosti i bezbednosti koja dinamički sprečava skrinšotovanje četova i liste poruka, dok su podešavanja i ostali delovi aplikacije slobodni za snimanje" else "Selective chat screenshot protection: New setting in Privacy & Security to selectively prevent screenshots and screen recordings in conversations and message lists while leaving other screens accessible"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Korisničko iskustvo i performanse" else "UX & Performance",
+                                items = listOf(
+                                    if (strings.isSerbian) "Poboljšanja nove poruke: Uklonjena ikonica iz polja primaoca radi maksimalne širine i pune preglednosti svih izabranih kontakata" else "New message improvements: Removed contact icon from the recipient field to provide maximum width and full visibility of all chosen contacts",
+                                    if (strings.isSerbian) "Uvek uključen ekran u četu: Ekran ostaje uključen dok ste unutar aktivnog razgovora kako se ne bi gasio tokom kucanja i čitanja" else "Keep screen on in chat: Screen stays awake while viewing a conversation, preventing screen timeout",
+                                    if (strings.isSerbian) "Optimizacija prelaza i menija: Uklonjeno zadržavanje pri povratku na glavni ekran i osiguran samo jedan otvoren padajući meni u isto vreme" else "Transition & menu optimization: Eliminated lag when returning to the main screen and ensured only a single dropdown menu can be open at a time"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v2.2",
+                        releaseDate = "09.11.2026.",
+                        isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Deduplikacija i konsolidacija kontakata" else "Contact Deduplication & Consolidation",
@@ -6267,6 +6416,23 @@ fun ConversationDetailScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val strings = TxturaStrings.current()
+
+    // Prevent device screen from turning off while inside conversation window
+    val activity = remember(context) {
+        var ctx = context
+        while (ctx is ContextWrapper) {
+            if (ctx is Activity) return@remember ctx
+            ctx = ctx.baseContext
+        }
+        null
+    }
+    DisposableEffect(activity) {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     var draftText by remember(thread.id) {
         mutableStateOf(SmsMmsRepository.getDraftForThread(context, thread.id))
     }
@@ -9413,7 +9579,7 @@ fun NewMessageDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                // 1. Sleek "Za:" / "To:" bar with placeholder "Unesi ime ili broj telefona"
+                // 1. Sleek "Za:" / "To:" bar with full visibility of recipient names (FlowRow) and input
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -9433,32 +9599,74 @@ fun NewMessageDialog(
                             ),
                             shape = RoundedCornerShape(20.dp)
                         )
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateContentSize()
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = strings.toRecipientPrefix,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = palette.textSecondary,
-                                fontWeight = FontWeight.Normal
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
+                        if (selectedRecipients.isNotEmpty()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = strings.toRecipientPrefix,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = palette.accentPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(palette.accentPrimary.copy(alpha = 0.16f))
+                                            .padding(horizontal = 7.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = selectedRecipients.size.toString(),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = palette.accentPrimary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                                if (selectedRecipients.size > 1) {
+                                    Text(
+                                        text = if (strings.isSerbian) "Ukloni sve" else "Clear all",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textSecondary,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable {
+                                                TxturaHaptics.tick(view, context)
+                                                selectedRecipients.clear()
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
 
-                            if (selectedRecipients.isNotEmpty()) {
-                                LazyRow(
+                            // Wrapping container so every selected recipient name is clearly visible
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 140.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                FlowRow(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f, fill = false)
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    items(selectedRecipients, key = { it.address }) { rec ->
+                                    selectedRecipients.forEach { rec ->
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(50))
@@ -9472,34 +9680,47 @@ fun NewMessageDialog(
                                                     TxturaHaptics.tick(view, context)
                                                     selectedRecipients.remove(rec)
                                                 }
-                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                                .padding(horizontal = 9.dp, vertical = 5.dp)
                                         ) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Text(
                                                     text = rec.name,
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = palette.textPrimary,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    maxLines = 1
+                                                    fontWeight = FontWeight.SemiBold
                                                 )
-                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Spacer(modifier = Modifier.width(5.dp))
                                                 Icon(
                                                     imageVector = TxturaIcons.Close,
                                                     contentDescription = strings.cancel,
                                                     tint = palette.textSecondary,
-                                                    modifier = Modifier.size(12.dp)
+                                                    modifier = Modifier.size(13.dp)
                                                 )
                                             }
                                         }
                                     }
                                 }
-                                Spacer(modifier = Modifier.width(6.dp))
                             }
+                        }
 
+                        // Input field for recipient name or phone number (with no cramped contacts icon)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (selectedRecipients.isEmpty()) {
+                                Text(
+                                    text = strings.toRecipientPrefix,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = palette.textSecondary,
+                                    fontWeight = FontWeight.Normal
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
                             Box(modifier = Modifier.weight(1f)) {
-                                if (queryOrNumber.isEmpty() && selectedRecipients.isEmpty()) {
+                                if (queryOrNumber.isEmpty()) {
                                     Text(
-                                        text = strings.enterNameOrPhoneNumber,
+                                        text = if (selectedRecipients.isEmpty()) strings.enterNameOrPhoneNumber else (if (strings.isSerbian) "Dodaj još..." else "Add more..."),
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = palette.textSecondary.copy(alpha = 0.50f),
                                         maxLines = 1,
@@ -9516,39 +9737,17 @@ fun NewMessageDialog(
                                     modifier = Modifier.fillMaxWidth()
                                 )
                             }
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        Box(contentAlignment = Alignment.Center) {
-                            GlassIconButton(
-                                icon = TxturaIcons.ContactPerson,
-                                contentDescription = strings.pickFromContacts,
-                                tint = palette.accentPrimary,
-                                accentHighlight = palette.accentPrimary,
-                                onClick = {
-                                    TxturaHaptics.tick(view, context)
-                                    onPickContact()
-                                },
-                                size = 36.dp
-                            )
-                            if (selectedRecipients.isNotEmpty()) {
-                                Box(
-                                    contentAlignment = Alignment.Center,
+                            if (queryOrNumber.isNotEmpty()) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(
+                                    imageVector = TxturaIcons.Close,
+                                    contentDescription = strings.cancel,
+                                    tint = palette.textSecondary,
                                     modifier = Modifier
-                                        .align(Alignment.TopEnd)
                                         .size(16.dp)
                                         .clip(CircleShape)
-                                        .background(palette.accentPrimary)
-                                ) {
-                                    Text(
-                                        text = selectedRecipients.size.toString(),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (palette.isDark) Color.Black else Color.White,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
+                                        .clickable { queryOrNumber = "" }
+                                )
                             }
                         }
                     }
@@ -9560,7 +9759,7 @@ fun NewMessageDialog(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        // Header with match count + Select All / Deselect All
+                        // Header with match count + contact picker + Select All / Deselect All
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -9568,15 +9767,28 @@ fun NewMessageDialog(
                                 .fillMaxWidth()
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
-                            Text(
-                                text = if (trimmedQuery.isNotBlank()) {
-                                    "${filteredContacts.size} ${if (strings.isSerbian) "predloga" else "suggestions"}"
-                                } else {
-                                    "${availableContacts.size} ${if (strings.isSerbian) "kontakata" else "contacts"}"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.textSecondary
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = if (trimmedQuery.isNotBlank()) {
+                                        "${filteredContacts.size} ${if (strings.isSerbian) "predloga" else "suggestions"}"
+                                    } else {
+                                        "${availableContacts.size} ${if (strings.isSerbian) "kontakata" else "contacts"}"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textSecondary
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                GlassIconButton(
+                                    icon = TxturaIcons.ContactPerson,
+                                    contentDescription = strings.pickFromContacts,
+                                    tint = palette.accentPrimary,
+                                    onClick = {
+                                        TxturaHaptics.tick(view, context)
+                                        onPickContact()
+                                    },
+                                    size = 26.dp
+                                )
+                            }
                             if (filteredContacts.isNotEmpty()) {
                                 val allFiltered = filteredContacts.all { c -> selectedRecipients.any { it.address == c.address } }
                                 Row(
@@ -11729,6 +11941,10 @@ private val shortDateFormatter = object : ThreadLocal<SimpleDateFormat>() {
     override fun initialValue(): SimpleDateFormat = SimpleDateFormat("dd.MM.", Locale.getDefault())
 }
 
+private val yearDateFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("dd.MM.yyyy.", Locale.getDefault())
+}
+
 private val fullDateAndTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
     override fun initialValue(): SimpleDateFormat = SimpleDateFormat("dd.MM.yyyy. HH:mm", Locale.getDefault())
 }
@@ -11739,12 +11955,21 @@ private fun formatTimestamp(millis: Long): String {
 
 private fun formatThreadTimestamp(millis: Long): Pair<String, String?> {
     val now = System.currentTimeMillis()
-    val diff = now - millis
+    val nowCal = Calendar.getInstance().apply { timeInMillis = now }
+    val msgCal = Calendar.getInstance().apply { timeInMillis = millis }
+    val isSameYear = nowCal.get(Calendar.YEAR) == msgCal.get(Calendar.YEAR)
+    val isSameDay = isSameYear && (nowCal.get(Calendar.DAY_OF_YEAR) == msgCal.get(Calendar.DAY_OF_YEAR))
     val timeStr = shortTimeFormatter.get()?.format(Date(millis)).orEmpty()
-    return if (diff < 86_400_000L) {
-        Pair(timeStr, null)
+
+    return if (isSameYear) {
+        if (isSameDay) {
+            Pair(timeStr, null)
+        } else {
+            val dateStr = shortDateFormatter.get()?.format(Date(millis)).orEmpty()
+            Pair(timeStr, dateStr)
+        }
     } else {
-        val dateStr = shortDateFormatter.get()?.format(Date(millis)).orEmpty()
+        val dateStr = yearDateFormatter.get()?.format(Date(millis)).orEmpty()
         Pair(timeStr, dateStr)
     }
 }

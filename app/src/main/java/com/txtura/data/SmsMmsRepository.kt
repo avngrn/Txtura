@@ -83,6 +83,7 @@ object SmsMmsRepository {
     private const val KEY_PINNED_ADDRS = "pinned_addresses"
     private const val KEY_PINNED_MSGS = "pinned_message_ids"
     private const val KEY_HIGHLIGHTED_MSGS = "highlighted_message_ids"
+    private const val KEY_SMS_NOTIFICATION_SOUND = "sms_notification_sound_v1"
     private const val KEY_BLOCKED_ADDRS = "blocked_sender_addresses"
     private const val KEY_DELETED_THREADS = "deleted_threads_meta"
     private const val KEY_DELETED_MSGS = "deleted_messages_meta"
@@ -261,6 +262,56 @@ object SmsMmsRepository {
     /**
      * Ensures the high-importance SMS/MMS notification channel exists with default sound and vibration.
      */
+    fun getSmsNotificationSound(context: Context): SmsNotificationSound {
+        return try {
+            val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(KEY_SMS_NOTIFICATION_SOUND, null)
+            SmsNotificationSound.fromId(saved)
+        } catch (_: Exception) {
+            SmsNotificationSound.SYSTEM
+        }
+    }
+
+    fun setSmsNotificationSound(context: Context, sound: SmsNotificationSound) {
+        try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+                putString(KEY_SMS_NOTIFICATION_SOUND, sound.id)
+            }
+        } catch (_: Exception) { }
+        ensureNotificationChannel(context)
+    }
+
+    fun getActiveNotificationChannelId(context: Context): String {
+        val sound = getSmsNotificationSound(context)
+        return if (sound == SmsNotificationSound.SYSTEM) {
+            CHANNEL_ID_MESSAGES
+        } else {
+            "${CHANNEL_ID_MESSAGES}_${sound.id}"
+        }
+    }
+
+    fun getActiveNotificationSoundUri(context: Context): Uri {
+        val sound = getSmsNotificationSound(context)
+        return if (sound == SmsNotificationSound.SYSTEM) {
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        } else {
+            Uri.parse("android.resource://${context.packageName}/raw/${sound.rawResName}")
+        }
+    }
+
+    fun playSmsNotificationSoundPreview(context: Context, sound: SmsNotificationSound) {
+        try {
+            if (sound == SmsNotificationSound.SYSTEM) {
+                val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                val ringtone = RingtoneManager.getRingtone(context, defaultSoundUri)
+                ringtone?.play()
+            } else {
+                val resId = sound.rawResId ?: return
+                playRawSound(context, resId, ignoreQuietMode = true)
+            }
+        } catch (_: Exception) { }
+    }
+
     fun ensureNotificationChannel(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
         val isSr = TxturaStrings.isSerbianLocale()
@@ -270,14 +321,15 @@ object SmsMmsRepository {
         } else {
             "Notifications for incoming SMS and MMS messages"
         }
-        val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val activeChannelId = getActiveNotificationChannelId(context)
+        val soundUri = getActiveNotificationSoundUri(context)
         val audioAttrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_NOTIFICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
         val channel = NotificationChannel(
-            CHANNEL_ID_MESSAGES,
+            activeChannelId,
             channelName,
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
@@ -285,7 +337,7 @@ object SmsMmsRepository {
             enableLights(true)
             enableVibration(true)
             vibrationPattern = longArrayOf(0L, 220L, 120L, 220L)
-            setSound(defaultSoundUri, audioAttrs)
+            setSound(soundUri, audioAttrs)
             setShowBadge(true)
             setAllowBubbles(true)
         }
@@ -1027,9 +1079,13 @@ object SmsMmsRepository {
 
     fun openMessageSoundSettings(context: Context) {
         try {
+            ensureNotificationChannel(context)
+            val channelId = getActiveNotificationChannelId(context)
             val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
                 putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                putExtra(Settings.EXTRA_CHANNEL_ID, CHANNEL_ID_MESSAGES)
+                putExtra(Settings.EXTRA_CHANNEL_ID, channelId)
+                putExtra("android.provider.extra.APP_PACKAGE", context.packageName)
+                putExtra("android.provider.extra.CHANNEL_ID", channelId)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
@@ -1086,6 +1142,9 @@ object SmsMmsRepository {
     @Volatile
     private var cancelSoundLoaded: Boolean = false
 
+    private val actionSoundMap = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+    private val loadedSoundIds = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Int, Boolean>())
+
     @Volatile
     private var activeForegroundThreadId: Long? = null
 
@@ -1094,6 +1153,15 @@ object SmsMmsRepository {
     }
 
     fun getActiveForegroundThread(): Long? = activeForegroundThreadId
+
+    fun isInAppSoundsEnabled(context: Context): Boolean {
+        return try {
+            context.getSharedPreferences("txtura_app_prefs", Context.MODE_PRIVATE)
+                .getBoolean("in_app_sounds_enabled", true)
+        } catch (_: Exception) {
+            true
+        }
+    }
 
     fun preloadInAppSounds(context: Context) {
         try {
@@ -1105,24 +1173,96 @@ object SmsMmsRepository {
                 .build()
 
             val pool = android.media.SoundPool.Builder()
-                .setMaxStreams(4)
+                .setMaxStreams(10)
                 .setAudioAttributes(audioAttributes)
                 .build()
 
             pool.setOnLoadCompleteListener { _, sampleId, status ->
                 if (status == 0) {
+                    loadedSoundIds.add(sampleId)
                     if (sampleId == sentSoundId) sentSoundLoaded = true
                     if (sampleId == receivedSoundId) receivedSoundLoaded = true
                     if (sampleId == cancelSoundId) cancelSoundLoaded = true
                 }
             }
 
-            sentSoundId = pool.load(appContext, R.raw.odlazna, 1)
-            receivedSoundId = pool.load(appContext, R.raw.dolazna, 1)
-            cancelSoundId = pool.load(appContext, R.raw.cancel, 1)
+            fun load(resId: Int): Int {
+                val id = pool.load(appContext, resId, 1)
+                actionSoundMap[resId] = id
+                return id
+            }
+
+            sentSoundId = load(R.raw.odlazna)
+            receivedSoundId = load(R.raw.dolazna)
+            cancelSoundId = load(R.raw.cancel)
+            load(R.raw.highlight_poruke)
+            load(R.raw.unhighlight_poruke)
+            load(R.raw.kanta_brisanje)
+            load(R.raw.kanta_poklopac_pop)
+            load(R.raw.pin_poruke)
+            load(R.raw.unpin_poruke)
+            load(R.raw.neprocitano)
+            load(R.raw.procitano)
+            load(R.raw.sms_dupli_puls)
+            load(R.raw.sms_kristalni_zvoncic)
+            load(R.raw.sms_meki_pop)
+            load(R.raw.sms_ritam_kod)
+            load(R.raw.sms_topla_kalimba)
+            load(R.raw.sms_diskretni_oblak)
+
             sentSoundPool = pool
         } catch (_: Exception) { }
     }
+
+    fun playRawSound(context: Context, soundResId: Int, ignoreQuietMode: Boolean = false) {
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            if (!ignoreQuietMode) {
+                if (!isInAppSoundsEnabled(context)) return
+                if (audioManager != null && audioManager.ringerMode != android.media.AudioManager.RINGER_MODE_NORMAL) {
+                    return
+                }
+            }
+
+            if (sentSoundPool == null) {
+                preloadInAppSounds(context)
+            }
+
+            val sampleId = actionSoundMap[soundResId]
+            if (sampleId != null && sampleId != 0 && loadedSoundIds.contains(sampleId)) {
+                val streamId = sentSoundPool?.play(sampleId, 1.0f, 1.0f, 1, 0, 1.0f) ?: 0
+                if (streamId != 0) return
+            }
+
+            val audioAttributes = android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .build()
+
+            val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, soundResId, audioAttributes, 0)
+                ?: android.media.MediaPlayer.create(context.applicationContext, soundResId)
+
+            mediaPlayer?.apply {
+                setOnCompletionListener { mp ->
+                    try { mp.reset(); mp.release() } catch (_: Exception) { }
+                }
+                setOnErrorListener { mp, _, _ ->
+                    try { mp.reset(); mp.release() } catch (_: Exception) { }
+                    true
+                }
+                start()
+            }
+        } catch (_: Exception) { }
+    }
+
+    fun playHighlightSound(context: Context) = playRawSound(context, R.raw.highlight_poruke)
+    fun playUnhighlightSound(context: Context) = playRawSound(context, R.raw.unhighlight_poruke)
+    fun playDeleteSound(context: Context) = playRawSound(context, R.raw.kanta_brisanje)
+    fun playPermanentDeleteSound(context: Context) = playRawSound(context, R.raw.kanta_poklopac_pop)
+    fun playPinSound(context: Context) = playRawSound(context, R.raw.pin_poruke)
+    fun playUnpinSound(context: Context) = playRawSound(context, R.raw.unpin_poruke)
+    fun playMarkUnreadSound(context: Context) = playRawSound(context, R.raw.neprocitano)
+    fun playMarkReadSound(context: Context) = playRawSound(context, R.raw.procitano)
 
     fun playInAppMessageSentSound(context: Context) {
         try {
@@ -1180,6 +1320,13 @@ object SmsMmsRepository {
     }
 
     fun playInAppMessageReceivedSound(context: Context) {
+        val sound = getSmsNotificationSound(context)
+        val customResId = sound.rawResId
+        if (customResId != null) {
+            playRawSound(context, customResId)
+            return
+        }
+
         try {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
             // Respect device silent/vibration modes
@@ -2573,14 +2720,16 @@ object SmsMmsRepository {
             .setShowsUserInterface(false)
             .build()
 
-        val builder = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
+        val channelId = getActiveNotificationChannelId(context)
+        val soundUri = getActiveNotificationSoundUri(context)
+        val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_stat_message)
             .setContentTitle(titleText)
             .setContentText(messageBody)
             .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setSound(soundUri)
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(contentPendingIntent)
@@ -2589,7 +2738,7 @@ object SmsMmsRepository {
 
         // Metadata Minimization: redact public lock-screen version so sender/content is never leaked
         if (com.txtura.security.AppSecurityManager.isMetadataMinimizationEnabled(context)) {
-            val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
+            val publicNotification = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(R.drawable.ic_stat_message)
                 .setContentTitle("Txtura")
                 .setContentText(if (isSr) "Nova poruka" else "New message")
@@ -2666,7 +2815,7 @@ object SmsMmsRepository {
     fun toggleThreadRead(context: Context, threadId: Long) {
         val current = _threads.value.find { it.id == threadId } ?: return
         if (current.unreadCount > 0) {
-            markThreadRead(context, threadId)
+            markThreadRead(context, threadId, playSound = true)
         } else {
             markThreadUnread(context, threadId)
         }
@@ -2675,8 +2824,8 @@ object SmsMmsRepository {
     /**
      * Marks a conversation as read both in memory and in the Android Telephony database.
      */
-    fun markThreadRead(context: Context, threadId: Long) {
-        markThreadsRead(context, setOf(threadId))
+    fun markThreadRead(context: Context, threadId: Long, playSound: Boolean = true) {
+        markThreadsRead(context, setOf(threadId), playSound)
     }
 
     /**
@@ -2692,6 +2841,7 @@ object SmsMmsRepository {
                 }
             }
         }
+        playMarkUnreadSound(context)
         val appCtx = context.applicationContext
         ioScope.launch {
             if (isDefaultSmsApp(appCtx)) {
@@ -2717,18 +2867,25 @@ object SmsMmsRepository {
     /**
      * Marks multiple conversations as read.
      */
-    fun markThreadsRead(context: Context, threadIds: Set<Long>) {
+    fun markThreadsRead(context: Context, threadIds: Set<Long>, playSound: Boolean = true) {
         if (threadIds.isEmpty()) return
         val affectedAddresses = mutableListOf<String>()
+        var hadUnread = false
         _threads.update { list ->
             list.map {
                 if (it.id in threadIds) {
+                    if (it.unreadCount > 0) {
+                        hadUnread = true
+                    }
                     affectedAddresses.add(it.address)
                     it.copy(unreadCount = 0)
                 } else {
                     it
                 }
             }
+        }
+        if (hadUnread && playSound) {
+            playMarkReadSound(context)
         }
         val appCtx = context.applicationContext
         try {
@@ -2768,7 +2925,7 @@ object SmsMmsRepository {
      */
     fun markAllThreadsRead(context: Context) {
         val allIds = _threads.value.asSequence().map { it.id }.toSet()
-        markThreadsRead(context, allIds)
+        markThreadsRead(context, allIds, playSound = true)
     }
 
     private fun persistMessageToSystemProviderIfDefault(
@@ -2810,9 +2967,11 @@ object SmsMmsRepository {
                     if (newPinned) {
                         pinnedAddresses.add(thread.address)
                         pinnedAddresses.add(normKey)
+                        playPinSound(context)
                     } else {
                         pinnedAddresses.remove(thread.address)
                         pinnedAddresses.remove(normKey)
+                        playUnpinSound(context)
                     }
                     thread.copy(isPinned = newPinned)
                 } else {
@@ -2836,8 +2995,10 @@ object SmsMmsRepository {
                             val newPinned = !msg.isPinned
                             if (newPinned) {
                                 pinnedMessageIds.add(msg.id)
+                                playPinSound(context)
                             } else {
                                 pinnedMessageIds.remove(msg.id)
+                                playUnpinSound(context)
                             }
                             msg.copy(isPinned = newPinned)
                         } else {
@@ -2866,8 +3027,10 @@ object SmsMmsRepository {
                             val newHighlighted = !msg.isHighlighted
                             if (newHighlighted) {
                                 highlightedMessageIds.add(msg.id)
+                                playHighlightSound(context)
                             } else {
                                 highlightedMessageIds.remove(msg.id)
+                                playUnhighlightSound(context)
                             }
                             msg.copy(isHighlighted = newHighlighted)
                         } else {
@@ -2913,6 +3076,7 @@ object SmsMmsRepository {
             highlightedMessageIds.remove(id)
             deletedMessageMeta[id] = Pair(threadId, now)
         }
+        playDeleteSound(context)
         savePersistedPins(context)
 
         var trashedMessages = listOf<ChatMessage>()
@@ -3001,6 +3165,7 @@ object SmsMmsRepository {
                 deletedMessageMeta[msg.id] = Pair(target.id, now)
             }
         }
+        playDeleteSound(context)
         savePersistedPins(context)
 
         _threads.update { list -> list.filterNot { it.id in threadIds } }
@@ -3054,6 +3219,7 @@ object SmsMmsRepository {
         deletedThreadTimestamps.remove(threadId)
         val msgIdsToDelete = entry?.thread?.messages?.map { it.id }?.toSet().orEmpty()
         msgIdsToDelete.forEach { id -> deletedMessageMeta.remove(id) }
+        playPermanentDeleteSound(context)
         savePersistedPins(context)
 
         _deletedThreads.update { currentTrash ->
@@ -3090,6 +3256,7 @@ object SmsMmsRepository {
         }
         savePersistedPins(context)
         _deletedThreads.value = emptyList()
+        playPermanentDeleteSound(context)
     }
 
     /**
@@ -3313,47 +3480,38 @@ object SmsMmsRepository {
 
     /**
      * Determines whether two [ConversationThread] entries represent the same real-world contact,
-     * comparing normalized phone numbers, overlapping message senders, or identical device contact names.
+     * comparing normalized phone numbers, identical device contact names, or service names.
      */
     fun areThreadsSameContact(a: ConversationThread, b: ConversationThread): Boolean {
         if (a.id == b.id) return true
 
-        // 1. Exact string or telephony phone number match
-        if (arePhoneNumbersEqual(a.address, b.address)) return true
-        if (a.address.isNotBlank() && b.address.isNotBlank() && a.address.equals(b.address, ignoreCase = true)) return true
+        // 1. Exact string match (case-insensitive)
+        if (a.address.isNotBlank() && b.address.isNotBlank() && a.address.equals(b.address, ignoreCase = true)) {
+            return true
+        }
 
-        // 2. Normalized phone number key match
+        // 2. Normalized phone number key match (e.g. +38164... vs 064... share last 8 digits)
         val normA = normalizeAddressKey(a.address)
         val normB = normalizeAddressKey(b.address)
-        if (normA.isNotBlank() && normB.isNotBlank() && normA == normB) return true
-
-        // 3. Overlapping message addresses (e.g., local 064... vs international +38164...)
-        val aAddrs = buildSet {
-            if (normA.isNotBlank()) add(normA)
-            a.messages.forEach { m ->
-                val k = normalizeAddressKey(m.address)
-                if (k.isNotBlank()) add(k)
-            }
+        if (normA.isNotBlank() && normB.isNotBlank() && normA == normB) {
+            return true
         }
-        val bAddrs = buildSet {
-            if (normB.isNotBlank()) add(normB)
-            b.messages.forEach { m ->
-                val k = normalizeAddressKey(m.address)
-                if (k.isNotBlank()) add(k)
-            }
-        }
-        if (aAddrs.intersect(bAddrs).isNotEmpty()) return true
 
-        // 4. Same named contact from device contacts (must contain letters, not raw numbers)
+        // 3. Same named contact from device contacts (must contain letters, not raw numbers)
         val aHasRealName = a.contactName.isNotBlank() && a.contactName != a.address && a.contactName.any { it.isLetter() }
         val bHasRealName = b.contactName.isNotBlank() && b.contactName != b.address && b.contactName.any { it.isLetter() }
         if (aHasRealName && bHasRealName && a.contactName.trim().equals(b.contactName.trim(), ignoreCase = true)) {
             return true
         }
 
-        // 5. Same service name (e.g., both "Yettel", "MTS", "Banka")
+        // 4. Same service name (e.g., both "Yettel", "MTS", "Banka")
         if (a.isService && b.isService && a.contactName.isNotBlank() && a.contactName.trim().equals(b.contactName.trim(), ignoreCase = true)) {
             return true
+        }
+
+        // 5. Fallback telephony phone number match (only if both contain digits and weren't caught by normalized key)
+        if (normA.any { it.isDigit() } && normB.any { it.isDigit() }) {
+            if (arePhoneNumbersEqual(a.address, b.address)) return true
         }
 
         return false
@@ -3361,22 +3519,49 @@ object SmsMmsRepository {
 
     /**
      * Deduplicates and merges multiple conversation threads that correspond to the same contact,
-     * consolidating their chat history, unread counters, pin status, and draft text.
+     * consolidating their chat history, unread counters, pin status, and draft text in O(N) time.
      */
     fun deduplicateAndMergeThreads(threads: List<ConversationThread>): List<ConversationThread> {
         if (threads.size <= 1) return threads
 
-        val merged = mutableListOf<ConversationThread>()
+        val merged = ArrayList<ConversationThread>(threads.size)
+        // Fast index: maps lookup keys (normalized phone digits, saved contact name, raw address)
+        // to index in `merged` list
+        val keyToIndex = HashMap<String, Int>(threads.size * 3)
 
         for (thread in threads) {
-            val existingIndex = merged.indexOfFirst { existing ->
-                areThreadsSameContact(existing, thread)
+            val keys = computeThreadLookupKeys(thread)
+            var targetIndex: Int? = null
+
+            for (k in keys) {
+                val idx = keyToIndex[k]
+                if (idx != null) {
+                    targetIndex = idx
+                    break
+                }
             }
-            if (existingIndex >= 0) {
-                val existing = merged[existingIndex]
-                val combinedMessages = (existing.messages + thread.messages)
-                    .distinctBy { it.id }
-                    .sortedBy { it.timestampMillis }
+
+            // Fallback for tricky phone formats if not found in hash map
+            if (targetIndex == null) {
+                for (i in 0 until merged.size) {
+                    if (areThreadsSameContact(merged[i], thread)) {
+                        targetIndex = i
+                        break
+                    }
+                }
+            }
+
+            if (targetIndex != null) {
+                val existing = merged[targetIndex]
+                val combinedMessages = if (thread.messages.isEmpty()) {
+                    existing.messages
+                } else if (existing.messages.isEmpty()) {
+                    thread.messages
+                } else {
+                    (existing.messages + thread.messages)
+                        .distinctBy { it.id }
+                        .sortedBy { it.timestampMillis }
+                }
 
                 val mostRecentMsg = combinedMessages.lastOrNull()
                 val primaryAddress = mostRecentMsg?.address?.takeIf { it.isNotBlank() && it != "Unknown" }
@@ -3408,9 +3593,16 @@ object SmsMmsRepository {
                     isService = existing.isService && thread.isService,
                     draftText = if (!existing.draftText.isNullOrBlank()) existing.draftText else thread.draftText
                 )
-                merged[existingIndex] = mergedThread
+                merged[targetIndex] = mergedThread
+                for (k in keys) {
+                    keyToIndex[k] = targetIndex
+                }
             } else {
+                val newIndex = merged.size
                 merged.add(thread)
+                for (k in keys) {
+                    keyToIndex[k] = newIndex
+                }
             }
         }
 
@@ -3418,6 +3610,29 @@ object SmsMmsRepository {
             compareByDescending<ConversationThread> { it.isPinned }
                 .thenByDescending { it.lastMessage?.timestampMillis ?: 0L }
         )
+    }
+
+    private fun computeThreadLookupKeys(thread: ConversationThread): List<String> {
+        val keys = mutableListOf<String>()
+        val addr = thread.address.trim()
+        if (addr.isNotBlank()) {
+            keys.add("a:" + addr.lowercase(Locale.ROOT))
+            val digits = addr.filter { it.isDigit() }
+            if (digits.length >= 7) {
+                keys.add("p:" + digits.takeLast(8))
+            }
+        }
+
+        val name = thread.contactName.trim()
+        if (name.isNotBlank() && name != addr && name.any { it.isLetter() }) {
+            keys.add("n:" + name.lowercase(Locale.ROOT))
+        }
+
+        if (thread.isService && name.isNotBlank()) {
+            keys.add("s:" + name.lowercase(Locale.ROOT))
+        }
+
+        return keys
     }
 
     private fun sortThreads(list: List<ConversationThread>): List<ConversationThread> {

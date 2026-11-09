@@ -66,6 +66,7 @@ import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedGroupingMode
 import com.txtura.data.MainListLayoutMode
 import com.txtura.data.SmsMmsRepository
+import com.txtura.data.SmsNotificationSound
 import com.txtura.data.SwipeAction
 import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
@@ -154,6 +155,8 @@ class MainActivity : ComponentActivity() {
     private var recallMessagesEnabled by mutableStateOf(value = true)
     private var identifyMaliciousWebsites by mutableStateOf(value = true)
     private var inAppSoundsEnabled by mutableStateOf(value = true)
+    private var smsNotificationSound by mutableStateOf(SmsNotificationSound.SYSTEM)
+    private var blockScreenshotsEnabled by mutableStateOf(false)
     private var pinchToZoomEnabled by mutableStateOf(value = true)
     private var expressiveAnimationsEnabled by mutableStateOf(value = true)
     private var hapticsEnabled by mutableStateOf(value = true)
@@ -466,8 +469,8 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "2.2"
-                }.getOrDefault("2.2")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "2.4"
+                }.getOrDefault("2.4")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -478,17 +481,23 @@ class MainActivity : ComponentActivity() {
             DisposableEffect(Unit) {
                 val cm = getSystemService(ConnectivityManager::class.java)
                 val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        lifecycleScope.launch {
+                            AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
+                        }
+                    }
+
                     override fun onCapabilitiesChanged(
                         network: Network,
                         networkCapabilities: NetworkCapabilities,
                     ) {
                         val hasNet = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                            networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
                             (
                                 networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                                     networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-                                )
+                                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                                    networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                            )
                         if (hasNet) {
                             lifecycleScope.launch {
                                 AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
@@ -579,6 +588,30 @@ class MainActivity : ComponentActivity() {
                         showSettingsScreen -> MainAppScreen.SETTINGS
                         selectedThread != null -> MainAppScreen.CONVERSATION_DETAIL
                         else -> MainAppScreen.CONVERSATIONS_LIST
+                    }
+
+                    DisposableEffect(currentScreen, blockScreenshotsEnabled) {
+                        if (currentScreen == MainAppScreen.CONVERSATION_DETAIL) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        }
+                        val shouldBlockScreenshot = blockScreenshotsEnabled && (
+                            currentScreen == MainAppScreen.CONVERSATION_DETAIL ||
+                            currentScreen == MainAppScreen.CONVERSATIONS_LIST ||
+                            currentScreen == MainAppScreen.DELETED_MESSAGES
+                        )
+                        if (shouldBlockScreenshot) {
+                            window.setFlags(
+                                WindowManager.LayoutParams.FLAG_SECURE,
+                                WindowManager.LayoutParams.FLAG_SECURE
+                            )
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        }
+                        onDispose {
+                            if (currentScreen == MainAppScreen.CONVERSATION_DETAIL) {
+                                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                            }
+                        }
                     }
 
                 AnimatedContent(
@@ -740,6 +773,17 @@ class MainActivity : ComponentActivity() {
                             onToggleHaptics = { enabled ->
                                 hapticsEnabled = enabled
                                 saveHapticsEnabled(enabled)
+                            },
+                            smsNotificationSound = smsNotificationSound,
+                            onSelectSmsNotificationSound = { sound ->
+                                smsNotificationSound = sound
+                                SmsMmsRepository.setSmsNotificationSound(this@MainActivity, sound)
+                                SmsMmsRepository.playSmsNotificationSoundPreview(this@MainActivity, sound)
+                            },
+                            blockScreenshotsEnabled = blockScreenshotsEnabled,
+                            onToggleBlockScreenshots = { enabled ->
+                                blockScreenshotsEnabled = enabled
+                                AppSecurityManager.setBlockScreenshotsEnabled(this@MainActivity, enabled)
                             },
                             bubblesEnabled = bubblesEnabled,
                             onToggleBubbles = { enabled ->
@@ -1433,8 +1477,8 @@ class MainActivity : ComponentActivity() {
     private fun triggerAppEntryUpdateCheck() {
         lifecycleScope.launch(Dispatchers.IO) {
             val currentAppVersionName = runCatching {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "2.2"
-            }.getOrDefault("2.2")
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "2.4"
+            }.getOrDefault("2.4")
             AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
         }
     }
@@ -1577,8 +1621,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateWindowSecurityFlags() {
-        val metadataMinimization = AppSecurityManager.isMetadataMinimizationEnabled(this)
-        if (metadataMinimization) {
+        val shouldBlock = blockScreenshotsEnabled && !showSettingsScreen
+        if (shouldBlock) {
             window.setFlags(
                 WindowManager.LayoutParams.FLAG_SECURE,
                 WindowManager.LayoutParams.FLAG_SECURE
@@ -1641,6 +1685,8 @@ class MainActivity : ComponentActivity() {
         autoPreviewsWebLinksOnly = prefs.getBoolean(KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY, false)
         autoPreviewsWifiOnly = prefs.getBoolean(KEY_AUTO_PREVIEWS_WIFI_ONLY, false)
         MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled = identifyMaliciousWebsites
+        smsNotificationSound = SmsMmsRepository.getSmsNotificationSound(this)
+        blockScreenshotsEnabled = AppSecurityManager.isBlockScreenshotsEnabled(this)
     }
 
     private fun contactWallpaperKey(address: String): String {

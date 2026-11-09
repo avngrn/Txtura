@@ -32,12 +32,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import android.util.Log
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -70,6 +72,45 @@ enum class MmsCreationMode {
     FREE,
     WARNING,
     RESTRICTED
+}
+
+/**
+ * Curated custom notification tones for incoming SMS/MMS messages.
+ */
+enum class SmsNotificationSound(val id: String, val rawResName: String?) {
+    SYSTEM("system", null),
+    DUPLI_PULS("dupli_puls", "sms_dupli_puls"),
+    KRISTALNI_ZVONCIC("kristalni_zvoncic", "sms_kristalni_zvoncic"),
+    MEKI_POP("meki_pop", "sms_meki_pop"),
+    RITAM_KOD("ritam_kod", "sms_ritam_kod"),
+    TOPLA_KALIMBA("topla_kalimba", "sms_topla_kalimba"),
+    DISKRETNI_OBLAK("diskretni_oblak", "sms_diskretni_oblak");
+
+    val rawResId: Int?
+        get() = when (this) {
+            SYSTEM -> null
+            DUPLI_PULS -> R.raw.sms_dupli_puls
+            KRISTALNI_ZVONCIC -> R.raw.sms_kristalni_zvoncic
+            MEKI_POP -> R.raw.sms_meki_pop
+            RITAM_KOD -> R.raw.sms_ritam_kod
+            TOPLA_KALIMBA -> R.raw.sms_topla_kalimba
+            DISKRETNI_OBLAK -> R.raw.sms_diskretni_oblak
+        }
+
+    fun getDisplayName(isSerbian: Boolean): String = when (this) {
+        SYSTEM -> if (isSerbian) "Sistemski ton" else "System tone"
+        DUPLI_PULS -> if (isSerbian) "Dupli puls" else "Double Pulse"
+        KRISTALNI_ZVONCIC -> if (isSerbian) "Kristalni zvončić" else "Crystal Chime"
+        MEKI_POP -> if (isSerbian) "Meki pop" else "Soft Pop"
+        RITAM_KOD -> if (isSerbian) "Ritam kod" else "Rhythm Code"
+        TOPLA_KALIMBA -> if (isSerbian) "Topla kalimba" else "Warm Kalimba"
+        DISKRETNI_OBLAK -> if (isSerbian) "Diskretni oblak" else "Discreet Cloud"
+    }
+
+    companion object {
+        fun fromId(id: String?): SmsNotificationSound =
+            entries.firstOrNull { it.id.equals(id, ignoreCase = true) } ?: SYSTEM
+    }
 }
 
 data class SimCardMessage(
@@ -1126,26 +1167,27 @@ object AppUpdateManager {
     }
 
     /**
-     * Checks whether the phone currently has an active internet connection over Wi-Fi or mobile data.
+     * Checks whether the phone currently has an active internet connection over Wi-Fi, mobile data, Ethernet, or VPN.
+     * Does not strictly require NET_CAPABILITY_VALIDATED to support captive portals, private DNS, and custom routes.
      */
     fun hasActiveInternetConnection(context: Context): Boolean {
         return try {
             val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
             val network = cm.activeNetwork ?: return false
             val caps = cm.getNetworkCapabilities(network) ?: return false
-            val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            val hasWifiOrCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val hasTransport = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-            hasInternet && hasWifiOrCellular
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            hasInternet && hasTransport
         } catch (_: Exception) {
             false
         }
     }
 
     /**
-     * Returns true if Wi-Fi or mobile data is available and at least 6 hours have elapsed since the last check.
+     * Returns true if internet is available and at least 6 hours have elapsed since the last check.
      */
     fun shouldPerformPeriodicCheck(context: Context): Boolean {
         if (!hasActiveInternetConnection(context)) return false
@@ -1177,6 +1219,60 @@ object AppUpdateManager {
     }
 
     /**
+     * Safely fetches text from a URL using AppSecurityManager (with SSL Pinning when active),
+     * and seamlessly falls back to standard Android system TLS CA validation if GitHub rotated
+     * intermediate certificates or CDN endpoints.
+     */
+    private fun fetchJsonFromUrl(context: Context, urlString: String): String? {
+        val url = try {
+            URL(urlString)
+        } catch (_: Exception) {
+            return null
+        }
+
+        // 1. First attempt: connection with AppSecurityManager (applies SSL pinning if enabled)
+        try {
+            val conn = AppSecurityManager.openSecureConnection(url, context)
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Accept", "application/vnd.github+json")
+            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
+            conn.connectTimeout = 12000
+            conn.readTimeout = 12000
+            try {
+                if (conn.responseCode == 200) {
+                    return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w("TxturaUpdate", "Secure connection failed for $urlString: ${e.message}, trying system TLS fallback")
+        }
+
+        // 2. Fallback: standard system TLS with Android trusted CA verification
+        return try {
+            val conn = url.openConnection() as? HttpsURLConnection ?: return null
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Accept", "application/vnd.github+json")
+            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
+            conn.connectTimeout = 12000
+            conn.readTimeout = 12000
+            try {
+                if (conn.responseCode == 200) {
+                    conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                } else {
+                    null
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.e("TxturaUpdate", "System TLS fallback failed for $urlString: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * Queries GitHub Releases API for the latest version of Txtura.
      */
     suspend fun checkForUpdates(
@@ -1188,13 +1284,29 @@ object AppUpdateManager {
         }
 
         try {
-            val releaseObj = fetchLatestReleaseJson()
-                ?: fetchFirstArrayObject(ALL_RELEASES_API)
+            val releaseJsonStr = fetchJsonFromUrl(context, LATEST_RELEASE_API)
+                ?: fetchJsonFromUrl(context, ALL_RELEASES_API)
+
+            val releaseObj = releaseJsonStr?.let { text ->
+                try {
+                    val trimmed = text.trim()
+                    if (trimmed.startsWith("[")) {
+                        val arr = JSONArray(trimmed)
+                        if (arr.length() > 0) arr.optJSONObject(0) else null
+                    } else {
+                        JSONObject(trimmed)
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+            }
 
             val info = if (releaseObj != null) {
                 val tag = releaseObj.optString("tag_name", "").trim()
                     .ifBlank { releaseObj.optString("name", "").trim() }
-                    .ifBlank { "v$currentVersionName" }
+                if (tag.isBlank()) {
+                    return@withContext AppUpdateCheckResult.Error("Neispravan odgovor GitHub servera")
+                }
                 val title = releaseObj.optString("name", tag).trim().ifBlank { tag }
                 val notes = releaseObj.optString("body", "").trim()
                 val htmlUrl = releaseObj.optString("html_url", RELEASES_WEB_URL).trim().ifBlank { RELEASES_WEB_URL }
@@ -1222,16 +1334,20 @@ object AppUpdateManager {
                     isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tag),
                 )
             } else {
-                val tagObj = fetchFirstArrayObject(ALL_TAGS_API)
-                val tag = tagObj?.optString("name", "")?.trim()?.ifBlank { "v$currentVersionName" }
-                    ?: "v$currentVersionName"
+                val tagsJsonStr = fetchJsonFromUrl(context, ALL_TAGS_API)
+                val tagsArr = tagsJsonStr?.let { try { JSONArray(it.trim()) } catch (_: Exception) { null } }
+                val firstTag = if (tagsArr != null && tagsArr.length() > 0) tagsArr.optJSONObject(0) else null
+                val tagName = firstTag?.optString("name", "")?.trim()
+                if (tagName.isNullOrBlank()) {
+                    return@withContext AppUpdateCheckResult.Error("Nije moguće dohvatiti informacije o ažuriranju sa GitHub-a")
+                }
                 GitHubReleaseInfo(
-                    versionTag = tag,
-                    releaseTitle = tag,
+                    versionTag = tagName,
+                    releaseTitle = tagName,
                     releaseNotes = "",
                     releasePageUrl = RELEASES_WEB_URL,
                     apkDownloadUrl = null,
-                    isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tag),
+                    isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tagName),
                 )
             }
 
@@ -1247,56 +1363,14 @@ object AppUpdateManager {
 
             AppUpdateCheckResult.Success(info)
         } catch (e: Exception) {
-            AppUpdateCheckResult.Error(e.localizedMessage ?: "GitHub API error")
-        }
-    }
-
-    private fun fetchLatestReleaseJson(): JSONObject? {
-        val conn = (AppSecurityManager.openSecureConnection(URL(LATEST_RELEASE_API)) as? HttpURLConnection) ?: return null
-        return try {
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("Accept", "application/vnd.github+json")
-            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
-            conn.connectTimeout = 6000
-            conn.readTimeout = 6000
-            if (conn.responseCode == 200) {
-                val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                JSONObject(text)
-            } else {
-                null
-            }
-        } catch (_: Exception) {
-            null
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun fetchFirstArrayObject(urlStr: String): JSONObject? {
-        val conn = (AppSecurityManager.openSecureConnection(URL(urlStr)) as? HttpURLConnection) ?: return null
-        return try {
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("Accept", "application/vnd.github+json")
-            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
-            conn.connectTimeout = 6000
-            conn.readTimeout = 6000
-            if (conn.responseCode == 200) {
-                val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                val arr = JSONArray(text)
-                if (arr.length() > 0) arr.optJSONObject(0) else null
-            } else {
-                null
-            }
-        } catch (_: Exception) {
-            null
-        } finally {
-            conn.disconnect()
+            AppUpdateCheckResult.Error(e.localizedMessage ?: "Greška pri proveri ažuriranja")
         }
     }
 
     /**
      * Downloads the APK asset from GitHub Releases into cache and launches the Android package installer,
-     * or opens the GitHub Release page if no direct APK asset is attached.
+     * following cross-domain CDN redirects up to 5 times.
+     * Falls back to opening the GitHub Release web page if no direct APK asset is attached.
      */
     suspend fun downloadAndInstallUpdate(
         context: Context,
@@ -1316,11 +1390,43 @@ object AppUpdateManager {
             val safeTag = releaseInfo.versionTag.replace(Regex("[^a-zA-Z0-9._-]"), "_")
             val targetApk = File(updatesDir, "Txtura-$safeTag.apk")
 
-            val conn = (AppSecurityManager.openSecureConnection(URL(apkUrl), context) as? HttpURLConnection) ?: return@withContext false
-            conn.instanceFollowRedirects = true
-            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
-            conn.connectTimeout = 10000
-            conn.readTimeout = 15000
+            var currentUrl = apkUrl
+            var redirects = 0
+            var finalConn: HttpURLConnection? = null
+
+            while (redirects < 6) {
+                val u = URL(currentUrl)
+                val candidate = try {
+                    AppSecurityManager.openSecureConnection(u, context)
+                } catch (_: Exception) {
+                    u.openConnection() as HttpURLConnection
+                }
+                candidate.instanceFollowRedirects = false
+                candidate.setRequestProperty("User-Agent", "Txtura-Android-Updater")
+                candidate.connectTimeout = 15000
+                candidate.readTimeout = 20000
+
+                val code = candidate.responseCode
+                if (code in listOf(HttpURLConnection.HTTP_MOVED_PERM, HttpURLConnection.HTTP_MOVED_TEMP, HttpURLConnection.HTTP_SEE_OTHER, 307, 308)) {
+                    val location = candidate.getHeaderField("Location")
+                    candidate.disconnect()
+                    if (location.isNullOrBlank()) {
+                        break
+                    }
+                    currentUrl = URL(u, location).toString()
+                    redirects++
+                    continue
+                }
+                finalConn = candidate
+                break
+            }
+
+            val conn = finalConn ?: return@withContext run {
+                withContext(Dispatchers.Main) {
+                    openReleasePageInBrowser(context, releaseInfo.releasePageUrl)
+                }
+                false
+            }
 
             try {
                 if (conn.responseCode !in (200..299)) {

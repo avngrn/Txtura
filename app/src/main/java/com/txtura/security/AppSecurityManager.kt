@@ -33,6 +33,7 @@ object AppSecurityManager {
     private const val KEY_APP_PIN_HASH = "pref_app_pin_hash_v1"
     private const val KEY_SSL_PINNING = "pref_ssl_pinning_enabled"
     private const val KEY_METADATA_MINIMIZATION = "pref_metadata_minimization_enabled"
+    private const val KEY_BLOCK_SCREENSHOTS = "pref_block_screenshots_enabled"
     private const val KEY_INTENT_SANITIZER = "pref_intent_sanitizer_enabled"
     private const val KEY_ZERO_PERM_PHOTO_PICKER = "pref_zero_perm_photo_picker_enabled"
     private const val KEY_SENSITIVE_CLIPBOARD_COPY = "pref_sensitive_clipboard_copy_enabled"
@@ -85,11 +86,17 @@ object AppSecurityManager {
     // SHA-256 SPKI Public Key Hashes for GitHub and security endpoints
     private val PINNED_SPKI_HASHES = mapOf(
         "api.github.com" to setOf(
+            "nTvjJtN51Jp5ounTgUohZxRsHH5DUHgGorVUZyBxrAM=", // *.github.com (active leaf)
+            "VqePxH3EcFwZuYK3CCOMz5HKMoeIZpZcEyBf4diPGSA=", // Sectigo Public Server Authentication CA DV E36 (active intermediate)
+            "EdsvlytFf4a/O+hCPwBXFFi46RKXqivCAF+mO7s+5Ng=", // Sectigo Public Server Authentication Root E46 (active root)
             "WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=", // DigiCert High Assurance TLS Hybrid ECC
             "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hEZMmwcYAASMg=", // DigiCert Global Root G2
             "4a3DemjEi9ahGUHuSafxSkPhcEiWS8NDfl2WFiPiJtE="  // DigiCert Global Root CA
         ),
         "github.com" to setOf(
+            "fn1BKnc6ZJaaPk6Amsualghpmf+/FjN+QGxEQoqHFI4=", // github.com (active leaf)
+            "VqePxH3EcFwZuYK3CCOMz5HKMoeIZpZcEyBf4diPGSA=", // Sectigo Public Server Authentication CA DV E36 (active intermediate)
+            "EdsvlytFf4a/O+hCPwBXFFi46RKXqivCAF+mO7s+5Ng=", // Sectigo Public Server Authentication Root E46 (active root)
             "WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=",
             "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hEZMmwcYAASMg="
         ),
@@ -299,6 +306,14 @@ object AppSecurityManager {
 
     fun setBiometricLockTimeout(context: Context, timeoutMinutes: Int) {
         getPrefs(context).edit { putInt(KEY_LOCK_TIMEOUT, timeoutMinutes) }
+    }
+
+    fun isBlockScreenshotsEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_BLOCK_SCREENSHOTS, false)
+    }
+
+    fun setBlockScreenshotsEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit { putBoolean(KEY_BLOCK_SCREENSHOTS, enabled) }
     }
 
     fun isSslPinningEnabled(context: Context): Boolean {
