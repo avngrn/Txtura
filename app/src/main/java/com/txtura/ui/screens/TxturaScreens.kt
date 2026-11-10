@@ -1801,10 +1801,10 @@ fun SettingsScreen(
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val vName = pkgInfo.versionName ?: "3.0"
+            val vName = pkgInfo.versionName ?: "3.1"
             val vCode = pkgInfo.longVersionCode
             vName to vCode
-        }.getOrDefault("3.0" to 8L)
+        }.getOrDefault("3.1" to 9L)
     }
 
     val coroutineScope = rememberCoroutineScope()
@@ -1914,6 +1914,7 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
+                    .navigationBarsPadding()
                     .padding(horizontal = 16.dp)
             ) {
                 Spacer(modifier = Modifier.height(10.dp))
@@ -5876,9 +5877,39 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v2.4",
+                        versionName = "v3.1",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Upravljanje memorijom i dozvolama" else "Storage & Permissions Management",
+                                items = listOf(
+                                    if (strings.isSerbian) "Trajno brisanje iz memorije uređaja: Pražnjenje smeća i trajno uklanjanje razgovora sada fizički uklanja sve poruke (SMS, MMS) i multimedijalne priloge (audio zapise, slike, fajlove) iz baze uređaja i interne memorije" else "Permanent storage deletion: Emptying trash and permanently deleting conversations now thoroughly removes messages (SMS, MMS) and all media attachments from device telephony storage and internal memory",
+                                    if (strings.isSerbian) "Automatski zahtev za dozvolu za kalendar: Dozvola za kalendar se sada traži odmah pri prvom pokretanju aplikacije uz ostale sistemske dozvole, omogućavajući kreiranje i slanje kalendarskih .ics događaja" else "First-launch calendar permission prompt: Calendar permission is now requested during the initial app startup alongside core permissions, enabling calendar event picker and .ics generation"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Interfejs i navigacija" else "UI & Navigation",
+                                items = listOf(
+                                    if (strings.isSerbian) "Prilagodljivi dok bar na svim ekranima: Ikonice dok bara se mogu slobodno premeštati prevlačenjem levo-desno, a dok bar ostaje postojan na ekranima Obrisane poruke i Hajlajtovane poruke" else "Customizable dock bar: Dock bar icons can be freely reordered via drag-and-drop, and the dock bar remains seamlessly visible on Deleted and Highlighted screens",
+                                    if (strings.isSerbian) "Usklađene animacije i brzi prelazi: Prelaz između glavnog menija i podešavanja, hajlajtovanih i obrisanih poruka optimizovan je bez zadrške i treperenja uz prirodnu fiziku opruge" else "Synchronized transitions: Smooth spring transitions between main screen, settings, highlighted, and deleted messages with no lag or flicker",
+                                    if (strings.isSerbian) "GIF animacije i tastatura: Direktno slanje GIF animacija iz tastature do 299.9 kB sa automatskim prepoznavanjem i reprodukcijom unutar oblačića poruke" else "Keyboard GIF animations: Direct sending of GIFs up to 299.9 kB from keyboard with automatic detection and animated playback in chat bubbles"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Obaveštenja i odziv" else "Notifications & Feedback",
+                                items = listOf(
+                                    if (strings.isSerbian) "Sinhronizovani svetlosni odziv: Blic obaveštenja počinju u tačnoj sinhronizaciji sa zvukom dolazne SMS poruke" else "Synchronized flash notifications: Camera flashlight pulse starts simultaneously with incoming SMS audio alerts",
+                                    if (strings.isSerbian) "Zvučni odzivi: Proširena podešavanja za širok spektar tonova i zvučnih povratnih informacija" else "Audio feedback: Expanded sound settings covering custom tones and operational audio feedback"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v2.4",
+                        releaseDate = "10.11.2026.",
+                        isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Tonovi obaveštenja i zvučni efekti" else "Notification Sounds & Audio Effects",

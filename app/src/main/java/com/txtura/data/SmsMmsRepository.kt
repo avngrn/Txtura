@@ -7,6 +7,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.role.RoleManager
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -4062,30 +4063,44 @@ object SmsMmsRepository {
     }
 
     /**
-     * Permanently deletes a single conversation from the Deleted Messages (Trash) folder.
+     * Permanently deletes a single conversation from the Deleted Messages (Trash) folder,
+     * removing all messages, thread entries, and cached media attachments from device storage.
      */
     fun permanentlyDeleteThread(context: Context, threadId: Long) {
         val entry = _deletedThreads.value.find { it.thread.id == threadId }
         deletedThreadTimestamps.remove(threadId)
-        val msgIdsToDelete = entry?.thread?.messages?.map { it.id }?.toSet().orEmpty()
+        val msgs = entry?.thread?.messages.orEmpty()
+        val msgIdsToDelete = msgs.map { it.id }.toSet()
         msgIdsToDelete.forEach { id -> deletedMessageMeta.remove(id) }
         playPermanentDeleteSound(context)
         savePersistedPins(context)
+
+        // 1. Physically delete any cached media / attachments on device storage
+        msgs.forEach { msg ->
+            cleanupAttachmentFile(context, msg.attachment?.uri, msg.id)
+        }
 
         _deletedThreads.update { currentTrash ->
             currentTrash.filterNot { it.thread.id == threadId }
         }
 
+        // 2. Permanently delete from Android telephony database (SMS, MMS, conversation)
+        val systemThreadIds = (msgs.map { it.threadId }.filter { it > 0L } + setOf(threadId).filter { it > 0L }).toSet()
         val isEntireThreadDeleted = _threads.value.none { it.id == threadId }
-        if (isEntireThreadDeleted) {
-            deleteFromSystemProviderIfDefault(context, threadId)
-        } else {
-            deleteMessagesFromSystemProviderIfDefault(context, msgIdsToDelete)
-        }
+        deleteFromSystemProviderThoroughly(
+            context = context,
+            threadIds = systemThreadIds,
+            messageIds = msgIdsToDelete,
+            address = if (isEntireThreadDeleted) entry?.thread?.address else null
+        )
+
+        // 3. Immediately flush the updated messages and trash state to the offline encrypted disk cache
+        saveDiskCacheAsync(context)
     }
 
     /**
-     * Permanently empties all conversations in the Deleted Messages (Trash) folder.
+     * Permanently empties all conversations in the Deleted Messages (Trash) folder,
+     * physically deleting all trashed SMS, MMS, and media attachments from device storage.
      */
     fun emptyTrash(context: Context) {
         val entriesToPurge = _deletedThreads.value
@@ -4095,18 +4110,41 @@ object SmsMmsRepository {
         threadIdsToPurge.forEach { id ->
             deletedThreadTimestamps.remove(id)
         }
+
+        val allMsgIds = mutableSetOf<Long>()
+        val allSystemThreadIds = mutableSetOf<Long>()
+        val addressesToClean = mutableSetOf<String>()
+
         entriesToPurge.forEach { entry ->
-            val msgIds = entry.thread.messages.map { it.id }.toSet()
-            msgIds.forEach { deletedMessageMeta.remove(it) }
-            if (entry.thread.id in activeThreadIds) {
-                deleteMessagesFromSystemProviderIfDefault(context, msgIds)
-            } else {
-                deleteFromSystemProviderIfDefault(context, entry.thread.id)
+            val isEntireThreadDeleted = entry.thread.id !in activeThreadIds
+            if (isEntireThreadDeleted && entry.thread.address.isNotBlank()) {
+                addressesToClean.add(entry.thread.address)
+            }
+            if (entry.thread.id > 0L) {
+                allSystemThreadIds.add(entry.thread.id)
+            }
+            entry.thread.messages.forEach { msg ->
+                deletedMessageMeta.remove(msg.id)
+                allMsgIds.add(msg.id)
+                if (msg.threadId > 0L) {
+                    allSystemThreadIds.add(msg.threadId)
+                }
+                cleanupAttachmentFile(context, msg.attachment?.uri, msg.id)
             }
         }
+
         savePersistedPins(context)
         _deletedThreads.value = emptyList()
         playPermanentDeleteSound(context)
+
+        deleteFromSystemProviderThoroughly(
+            context = context,
+            threadIds = allSystemThreadIds,
+            messageIds = allMsgIds,
+            addresses = addressesToClean
+        )
+
+        saveDiskCacheAsync(context)
     }
 
     /**
@@ -4128,9 +4166,6 @@ object SmsMmsRepository {
         if (expiredThreadIds.isNotEmpty()) {
             expiredThreadIds.forEach { id ->
                 deletedThreadTimestamps.remove(id)
-                if (id !in activeThreadIds) {
-                    deleteFromSystemProviderIfDefault(context, id)
-                }
             }
         }
 
@@ -4144,29 +4179,64 @@ object SmsMmsRepository {
         if (expiredMessageEntries.isNotEmpty()) {
             val expiredMsgIds = expiredMessageEntries.map { it.first }.toSet()
             expiredMsgIds.forEach { id -> deletedMessageMeta.remove(id) }
-            deleteMessagesFromSystemProviderIfDefault(context, expiredMsgIds)
+        }
+
+        val expiredTrashEntries = _deletedThreads.value.filter { entry ->
+            entry.thread.id in expiredThreadIds || (now - entry.deletedAtMillis) >= maxAgeMillis
+        }
+
+        val allExpiredMsgIds = (expiredTrashEntries.flatMap { it.thread.messages }.map { it.id } +
+            expiredMessageEntries.map { it.first }).toSet()
+
+        val allExpiredSysThreadIds = (expiredTrashEntries.flatMap { it.thread.messages }.map { it.threadId }.filter { it > 0L } +
+            expiredThreadIds.filter { it > 0L && it !in activeThreadIds }).toSet()
+
+        val expiredAddresses = expiredTrashEntries
+            .filter { it.thread.id !in activeThreadIds }
+            .map { it.thread.address }
+            .filter { it.isNotBlank() }
+            .toSet()
+
+        expiredTrashEntries.forEach { entry ->
+            entry.thread.messages.forEach { msg ->
+                cleanupAttachmentFile(context, msg.attachment?.uri, msg.id)
+            }
+        }
+
+        if (allExpiredMsgIds.isNotEmpty() || allExpiredSysThreadIds.isNotEmpty()) {
+            deleteFromSystemProviderThoroughly(
+                context = context,
+                threadIds = allExpiredSysThreadIds,
+                messageIds = allExpiredMsgIds,
+                addresses = expiredAddresses
+            )
         }
 
         if (expiredThreadIds.isNotEmpty() || expiredMessageEntries.isNotEmpty()) {
             savePersistedPins(context)
+            saveDiskCacheAsync(context)
         }
 
         _deletedThreads.update { currentTrash ->
             currentTrash.mapNotNull { entry ->
-                val nonExpiredMsgs = entry.thread.messages.filter { msg ->
-                    val meta = deletedMessageMeta[msg.id]
-                    val deletedAt = meta?.second ?: entry.deletedAtMillis
-                    (now - deletedAt) < maxAgeMillis
-                }
-                if (nonExpiredMsgs.isEmpty()) {
+                if (entry.thread.id in expiredThreadIds || (now - entry.deletedAtMillis) >= maxAgeMillis) {
                     null
                 } else {
-                    entry.copy(
-                        thread = entry.thread.copy(messages = nonExpiredMsgs),
-                        deletedAtMillis = nonExpiredMsgs.maxOfOrNull { msg ->
-                            deletedMessageMeta[msg.id]?.second ?: entry.deletedAtMillis
-                        } ?: entry.deletedAtMillis
-                    )
+                    val nonExpiredMsgs = entry.thread.messages.filter { msg ->
+                        val meta = deletedMessageMeta[msg.id]
+                        val deletedAt = meta?.second ?: entry.deletedAtMillis
+                        (now - deletedAt) < maxAgeMillis
+                    }
+                    if (nonExpiredMsgs.isEmpty()) {
+                        null
+                    } else {
+                        entry.copy(
+                            thread = entry.thread.copy(messages = nonExpiredMsgs),
+                            deletedAtMillis = nonExpiredMsgs.maxOfOrNull { msg ->
+                                deletedMessageMeta[msg.id]?.second ?: entry.deletedAtMillis
+                            } ?: entry.deletedAtMillis
+                        )
+                    }
                 }
             }
         }
@@ -4245,56 +4315,146 @@ object SmsMmsRepository {
         Pair(totalThreads, totalMsgs)
     }
 
-    private fun deleteFromSystemProviderIfDefault(context: Context, threadId: Long) {
-        val appCtx = context.applicationContext
-        ioScope.launch {
-            if (!isDefaultSmsApp(appCtx)) return@launch
-            try {
-                appCtx.contentResolver.delete(
-                    Telephony.Sms.CONTENT_URI,
-                    "${Telephony.Sms.THREAD_ID} = ?",
-                    arrayOf(threadId.toString())
-                )
-            } catch (_: Exception) {
-                // Ignore if read-only or not default SMS app
+    private fun cleanupAttachmentFile(context: Context, uri: Uri?, msgId: Long? = null) {
+        try {
+            if (uri != null) {
+                if (uri.scheme == "file") {
+                    val path = uri.path
+                    if (!path.isNullOrBlank()) {
+                        File(path).delete()
+                    }
+                } else if (uri.scheme == "content") {
+                    if (uri.authority == "${context.packageName}.fileprovider") {
+                        try {
+                            context.contentResolver.delete(uri, null, null)
+                        } catch (_: Exception) {}
+                    }
+                    val fileName = uri.lastPathSegment
+                    if (!fileName.isNullOrBlank()) {
+                        File(context.filesDir, "mms_media/$fileName").delete()
+                        File(context.cacheDir, "mms_attachments/$fileName").delete()
+                        File(context.cacheDir, "voice_messages/$fileName").delete()
+                        File(context.cacheDir, "voice_playback_cache/$fileName").delete()
+                    }
+                }
             }
+            if (msgId != null) {
+                val rawMmsId = if (msgId >= 1_000_000_000L) msgId - 1_000_000_000L else msgId
+                File(context.cacheDir, "mms_send_$msgId.pdu").delete()
+                File(context.cacheDir, "mms_send_$rawMmsId.pdu").delete()
+            }
+        } catch (_: Exception) {
+            // Ignore filesystem cleanup exceptions
         }
     }
 
-    private fun deleteMessagesFromSystemProviderIfDefault(context: Context, messageIds: Collection<Long>) {
-        if (messageIds.isEmpty()) return
+    private fun deleteFromSystemProviderThoroughly(
+        context: Context,
+        threadIds: Set<Long> = emptySet(),
+        messageIds: Set<Long> = emptySet(),
+        address: String? = null,
+        addresses: Set<String> = emptySet()
+    ) {
         val appCtx = context.applicationContext
         ioScope.launch {
             if (!isDefaultSmsApp(appCtx)) return@launch
-            try {
-                val smsIds = messageIds.filter { it < 1_000_000_000L }
-                if (smsIds.isNotEmpty()) {
-                    smsIds.chunked(50).forEach { chunk ->
+            val cr = appCtx.contentResolver
+
+            // 1. Delete individual SMS messages by ID
+            val smsIds = messageIds.filter { it < 1_000_000_000L }
+            if (smsIds.isNotEmpty()) {
+                smsIds.chunked(50).forEach { chunk ->
+                    try {
                         val placeholders = chunk.joinToString(",") { "?" }
                         val args = chunk.map { it.toString() }.toTypedArray()
-                        appCtx.contentResolver.delete(
+                        cr.delete(
                             Telephony.Sms.CONTENT_URI,
                             "${Telephony.Sms._ID} IN ($placeholders)",
                             args
                         )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error batch deleting SMS by ID", e)
                     }
                 }
-                val mmsIds = messageIds.filter { it >= 1_000_000_000L }.map { it - 1_000_000_000L }
-                if (mmsIds.isNotEmpty()) {
-                    mmsIds.chunked(50).forEach { chunk ->
+                smsIds.forEach { smsId ->
+                    try {
+                        cr.delete(ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, smsId), null, null)
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // 2. Delete individual MMS messages by ID and direct content://mms URIs
+            val mmsIds = messageIds.filter { it >= 1_000_000_000L }.map { it - 1_000_000_000L }
+            if (mmsIds.isNotEmpty()) {
+                mmsIds.chunked(50).forEach { chunk ->
+                    try {
                         val placeholders = chunk.joinToString(",") { "?" }
                         val args = chunk.map { it.toString() }.toTypedArray()
-                        appCtx.contentResolver.delete(
+                        cr.delete(
                             Telephony.Mms.CONTENT_URI,
                             "${Telephony.Mms._ID} IN ($placeholders)",
                             args
                         )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error batch deleting MMS by ID", e)
                     }
                 }
-            } catch (_: Exception) {
-                // Ignore if read-only or not default SMS app
+                mmsIds.forEach { mmsId ->
+                    try {
+                        cr.delete(ContentUris.withAppendedId(Telephony.Mms.CONTENT_URI, mmsId), null, null)
+                    } catch (_: Exception) {}
+                    try {
+                        cr.delete(Uri.parse("content://mms/$mmsId"), null, null)
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // 3. Delete conversation threads (Telephony conversations, SMS, MMS)
+            threadIds.filter { it > 0L }.forEach { tId ->
+                try {
+                    cr.delete(Uri.parse("content://mms-sms/conversations/$tId"), null, null)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error deleting conversation uri for thread $tId", e)
+                }
+                try {
+                    cr.delete(
+                        Telephony.Sms.CONTENT_URI,
+                        "${Telephony.Sms.THREAD_ID} = ?",
+                        arrayOf(tId.toString())
+                    )
+                } catch (_: Exception) {}
+                try {
+                    cr.delete(
+                        Telephony.Mms.CONTENT_URI,
+                        "${Telephony.Mms.THREAD_ID} = ?",
+                        arrayOf(tId.toString())
+                    )
+                } catch (_: Exception) {}
+            }
+
+            // 4. Delete by phone number address if entire conversation is gone and not in active inbox
+            val targetAddresses = (addresses + listOfNotNull(address)).filter { it.isNotBlank() && it != "Unknown" }
+            targetAddresses.forEach { addr ->
+                val hasActive = _threads.value.any { arePhoneNumbersEqual(it.address, addr) }
+                if (!hasActive) {
+                    try {
+                        cr.delete(
+                            Telephony.Sms.CONTENT_URI,
+                            "${Telephony.Sms.ADDRESS} = ?",
+                            arrayOf(addr)
+                        )
+                    } catch (_: Exception) {}
+                }
             }
         }
+    }
+
+    private fun deleteFromSystemProviderIfDefault(context: Context, threadId: Long) {
+        deleteFromSystemProviderThoroughly(context = context, threadIds = setOf(threadId))
+    }
+
+    private fun deleteMessagesFromSystemProviderIfDefault(context: Context, messageIds: Collection<Long>) {
+        deleteFromSystemProviderThoroughly(context = context, messageIds = messageIds.toSet())
     }
 
     fun arePhoneNumbersEqual(a: String, b: String): Boolean {

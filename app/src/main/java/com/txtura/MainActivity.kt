@@ -252,6 +252,7 @@ class MainActivity : ComponentActivity() {
             add(Manifest.permission.RECEIVE_MMS)
             add(Manifest.permission.READ_CONTACTS)
             add(Manifest.permission.RECORD_AUDIO)
+            add(Manifest.permission.READ_CALENDAR)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
@@ -550,8 +551,8 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "3.0"
-                }.getOrDefault("3.0")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "3.1"
+                }.getOrDefault("3.1")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -1386,8 +1387,7 @@ class MainActivity : ComponentActivity() {
 
             val isDockScreen = currentScreen == MainAppScreen.CONVERSATIONS_LIST ||
                 currentScreen == MainAppScreen.HIGHLIGHTED_MESSAGES ||
-                currentScreen == MainAppScreen.DELETED_MESSAGES ||
-                currentScreen == MainAppScreen.SETTINGS
+                currentScreen == MainAppScreen.DELETED_MESSAGES
 
             AnimatedVisibility(
                 visible = isDockScreen && !isConversationsSelectionMode,
@@ -1400,7 +1400,6 @@ class MainActivity : ComponentActivity() {
                 val activeDockItem = when (currentScreen) {
                     MainAppScreen.HIGHLIGHTED_MESSAGES -> DockBarItem.HIGHLIGHTED
                     MainAppScreen.DELETED_MESSAGES -> DockBarItem.DELETED
-                    MainAppScreen.SETTINGS -> DockBarItem.SETTINGS
                     else -> null
                 }
                 val metrics = LocalAdaptiveMetrics.current
@@ -1449,13 +1448,9 @@ class MainActivity : ComponentActivity() {
                         ).show()
                     },
                     onOpenSettings = {
-                        if (currentScreen == MainAppScreen.SETTINGS) {
-                            showSettingsScreen = false
-                        } else {
-                            showDeletedMessagesScreen = false
-                            showHighlightedMessagesScreen = false
-                            showSettingsScreen = true
-                        }
+                        showDeletedMessagesScreen = false
+                        showHighlightedMessagesScreen = false
+                        showSettingsScreen = true
                     },
                     activeItem = activeDockItem,
                     modifier = Modifier
@@ -1720,8 +1715,8 @@ class MainActivity : ComponentActivity() {
     private fun triggerAppEntryUpdateCheck() {
         lifecycleScope.launch(Dispatchers.IO) {
             val currentAppVersionName = runCatching {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "3.0"
-            }.getOrDefault("3.0")
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "3.1"
+            }.getOrDefault("3.1")
             AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
         }
     }
