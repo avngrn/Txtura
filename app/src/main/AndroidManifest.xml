@@ -19,9 +19,18 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission
         android:name="android.permission.REQUEST_INSTALL_PACKAGES"
         tools:ignore="RequestInstallPackagesPolicy" />
+
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.flash"
+        android:required="false" />
 
     <!-- Hardened application config: allowBackup="false" prevents unencrypted ADB/cloud SMS leaks -->
     <application
@@ -74,8 +83,9 @@
             android:name=".telephony.MmsWapPushReceiver"
             android:exported="true"
             android:permission="android.permission.BROADCAST_WAP_PUSH">
-            <intent-filter>
+            <intent-filter android:priority="999">
                 <action android:name="android.provider.Telephony.WAP_PUSH_DELIVER" />
+                <action android:name="android.provider.Telephony.WAP_PUSH_RECEIVED" />
                 <data android:mimeType="application/vnd.wap.mms-message" />
             </intent-filter>
         </receiver>
@@ -95,7 +105,7 @@
             </intent-filter>
         </service>
 
-        <!-- Internal BroadcastReceiver for Notification Direct Reply, 2FA Code Copy, and SMS/MMS Delivery/Sent reports -->
+        <!-- Internal BroadcastReceiver for Notification Direct Reply, 2FA Code Copy, and SMS/MMS Delivery/Sent/Downloaded reports -->
         <receiver
             android:name=".telephony.NotificationActionReceiver"
             android:exported="false">
@@ -103,6 +113,7 @@
                 <action android:name="com.txtura.action.SMS_SENT" />
                 <action android:name="com.txtura.action.SMS_DELIVERED" />
                 <action android:name="com.txtura.action.MMS_SENT" />
+                <action android:name="com.txtura.action.MMS_DOWNLOADED" />
             </intent-filter>
         </receiver>
 

@@ -31,6 +31,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -39,6 +42,16 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import com.txtura.ui.theme.LocalAdaptiveMetrics
+import com.txtura.ui.components.GlassBackground
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -50,7 +63,9 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import com.txtura.ui.theme.LocalGlassPalette
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.lifecycle.lifecycleScope
@@ -62,6 +77,7 @@ import com.txtura.data.BackupManager
 import com.txtura.data.BackupRestorePayload
 import com.txtura.data.ContactPickerItem
 import com.txtura.data.ConversationFilter
+import com.txtura.data.DockBarItem
 import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedGroupingMode
 import com.txtura.data.MainListLayoutMode
@@ -77,6 +93,8 @@ import com.txtura.security.DeviceKeyMismatchException
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.security.SecurityCryptoManager
 import com.txtura.telephony.EmergencyAlertManager
+import com.txtura.telephony.FlashNotificationManager
+import com.txtura.telephony.MmsImageCompressor
 import com.txtura.ui.i18n.TxturaStrings
 import com.txtura.ui.screens.AppLockScreen
 import com.txtura.ui.screens.ConfirmMoveToTrashDialog
@@ -86,6 +104,8 @@ import com.txtura.ui.screens.ConversationsListScreen
 import com.txtura.ui.screens.CreateEncryptedBackupDialog
 import com.txtura.ui.screens.DefaultSmsRolePromptDialog
 import com.txtura.ui.screens.DeletedMessagesScreen
+import com.txtura.ui.screens.HighlightedMessagesScreen
+import com.txtura.ui.screens.HomeBottomDockBar
 import com.txtura.ui.screens.NewMessageDialog
 import com.txtura.ui.screens.RestoreEncryptedBackupPasswordDialog
 import com.txtura.ui.screens.SettingsScreen
@@ -103,9 +123,29 @@ import kotlinx.coroutines.withContext
 
 private enum class MainAppScreen {
     DELETED_MESSAGES,
+    HIGHLIGHTED_MESSAGES,
     SETTINGS,
     CONVERSATION_DETAIL,
     CONVERSATIONS_LIST
+}
+
+private fun getScreenOrder(screen: MainAppScreen, dockOrder: List<DockBarItem>): Int {
+    return when (screen) {
+        MainAppScreen.CONVERSATIONS_LIST -> 0
+        MainAppScreen.HIGHLIGHTED_MESSAGES -> {
+            val idx = dockOrder.indexOf(DockBarItem.HIGHLIGHTED)
+            if (idx >= 0) idx + 1 else 2
+        }
+        MainAppScreen.DELETED_MESSAGES -> {
+            val idx = dockOrder.indexOf(DockBarItem.DELETED)
+            if (idx >= 0) idx + 1 else 4
+        }
+        MainAppScreen.SETTINGS -> {
+            val idx = dockOrder.indexOf(DockBarItem.SETTINGS)
+            if (idx >= 0) idx + 1 else 5
+        }
+        MainAppScreen.CONVERSATION_DETAIL -> 100
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -126,11 +166,13 @@ class MainActivity : ComponentActivity() {
         private const val KEY_UI_COLOR_MODE = "ui_color_mode"
         private const val KEY_UI_OPACITY = "ui_opacity_v3"
         private const val KEY_CATEGORY_ORDER = "category_order_v1"
+        private const val KEY_DOCK_BAR_ORDER = "dock_bar_order_v1"
         private const val KEY_RECALL_MESSAGES_ENABLED = "recall_messages_enabled"
         private const val KEY_IDENTIFY_MALICIOUS_WEBSITES = "identify_malicious_websites"
         private const val KEY_IN_APP_SOUNDS_ENABLED = "in_app_sounds_enabled"
         private const val KEY_PINCH_TO_ZOOM_ENABLED = "pinch_to_zoom_enabled"
         private const val KEY_EXPRESSIVE_ANIMATIONS_ENABLED = "expressive_animations_enabled"
+        private const val KEY_FLASH_ALERT_ENABLED = "flash_alert_enabled"
         private const val KEY_HAPTICS_ENABLED = "haptics_enabled"
         private const val KEY_BUBBLES_ENABLED = "bubbles_enabled"
         private const val KEY_AUTO_PREVIEWS_SHOW_ALL = "auto_previews_show_all"
@@ -148,6 +190,7 @@ class MainActivity : ComponentActivity() {
     private var uiColorMode by mutableStateOf(UiColorMode.COLORFUL)
     private var uiOpacity by mutableFloatStateOf(0.50f)
     private var categoryOrder by mutableStateOf(ConversationFilter.defaultOrder)
+    private var dockBarOrder by mutableStateOf(DockBarItem.defaultOrder)
     private var swipeRightAction by mutableStateOf(SwipeAction.PIN)
     private var swipeLeftAction by mutableStateOf(SwipeAction.DELETE)
     private var autoDeleteDays by mutableIntStateOf(30)
@@ -156,9 +199,9 @@ class MainActivity : ComponentActivity() {
     private var identifyMaliciousWebsites by mutableStateOf(value = true)
     private var inAppSoundsEnabled by mutableStateOf(value = true)
     private var smsNotificationSound by mutableStateOf(SmsNotificationSound.SYSTEM)
-    private var blockScreenshotsEnabled by mutableStateOf(false)
     private var pinchToZoomEnabled by mutableStateOf(value = true)
     private var expressiveAnimationsEnabled by mutableStateOf(value = true)
+    private var flashAlertEnabled by mutableStateOf(value = false)
     private var hapticsEnabled by mutableStateOf(value = true)
     private var bubblesEnabled by mutableStateOf(value = true)
     private var autoPreviewsShowAll by mutableStateOf(value = true)
@@ -177,6 +220,7 @@ class MainActivity : ComponentActivity() {
     private var showSettingsScreen by mutableStateOf(value = false)
     private var focusUpdateSectionOnSettings by mutableStateOf(value = false)
     private var showDeletedMessagesScreen by mutableStateOf(value = false)
+    private var showHighlightedMessagesScreen by mutableStateOf(value = false)
     private var showChatWallpaperDialogForThread by mutableStateOf<ConversationThread?>(null)
     private var wallpaperGalleryTargetKey by mutableStateOf<String?>(null)
     private var threadPendingDeleteConfirmation by mutableStateOf<ConversationThread?>(null)
@@ -207,6 +251,7 @@ class MainActivity : ComponentActivity() {
             add(Manifest.permission.RECEIVE_SMS)
             add(Manifest.permission.RECEIVE_MMS)
             add(Manifest.permission.READ_CONTACTS)
+            add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
@@ -252,15 +297,48 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private val microphonePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            permissionRefreshTick++
+            val strings = TxturaStrings.forLocale()
+            if (granted) {
+                Toast.makeText(
+                    this,
+                    if (strings.isSerbian) "Dozvola za mikrofon je odobrena." else "Microphone permission granted.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                val permanentlyDenied = !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)
+                if (permanentlyDenied) {
+                    Toast.makeText(this, strings.voiceMessagePermissionRequired, Toast.LENGTH_LONG).show()
+                    openAppDetailsSettings()
+                } else {
+                    Toast.makeText(this, strings.voiceMessagePermissionRequired, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
+    private val contactsPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            permissionRefreshTick++
+        }
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            permissionRefreshTick++
+        }
+
     // Zero-Permission Photo Picker for MMS attachments (avoids READ_MEDIA_IMAGES / READ_EXTERNAL_STORAGE)
-    // Strips EXIF GPS coordinates and camera metadata when Zero Metadata Minimization is enabled
+    // Strips EXIF GPS coordinates and camera metadata when Zero Metadata Minimization is enabled,
+    // and automatically compresses images > 299.9 kB to fit MMS constraints while preserving true photo colors
     private val photoPickerLauncher =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
             if (uri != null) {
                 lifecycleScope.launch(Dispatchers.IO) {
                     val safeUri = AppSecurityManager.stripExifMetadata(this@MainActivity, uri)
+                    val compressedUri = MmsImageCompressor.compressImageIfNeeded(this@MainActivity, safeUri)
                     withContext(Dispatchers.Main) {
-                        pendingMmsUri = safeUri
+                        pendingMmsUri = compressedUri
                     }
                 }
             }
@@ -431,7 +509,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         loadSavedAppPreferences()
-        updateWindowSecurityFlags()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         if (AppSecurityManager.isBiometricLockEnabled(this)) {
             if (AppSecurityManager.isDeviceLockConfigured(this)) {
                 isAppLocked = true
@@ -454,6 +532,9 @@ class MainActivity : ComponentActivity() {
 
             // Query permissions dynamically (never cache permission state in fields)
             val hasSmsPerm = rememberDynamicSmsPermissionState(permissionRefreshTick)
+            val hasMicPerm = rememberDynamicMicrophonePermissionState(permissionRefreshTick)
+            val hasContactsPerm = rememberDynamicContactsPermissionState(permissionRefreshTick)
+            val hasNotifPerm = rememberDynamicNotificationPermissionState(permissionRefreshTick)
             val isDefaultSms = rememberDynamicDefaultSmsState(permissionRefreshTick)
 
             var availableContacts by remember { mutableStateOf<List<ContactPickerItem>>(emptyList()) }
@@ -469,8 +550,8 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "2.4"
-                }.getOrDefault("2.4")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "3.0"
+                }.getOrDefault("3.0")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -556,7 +637,7 @@ class MainActivity : ComponentActivity() {
                 lastActiveThread = selectedThread
             }
 
-            val activeWallpaper = if ((selectedThread != null) && !showSettingsScreen && !showDeletedMessagesScreen) {
+            val activeWallpaper = if ((selectedThread != null) && !showSettingsScreen && !showDeletedMessagesScreen && !showHighlightedMessagesScreen) {
                 contactWallpapers[contactWallpaperKey(selectedThread.address)] ?: mainWallpaper
             } else {
                 mainWallpaper
@@ -585,107 +666,92 @@ class MainActivity : ComponentActivity() {
                 } else {
                     val currentScreen = when {
                         showDeletedMessagesScreen -> MainAppScreen.DELETED_MESSAGES
+                        showHighlightedMessagesScreen -> MainAppScreen.HIGHLIGHTED_MESSAGES
                         showSettingsScreen -> MainAppScreen.SETTINGS
                         selectedThread != null -> MainAppScreen.CONVERSATION_DETAIL
                         else -> MainAppScreen.CONVERSATIONS_LIST
                     }
 
-                    DisposableEffect(currentScreen, blockScreenshotsEnabled) {
-                        if (currentScreen == MainAppScreen.CONVERSATION_DETAIL) {
+                    var isConversationsSelectionMode by remember { mutableStateOf(false) }
+
+                    DisposableEffect(currentScreen == MainAppScreen.CONVERSATION_DETAIL) {
+                        val isDetail = currentScreen == MainAppScreen.CONVERSATION_DETAIL
+                        if (isDetail) {
                             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                         }
-                        val shouldBlockScreenshot = blockScreenshotsEnabled && (
-                            currentScreen == MainAppScreen.CONVERSATION_DETAIL ||
-                            currentScreen == MainAppScreen.CONVERSATIONS_LIST ||
-                            currentScreen == MainAppScreen.DELETED_MESSAGES
-                        )
-                        if (shouldBlockScreenshot) {
-                            window.setFlags(
-                                WindowManager.LayoutParams.FLAG_SECURE,
-                                WindowManager.LayoutParams.FLAG_SECURE
-                            )
-                        } else {
-                            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-                        }
                         onDispose {
-                            if (currentScreen == MainAppScreen.CONVERSATION_DETAIL) {
+                            if (isDetail) {
                                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                             }
                         }
                     }
 
-                AnimatedContent(
-                    targetState = currentScreen,
-                    transitionSpec = {
-                        if (expressiveAnimationsEnabled) {
-                            when {
-                                targetState == MainAppScreen.CONVERSATION_DETAIL -> {
-                                    (slideInHorizontally(
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioLowBouncy,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        ),
-                                        initialOffsetX = { it / 3 }
-                                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
-                                        slideOutHorizontally(
-                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                            targetOffsetX = { -it / 5 }
-                                        ) + fadeOut()
-                                    )
-                                }
-                                initialState == MainAppScreen.CONVERSATION_DETAIL -> {
-                                    (slideInHorizontally(
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioLowBouncy,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        ),
-                                        initialOffsetX = { -it / 5 }
-                                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
-                                        slideOutHorizontally(
-                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                            targetOffsetX = { it / 3 }
-                                        ) + fadeOut()
-                                    )
-                                }
-                                targetState == MainAppScreen.SETTINGS || targetState == MainAppScreen.DELETED_MESSAGES -> {
-                                    (slideInHorizontally(
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioLowBouncy,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        ),
-                                        initialOffsetX = { it / 3 }
-                                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
-                                        slideOutHorizontally(
-                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                            targetOffsetX = { -it / 5 }
-                                        ) + fadeOut()
-                                    )
-                                }
-                                else -> {
-                                    (slideInHorizontally(
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioLowBouncy,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        ),
-                                        initialOffsetX = { -it / 5 }
-                                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
-                                        slideOutHorizontally(
-                                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                            targetOffsetX = { it / 3 }
-                                        ) + fadeOut()
-                                    )
-                                }
-                            }
-                        } else {
-                            fadeIn(tween(140)).togetherWith(fadeOut(tween(100)))
-                        }
-                    },
-                    label = "mainScreenTransition"
-                ) { screen ->
+                    val currentWallpaper = if (currentScreen == MainAppScreen.CONVERSATION_DETAIL) {
+                        val activeDetailThread = selectedThread ?: lastActiveThread
+                        if (activeDetailThread != null) {
+                            val contactKey = contactWallpaperKey(activeDetailThread.address)
+                            contactWallpapers[contactKey] ?: mainWallpaper
+                        } else mainWallpaper
+                    } else {
+                        mainWallpaper
+                    }
+
+                    GlassBackground(
+                        modifier = Modifier.fillMaxSize(),
+                        wallpaperConfig = currentWallpaper
+                    ) {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                            ) {
+                                AnimatedContent(
+                                    targetState = currentScreen,
+                                    modifier = Modifier.fillMaxSize(),
+                                    transitionSpec = {
+                                        if (expressiveAnimationsEnabled) {
+                                            val forward = getScreenOrder(targetState, dockBarOrder) >= getScreenOrder(initialState, dockBarOrder)
+                                            if (forward) {
+                                                (slideInHorizontally(
+                                                    animationSpec = spring(
+                                                        dampingRatio = Spring.DampingRatioLowBouncy,
+                                                        stiffness = Spring.StiffnessMediumLow
+                                                    ),
+                                                    initialOffsetX = { it / 4 }
+                                                ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
+                                                    slideOutHorizontally(
+                                                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                                        targetOffsetX = { -it / 6 }
+                                                    ) + fadeOut()
+                                                )
+                                            } else {
+                                                (slideInHorizontally(
+                                                    animationSpec = spring(
+                                                        dampingRatio = Spring.DampingRatioLowBouncy,
+                                                        stiffness = Spring.StiffnessMediumLow
+                                                    ),
+                                                    initialOffsetX = { -it / 6 }
+                                                ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
+                                                    slideOutHorizontally(
+                                                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                                        targetOffsetX = { it / 4 }
+                                                    ) + fadeOut()
+                                                )
+                                            }
+                                        } else {
+                                            fadeIn(tween(140)).togetherWith(fadeOut(tween(100)))
+                                        }
+                                    },
+                                    label = "mainScreenTransition"
+                                ) { screen ->
                     when (screen) {
                         MainAppScreen.DELETED_MESSAGES -> {
                         BackHandler {
                             showDeletedMessagesScreen = false
+                        }
+                        val totalHighlightedCount = remember(threads) {
+                            SmsMmsRepository.getHighlightedMessageIdsSnapshot().size
                         }
                         DeletedMessagesScreen(
                             deletedEntries = deletedThreads,
@@ -714,10 +780,89 @@ class MainActivity : ComponentActivity() {
                             },
                             onPermanentlyDeleteThread = { threadId ->
                                 SmsMmsRepository.permanentlyDeleteThread(this@MainActivity, threadId)
+                            },
+                            highlightedCount = totalHighlightedCount,
+                            dockBarOrder = dockBarOrder,
+                            onUpdateDockBarOrder = { newOrder ->
+                                dockBarOrder = newOrder
+                                saveDockBarOrder(newOrder)
+                            },
+                            onOpenHighlightedMessages = {
+                                showDeletedMessagesScreen = false
+                                showHighlightedMessagesScreen = true
+                            },
+                            onOpenNewMessage = {
+                                showDeletedMessagesScreen = false
+                                prefilledRecipient = ""
+                                prefilledBody = ""
+                                showNewMessageDialog = true
+                            },
+                            onMarkAllRead = {
+                                SmsMmsRepository.markAllThreadsRead(this@MainActivity)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.allMessagesMarkedReadToast,
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            },
+                            onOpenSettings = {
+                                showDeletedMessagesScreen = false
+                                showSettingsScreen = true
+                            },
+                            onEmptyTrash = {
+                                SmsMmsRepository.emptyTrash(this@MainActivity)
                             }
-                        ) {
-                            SmsMmsRepository.emptyTrash(this@MainActivity)
+                        )
+                    }
+
+                    MainAppScreen.HIGHLIGHTED_MESSAGES -> {
+                        BackHandler {
+                            showHighlightedMessagesScreen = false
                         }
+                        HighlightedMessagesScreen(
+                            threads = threads,
+                            mainWallpaper = mainWallpaper,
+                            onBack = { showHighlightedMessagesScreen = false },
+                            onOpenThread = { threadId ->
+                                showHighlightedMessagesScreen = false
+                                activeThreadId = threadId
+                                activeThreadAddress = threads.find { (tId) -> tId == threadId }?.address
+                                SmsMmsRepository.markThreadRead(this@MainActivity, threadId)
+                            },
+                            onToggleHighlight = { threadId, messageId ->
+                                SmsMmsRepository.toggleHighlightMessage(this@MainActivity, threadId, messageId)
+                            },
+                            deletedCount = deletedThreads.size,
+                            dockBarOrder = dockBarOrder,
+                            onUpdateDockBarOrder = { newOrder ->
+                                dockBarOrder = newOrder
+                                saveDockBarOrder(newOrder)
+                            },
+                            onOpenDeletedMessages = {
+                                showHighlightedMessagesScreen = false
+                                showDeletedMessagesScreen = true
+                            },
+                            onOpenNewMessage = {
+                                showHighlightedMessagesScreen = false
+                                prefilledRecipient = ""
+                                prefilledBody = ""
+                                showNewMessageDialog = true
+                            },
+                            onMarkAllRead = {
+                                SmsMmsRepository.markAllThreadsRead(this@MainActivity)
+                                val locStrings = TxturaStrings.forLocale()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    locStrings.allMessagesMarkedReadToast,
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            },
+                            onOpenSettings = {
+                                showHighlightedMessagesScreen = false
+                                showSettingsScreen = true
+                            }
+                        )
                     }
 
                     MainAppScreen.SETTINGS -> {
@@ -769,6 +914,11 @@ class MainActivity : ComponentActivity() {
                                 expressiveAnimationsEnabled = enabled
                                 saveExpressiveAnimationsEnabled(enabled)
                             },
+                            flashAlertEnabled = flashAlertEnabled,
+                            onToggleFlashAlert = { enabled ->
+                                flashAlertEnabled = enabled
+                                saveFlashAlertEnabled(enabled)
+                            },
                             hapticsEnabled = hapticsEnabled,
                             onToggleHaptics = { enabled ->
                                 hapticsEnabled = enabled
@@ -779,11 +929,6 @@ class MainActivity : ComponentActivity() {
                                 smsNotificationSound = sound
                                 SmsMmsRepository.setSmsNotificationSound(this@MainActivity, sound)
                                 SmsMmsRepository.playSmsNotificationSoundPreview(this@MainActivity, sound)
-                            },
-                            blockScreenshotsEnabled = blockScreenshotsEnabled,
-                            onToggleBlockScreenshots = { enabled ->
-                                blockScreenshotsEnabled = enabled
-                                AppSecurityManager.setBlockScreenshotsEnabled(this@MainActivity, enabled)
                             },
                             bubblesEnabled = bubblesEnabled,
                             onToggleBubbles = { enabled ->
@@ -809,6 +954,9 @@ class MainActivity : ComponentActivity() {
                                 saveAutoPreviewsWifiOnly(enabled)
                             },
                             hasSmsPermission = hasSmsPerm,
+                            hasMicrophonePermission = hasMicPerm,
+                            hasContactsPermission = hasContactsPerm,
+                            hasNotificationPermission = hasNotifPerm,
                             isDefaultSmsApp = isDefaultSms,
                             rationaleMessage = rationaleBannerText,
                             onBack = { showSettingsScreen = false },
@@ -960,6 +1108,9 @@ class MainActivity : ComponentActivity() {
                             onRestoreLocalBackup = ::handleRestoreLocalBackup,
                             onShareBackupFile = ::handleShareBackupFile,
                             onRequestSmsPermissions = ::requestSmsPermissionsSafely,
+                            onRequestMicrophonePermission = ::requestMicrophonePermissionSafely,
+                            onRequestContactsPermission = ::requestContactsPermissionSafely,
+                            onRequestNotificationPermission = ::requestNotificationPermissionSafely,
                             onRequestDefaultSmsRole = ::requestDefaultSmsRoleSafely,
                             onOpenSystemAppSettings = ::openAppDetailsSettings,
                             onLockAppNow = {
@@ -1113,6 +1264,7 @@ class MainActivity : ComponentActivity() {
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                                 )
                             },
+                            onAttachUri = { uri -> pendingMmsUri = uri },
                             onClearAttachment = { pendingMmsUri = null },
                             onSendMessage = { text, attachment ->
                                 if (inAppSoundsEnabled) {
@@ -1164,6 +1316,11 @@ class MainActivity : ComponentActivity() {
                                 categoryOrder = newOrder
                                 saveCategoryOrder(newOrder)
                             },
+                            dockBarOrder = dockBarOrder,
+                            onUpdateDockBarOrder = { newOrder ->
+                                dockBarOrder = newOrder
+                                saveDockBarOrder(newOrder)
+                            },
                             onOpenThread = { id ->
                                 SmsMmsRepository.markThreadRead(this@MainActivity, id)
                                 activeThreadAddress = threads.find { (tId) -> tId == id }?.address
@@ -1209,6 +1366,7 @@ class MainActivity : ComponentActivity() {
                                 showNewMessageDialog = true
                             },
                             onOpenDeletedMessages = { showDeletedMessagesScreen = true },
+                            onOpenHighlightedMessages = { showHighlightedMessagesScreen = true },
                             onMarkAllRead = {
                                 SmsMmsRepository.markAllThreadsRead(this@MainActivity)
                                 val locStrings = TxturaStrings.forLocale()
@@ -1218,10 +1376,96 @@ class MainActivity : ComponentActivity() {
                                     Toast.LENGTH_SHORT,
                                 ).show()
                             },
-                        ) { showSettingsScreen = true }
+                            onSelectionModeChange = { isConversationsSelectionMode = it },
+                            onOpenSettings = { showSettingsScreen = true }
+                        )
                     }
                 }
             }
+        }
+
+            val isDockScreen = currentScreen == MainAppScreen.CONVERSATIONS_LIST ||
+                currentScreen == MainAppScreen.HIGHLIGHTED_MESSAGES ||
+                currentScreen == MainAppScreen.DELETED_MESSAGES ||
+                currentScreen == MainAppScreen.SETTINGS
+
+            AnimatedVisibility(
+                visible = isDockScreen && !isConversationsSelectionMode,
+                enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) + expandVertically(expandFrom = Alignment.Bottom),
+                exit = fadeOut(spring(stiffness = Spring.StiffnessMediumLow)) + shrinkVertically(shrinkTowards = Alignment.Bottom)
+            ) {
+                val totalHighlightedCount = remember(threads) {
+                    SmsMmsRepository.getHighlightedMessageIdsSnapshot().size
+                }
+                val activeDockItem = when (currentScreen) {
+                    MainAppScreen.HIGHLIGHTED_MESSAGES -> DockBarItem.HIGHLIGHTED
+                    MainAppScreen.DELETED_MESSAGES -> DockBarItem.DELETED
+                    MainAppScreen.SETTINGS -> DockBarItem.SETTINGS
+                    else -> null
+                }
+                val metrics = LocalAdaptiveMetrics.current
+                HomeBottomDockBar(
+                    deletedCount = deletedThreads.size,
+                    highlightedCount = totalHighlightedCount,
+                    strings = strings,
+                    dockBarOrder = dockBarOrder,
+                    onUpdateDockBarOrder = { newOrder ->
+                        dockBarOrder = newOrder
+                        saveDockBarOrder(newOrder)
+                    },
+                    onOpenDeletedMessages = {
+                        if (currentScreen == MainAppScreen.DELETED_MESSAGES) {
+                            showDeletedMessagesScreen = false
+                        } else {
+                            showHighlightedMessagesScreen = false
+                            showSettingsScreen = false
+                            showDeletedMessagesScreen = true
+                        }
+                    },
+                    onOpenHighlightedMessages = {
+                        if (currentScreen == MainAppScreen.HIGHLIGHTED_MESSAGES) {
+                            showHighlightedMessagesScreen = false
+                        } else {
+                            showDeletedMessagesScreen = false
+                            showSettingsScreen = false
+                            showHighlightedMessagesScreen = true
+                        }
+                    },
+                    onOpenNewMessage = {
+                        showDeletedMessagesScreen = false
+                        showHighlightedMessagesScreen = false
+                        showSettingsScreen = false
+                        prefilledRecipient = ""
+                        prefilledBody = ""
+                        showNewMessageDialog = true
+                    },
+                    onMarkAllRead = {
+                        SmsMmsRepository.markAllThreadsRead(this@MainActivity)
+                        val locStrings = TxturaStrings.forLocale()
+                        Toast.makeText(
+                            this@MainActivity,
+                            locStrings.allMessagesMarkedReadToast,
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    },
+                    onOpenSettings = {
+                        if (currentScreen == MainAppScreen.SETTINGS) {
+                            showSettingsScreen = false
+                        } else {
+                            showDeletedMessagesScreen = false
+                            showHighlightedMessagesScreen = false
+                            showSettingsScreen = true
+                        }
+                    },
+                    activeItem = activeDockItem,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = (12 * metrics.scaleFactor).dp)
+                        .padding(top = (4 * metrics.scaleFactor).dp, bottom = metrics.safeBottomClearance)
+                )
+            }
+        }
+    }
 
                 // Per-Contact Chat Wallpaper Picker Dialog
                 val wallpaperDialogThread = showChatWallpaperDialogForThread
@@ -1452,7 +1696,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        updateWindowSecurityFlags()
         if (isAuthenticating) {
             return
         }
@@ -1477,8 +1720,8 @@ class MainActivity : ComponentActivity() {
     private fun triggerAppEntryUpdateCheck() {
         lifecycleScope.launch(Dispatchers.IO) {
             val currentAppVersionName = runCatching {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "2.4"
-            }.getOrDefault("2.4")
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "3.0"
+            }.getOrDefault("3.0")
             AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
         }
     }
@@ -1620,18 +1863,6 @@ class MainActivity : ComponentActivity() {
         onAuthenticationSuccess()
     }
 
-    private fun updateWindowSecurityFlags() {
-        val shouldBlock = blockScreenshotsEnabled && !showSettingsScreen
-        if (shouldBlock) {
-            window.setFlags(
-                WindowManager.LayoutParams.FLAG_SECURE,
-                WindowManager.LayoutParams.FLAG_SECURE
-            )
-        } else {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
-    }
-
     private fun loadSavedAppPreferences() {
         val prefs = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
         val savedThemeName = prefs.getString(KEY_THEME_MODE, TxturaThemeMode.AMOLED.name)
@@ -1673,11 +1904,13 @@ class MainActivity : ComponentActivity() {
 
         uiOpacity = prefs.getFloat(KEY_UI_OPACITY, 0.50f).coerceIn(0.0f, 1.0f)
         categoryOrder = ConversationFilter.deserializeOrder(prefs.getString(KEY_CATEGORY_ORDER, null))
+        dockBarOrder = DockBarItem.deserializeOrder(prefs.getString(KEY_DOCK_BAR_ORDER, null))
         recallMessagesEnabled = prefs.getBoolean(KEY_RECALL_MESSAGES_ENABLED, true)
         identifyMaliciousWebsites = prefs.getBoolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, true)
         inAppSoundsEnabled = prefs.getBoolean(KEY_IN_APP_SOUNDS_ENABLED, true)
         pinchToZoomEnabled = prefs.getBoolean(KEY_PINCH_TO_ZOOM_ENABLED, true)
         expressiveAnimationsEnabled = prefs.getBoolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, true)
+        flashAlertEnabled = prefs.getBoolean(KEY_FLASH_ALERT_ENABLED, false) || FlashNotificationManager.isFlashAlertEnabled(this)
         hapticsEnabled = prefs.getBoolean(KEY_HAPTICS_ENABLED, true)
         TxturaHaptics.isEnabled = hapticsEnabled
         bubblesEnabled = prefs.getBoolean(KEY_BUBBLES_ENABLED, true)
@@ -1686,7 +1919,6 @@ class MainActivity : ComponentActivity() {
         autoPreviewsWifiOnly = prefs.getBoolean(KEY_AUTO_PREVIEWS_WIFI_ONLY, false)
         MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled = identifyMaliciousWebsites
         smsNotificationSound = SmsMmsRepository.getSmsNotificationSound(this)
-        blockScreenshotsEnabled = AppSecurityManager.isBlockScreenshotsEnabled(this)
     }
 
     private fun contactWallpaperKey(address: String): String {
@@ -1802,6 +2034,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun saveDockBarOrder(order: List<DockBarItem>) {
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
+            putString(KEY_DOCK_BAR_ORDER, DockBarItem.serializeOrder(order))
+        }
+    }
+
     private fun saveRecallMessagesEnabled(enabled: Boolean) {
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit {
             putBoolean(KEY_RECALL_MESSAGES_ENABLED, enabled)
@@ -1824,6 +2062,11 @@ class MainActivity : ComponentActivity() {
 
     private fun saveExpressiveAnimationsEnabled(enabled: Boolean) {
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, enabled) }
+    }
+
+    private fun saveFlashAlertEnabled(enabled: Boolean) {
+        FlashNotificationManager.setFlashAlertEnabled(this, enabled)
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_FLASH_ALERT_ENABLED, enabled) }
     }
 
     private fun saveHapticsEnabled(enabled: Boolean) {
@@ -1862,11 +2105,13 @@ class MainActivity : ComponentActivity() {
             uiColorMode = uiColorMode,
             uiOpacity = uiOpacity,
             categoryOrder = categoryOrder,
+            dockBarOrder = dockBarOrder,
             recallMessagesEnabled = recallMessagesEnabled,
             identifyMaliciousWebsites = identifyMaliciousWebsites,
             inAppSoundsEnabled = inAppSoundsEnabled,
             pinchToZoomEnabled = pinchToZoomEnabled,
             expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+            flashAlertEnabled = flashAlertEnabled,
             hapticsEnabled = hapticsEnabled,
             bubblesEnabled = bubblesEnabled,
             autoPreviewsShowAll = autoPreviewsShowAll,
@@ -1965,6 +2210,9 @@ class MainActivity : ComponentActivity() {
         categoryOrder = payload.settings.categoryOrder
         saveCategoryOrder(categoryOrder)
 
+        dockBarOrder = payload.settings.dockBarOrder
+        saveDockBarOrder(dockBarOrder)
+
         recallMessagesEnabled = payload.settings.recallMessagesEnabled
         saveRecallMessagesEnabled(recallMessagesEnabled)
 
@@ -1980,6 +2228,9 @@ class MainActivity : ComponentActivity() {
 
         expressiveAnimationsEnabled = payload.settings.expressiveAnimationsEnabled
         saveExpressiveAnimationsEnabled(expressiveAnimationsEnabled)
+
+        flashAlertEnabled = payload.settings.flashAlertEnabled
+        saveFlashAlertEnabled(flashAlertEnabled)
 
         hapticsEnabled = payload.settings.hapticsEnabled
         saveHapticsEnabled(hapticsEnabled)
@@ -2076,7 +2327,11 @@ class MainActivity : ComponentActivity() {
             showNewMessageDialog = false
             showChatWallpaperDialogForThread = null
             threadPendingDeleteConfirmation = null
-            if (notifAddress.isNotBlank()) {
+            if (notifThreadId > 0L && SmsMmsRepository.threads.value.any { it.id == notifThreadId }) {
+                activeThreadId = notifThreadId
+                activeThreadAddress = SmsMmsRepository.threads.value.find { it.id == notifThreadId }?.address ?: notifAddress
+                SmsMmsRepository.markThreadRead(this, notifThreadId)
+            } else if (notifAddress.isNotBlank()) {
                 activeThreadAddress = notifAddress
                 val resolvedId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                     context = this,
@@ -2088,6 +2343,9 @@ class MainActivity : ComponentActivity() {
                 activeThreadId = notifThreadId
                 activeThreadAddress = SmsMmsRepository.threads.value.find { (id) -> id == notifThreadId }?.address
                 SmsMmsRepository.markThreadRead(this, notifThreadId)
+            }
+            lifecycleScope.launch(Dispatchers.IO) {
+                SmsMmsRepository.syncDeviceMessages(this@MainActivity, autoDeleteDays)
             }
             incoming.action = null
             incoming.removeExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ADDRESS)
@@ -2187,8 +2445,82 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
+    private fun rememberDynamicMicrophonePermissionState(tick: Int): Boolean {
+        val mic = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        return (tick >= 0) && mic
+    }
+
+    @Composable
+    private fun rememberDynamicContactsPermissionState(tick: Int): Boolean {
+        val contacts = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.READ_CONTACTS,
+        ) == PackageManager.PERMISSION_GRANTED
+        return (tick >= 0) && contacts
+    }
+
+    @Composable
+    private fun rememberDynamicNotificationPermissionState(tick: Int): Boolean {
+        val notif = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+        return (tick >= 0) && notif
+    }
+
+    @Composable
     private fun rememberDynamicDefaultSmsState(tick: Int): Boolean {
         return (tick >= 0) && SmsMmsRepository.isDefaultSmsApp(this)
+    }
+
+    private fun requestMicrophonePermissionSafely() {
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            openAppDetailsSettings()
+            return
+        }
+        if (shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
+            Toast.makeText(this, TxturaStrings.forLocale().voiceMessagePermissionRequired, Toast.LENGTH_SHORT).show()
+        }
+        microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    private fun requestContactsPermissionSafely() {
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.READ_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            openAppDetailsSettings()
+        } else {
+            contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+        }
+    }
+
+    private fun requestNotificationPermissionSafely() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (granted) {
+                openAppDetailsSettings()
+            } else {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else {
+            openAppDetailsSettings()
+        }
     }
 
     /**

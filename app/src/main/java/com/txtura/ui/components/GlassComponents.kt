@@ -1396,6 +1396,7 @@ fun GlassTooltipIconButton(
     pressedTint: Color = tint,
     size: Dp = 44.dp,
     iconSize: Dp = 22.dp,
+    enableTooltip: Boolean = true,
 ) {
     val palette = LocalGlassPalette.current
     val glassSurfaceElevated = palette.glassSurfaceElevated
@@ -1471,17 +1472,30 @@ fun GlassTooltipIconButton(
                 .clip(CircleShape)
                 .background(brush = surfaceBrush, shape = CircleShape)
                 .border(width = 1.dp, brush = borderBrush, shape = CircleShape)
-                .combinedClickable(
-                    interactionSource = interactionSource,
-                    indication = androidx.compose.foundation.LocalIndication.current,
-                    onClick = {
-                        TxturaHaptics.click(view, context)
-                        onClick()
-                    },
-                    onLongClick = {
-                        TxturaHaptics.tick(view, context)
-                        scope.launch { tooltipState.show() }
-                    },
+                .then(
+                    if (enableTooltip) {
+                        Modifier.combinedClickable(
+                            interactionSource = interactionSource,
+                            indication = androidx.compose.foundation.LocalIndication.current,
+                            onClick = {
+                                TxturaHaptics.click(view, context)
+                                onClick()
+                            },
+                            onLongClick = {
+                                TxturaHaptics.tick(view, context)
+                                scope.launch { tooltipState.show() }
+                            },
+                        )
+                    } else {
+                        Modifier.clickable(
+                            interactionSource = interactionSource,
+                            indication = androidx.compose.foundation.LocalIndication.current,
+                            onClick = {
+                                TxturaHaptics.click(view, context)
+                                onClick()
+                            }
+                        )
+                    }
                 ),
         ) {
             Icon(
@@ -2607,6 +2621,256 @@ object TxturaIcons {
                 lineTo(4f, 14f)
                 arcTo(5f, 5f, 0f, isMoreThanHalf = false, isPositiveArc = false, 11f, 21f)
                 lineTo(13f, 19f)
+            }
+        }.build()
+    }
+
+    val Microphone: ImageVector by lazy {
+        ImageVector.Builder("Microphone", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // Mic capsule
+                moveTo(9f, 6f)
+                arcTo(3f, 3f, 0f, isMoreThanHalf = false, isPositiveArc = true, 15f, 6f)
+                lineTo(15f, 11f)
+                arcTo(3f, 3f, 0f, isMoreThanHalf = false, isPositiveArc = true, 9f, 11f)
+                close()
+                // Mic cradle
+                moveTo(5f, 10f)
+                arcTo(7f, 7f, 0f, isMoreThanHalf = false, isPositiveArc = false, 19f, 10f)
+                // Stem and base
+                moveTo(12f, 17f)
+                lineTo(12f, 21f)
+                moveTo(8f, 21f)
+                lineTo(16f, 21f)
+            }
+        }.build()
+    }
+
+    val Play: ImageVector by lazy {
+        ImageVector.Builder("Play", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                fill = SolidColor(Color.White),
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.5f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(8f, 5.5f)
+                lineTo(19f, 12f)
+                lineTo(8f, 18.5f)
+                close()
+            }
+        }.build()
+    }
+
+    val Pause: ImageVector by lazy {
+        ImageVector.Builder("Pause", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 3f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(8f, 6f)
+                lineTo(8f, 18f)
+                moveTo(16f, 6f)
+                lineTo(16f, 18f)
+            }
+        }.build()
+    }
+
+    val CalendarEvent: ImageVector by lazy {
+        ImageVector.Builder("CalendarEvent", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(5f, 4f)
+                lineTo(19f, 4f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 21f, 6f)
+                lineTo(21f, 18f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 19f, 20f)
+                lineTo(5f, 20f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 3f, 18f)
+                lineTo(3f, 6f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 5f, 4f)
+                close()
+                moveTo(8f, 2f)
+                lineTo(8f, 5f)
+                moveTo(16f, 2f)
+                lineTo(16f, 5f)
+                moveTo(3f, 9f)
+                lineTo(21f, 9f)
+                moveTo(8f, 14f)
+                lineTo(11f, 16.5f)
+                lineTo(16f, 12f)
+            }
+        }.build()
+    }
+
+    val DocumentFile: ImageVector by lazy {
+        ImageVector.Builder("DocumentFile", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(14f, 2f)
+                lineTo(6f, 2f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = false, 4f, 4f)
+                lineTo(4f, 20f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = false, 6f, 22f)
+                lineTo(18f, 22f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = false, 20f, 20f)
+                lineTo(20f, 8f)
+                lineTo(14f, 2f)
+                close()
+                moveTo(14f, 2f)
+                lineTo(14f, 8f)
+                lineTo(20f, 8f)
+                moveTo(8f, 13f)
+                lineTo(16f, 13f)
+                moveTo(8f, 17f)
+                lineTo(13f, 17f)
+            }
+        }.build()
+    }
+
+    val NotificationBell: ImageVector by lazy {
+        ImageVector.Builder("NotificationBell", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(18f, 8f)
+                arcTo(6f, 6f, 0f, isMoreThanHalf = false, isPositiveArc = false, 6f, 8f)
+                curveTo(6f, 15f, 3f, 17f, 3f, 17f)
+                lineTo(21f, 17f)
+                curveTo(21f, 17f, 18f, 15f, 18f, 8f)
+                close()
+                moveTo(13.73f, 21f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10.27f, 21f)
+            }
+        }.build()
+    }
+
+    val WallpaperLandscape: ImageVector by lazy {
+        ImageVector.Builder("WallpaperLandscape", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(3f, 5f)
+                lineTo(21f, 5f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 23f, 7f)
+                lineTo(23f, 17f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 21f, 19f)
+                lineTo(3f, 19f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 1f, 17f)
+                lineTo(1f, 7f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 3f, 5f)
+                close()
+                moveTo(6.5f, 9.5f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = true, isPositiveArc = true, 6.5f, 6.5f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = true, isPositiveArc = true, 6.5f, 9.5f)
+                moveTo(1f, 16f)
+                lineTo(7f, 11f)
+                lineTo(13f, 16f)
+                moveTo(11f, 14.5f)
+                lineTo(15f, 11f)
+                lineTo(23f, 17f)
+            }
+        }.build()
+    }
+
+    val CellularNetwork: ImageVector by lazy {
+        ImageVector.Builder("CellularNetwork", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(4f, 18f)
+                lineTo(4f, 20f)
+                moveTo(9f, 14f)
+                lineTo(9f, 20f)
+                moveTo(14f, 10f)
+                lineTo(14f, 20f)
+                moveTo(19f, 6f)
+                lineTo(19f, 20f)
+            }
+        }.build()
+    }
+
+    val BusinessBuilding: ImageVector by lazy {
+        ImageVector.Builder("BusinessBuilding", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(4f, 21f)
+                lineTo(20f, 21f)
+                moveTo(6f, 21f)
+                lineTo(6f, 5f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 8f, 3f)
+                lineTo(16f, 3f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 18f, 5f)
+                lineTo(18f, 21f)
+                moveTo(9f, 7f)
+                lineTo(11f, 7f)
+                moveTo(13f, 7f)
+                lineTo(15f, 7f)
+                moveTo(9f, 11f)
+                lineTo(11f, 11f)
+                moveTo(13f, 11f)
+                lineTo(15f, 11f)
+                moveTo(9f, 15f)
+                lineTo(11f, 15f)
+                moveTo(13f, 15f)
+                lineTo(15f, 15f)
+            }
+        }.build()
+    }
+
+    val SecurityLock: ImageVector by lazy {
+        ImageVector.Builder("SecurityLock", 24.dp, 24.dp, 24f, 24f).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(5f, 11f)
+                lineTo(19f, 11f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 21f, 13f)
+                lineTo(21f, 20f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 19f, 22f)
+                lineTo(5f, 22f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 3f, 20f)
+                lineTo(3f, 13f)
+                arcTo(2f, 2f, 0f, isMoreThanHalf = false, isPositiveArc = true, 5f, 11f)
+                close()
+                moveTo(7f, 11f)
+                lineTo(7f, 7f)
+                arcTo(5f, 5f, 0f, isMoreThanHalf = false, isPositiveArc = true, 17f, 7f)
+                lineTo(17f, 11f)
+                moveTo(12f, 15f)
+                lineTo(12f, 18f)
             }
         }.build()
     }

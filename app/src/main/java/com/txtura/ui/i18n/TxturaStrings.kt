@@ -70,11 +70,37 @@ class AppStrings(val isSerbian: Boolean) {
         "Zero-Permission Photo Picker (scoped access only)",
         "Zero-Permission Photo Picker (bez pristupa celoj galeriji)",
     )
+    val mmsAutoCompressedSub: String = s(
+        "Auto-compressed to 299.9 kB",
+        "Automatski kompresovano na 299.9 kB",
+    )
     val removeMmsAttachment: String = s("Remove MMS attachment", "Ukloni MMS prilog")
     val attachMmsImage: String = s("Attach MMS image", "Dodaj MMS sliku")
+    val attachCalendarEvent: String = s("Attach calendar event", "Dodaj kalendarski događaj")
+    val attachDocumentFile: String = s("Attach document file", "Dodaj dokument fajl")
+    val calendarEventTitle: String = s("Calendar event", "Kalendarski događaj")
+    val calendarEventSub: String = s("vCalendar (.ics) • max 299.9 kB", "vCalendar (.ics) • max 299.9 kB")
+    val documentFileTitle: String = s("Document file", "Dokument fajl")
+    val documentFileSub: String = s("Document • max 299.9 kB", "Dokument • max 299.9 kB")
+    val calendarPermissionRequired: String = s(
+        "Calendar permission is required to select events.",
+        "Dozvola za kalendar je neophodna za izbor događaja."
+    )
+    val calendarPickerTitle: String = s("Choose Calendar Event", "Izaberi kalendarski događaj")
+    val noCalendarEventsFound: String = s("No upcoming events found in calendar.", "Nema pronađenih događaja u kalendaru.")
+    val quickInviteOption: String = s("Or create a quick invitation", "Ili kreiraj brzu pozivnicu")
     val addMmsCaptionPlaceholder: String = s("Add MMS caption", "Dodaj opis uz MMS")
     val writeSmsPlaceholder: String = s("Write an SMS message", "Napiši SMS poruku")
     val mmsModeIndicator: String = s("MMS Mode • Multimedia message", "MMS režim • Multimedijalna poruka")
+    val voiceMessageTitle: String = s("Voice message", "Govorna poruka")
+    val voiceMessageTooltip: String = s("Voice message (hold to record)", "Govorna poruka (zadržite za snimanje)")
+    val voiceMessageSlideToCancel: String = s("Slide right to cancel >", "Prevucite udesno za poništavanje >")
+    val voiceMessageRecording: String = s("Recording...", "Snimanje...")
+    val voiceMessageTimeRemaining: (String) -> String = { rem -> if (isSerbian) "Preostalo: $rem" else "Remaining: $rem" }
+    val voiceMessagePermissionRequired: String = s(
+        "Microphone permission is required to record voice messages.",
+        "Dozvola za mikrofon je neophodna za snimanje glasovnih poruka."
+    )
     val send: String = s("Send", "Pošalji")
     val cancel: String = s("Cancel", "Poništi")
     val next: String = s("Next", "Dalje")
@@ -177,6 +203,7 @@ class AppStrings(val isSerbian: Boolean) {
         "Šifrovanje lokalne baze podataka na uređaju pomoću SQLCipher-a",
     )
     val dbEncryptionBadge: String = s("SQLCipher 256-bit AES Active", "SQLCipher 256-bit AES Aktivan")
+    val dbEncryptionSwitchLabel: String = s("Enable Database Encryption", "Aktiviraj enkripciju baze")
     val biometricLockTitle: String = s(
         "Biometric Protection & PIN/Passphrase",
         "Biometrijska zaštita i PIN/Passphrase",
@@ -186,18 +213,6 @@ class AppStrings(val isSerbian: Boolean) {
         "Omogućavanje zaključavanja same aplikacije otiskom prsta, prepoznavanjem lica ili odvojenom lozinkom",
     )
     val biometricLockEnabledLabel: String = s("Lock App When Closed", "Zaključavanje aplikacije pri izlasku")
-    val blockScreenshotsTitle: String = s(
-        "Block Screenshots in Chats & Messages",
-        "Zabrana skrinšotovanja četova i liste poruka"
-    )
-    val blockScreenshotsSub: String = s(
-        "Prevent taking screenshots and screen recordings in conversations and the message list to protect personal privacy.",
-        "Sprečava pravljenje snimaka ekrana i video snimanja unutar razgovora i liste poruka radi zaštite privatnosti.",
-    )
-    val blockScreenshotsSwitchLabel: String = s(
-        "Block Screenshots",
-        "Zabrani snimanje ekrana"
-    )
     val sslPinningTitle: String = s(
         "HTTPS & TLS/SSL with Pinning (SSL Pinning)",
         "HTTPS i TLS/SSL sa Pinning-om (SSL Pinning)",
@@ -207,12 +222,14 @@ class AppStrings(val isSerbian: Boolean) {
         "Striktna upotreba šifrovanih veza uz implementaciju sertifikat pinning-a kako bi se sprečili Man-in-the-Middle (MitM) napadi.",
     )
     val sslPinningBadge: String = s("TLS 1.3 / Pinning Active", "TLS 1.3 / Pinning Aktivan")
+    val sslPinningSwitchLabel: String = s("Enable SSL Pinning", "Aktiviraj SSL Pinning")
     val metadataMinimizationTitle: String = s("Metadata Minimization", "Minimizacija metapodataka")
     val metadataMinimizationSub: String = s(
         "Retain minimal information about sender, recipient, timestamp and location (Zero metadata policies).",
         "Čuvanje što manje informacija o tome ko šalje poruku kome, kada i odakle (Zero metadata politike).",
     )
     val metadataMinimizationBadge: String = s("Zero Metadata Active", "Zero Metadata Aktivna")
+    val metadataMinimizationSwitchLabel: String = s("Enable Zero Metadata Policy", "Aktiviraj politiku nultih metapodataka")
     val rootDetectionTitle: String = s("Root State Detection", "Detekcija \"Root\" stanja")
     val rootDetectionSub: String = s(
         "Check if the operating system is compromised, preventing malicious apps from reading memory on rooted devices.",
@@ -248,7 +265,23 @@ class AppStrings(val isSerbian: Boolean) {
     val uiTransparencyTitle: String = s("UI Transparency", "Providnost interfejsa")
     val permissionsSectionTitle: String = s("App Permissions", "Dozvole aplikacija")
     val permGranted: String = s("Granted", "Odobreno")
-    val permDemoNotGranted: String = s("Demo mode (Not granted)", "Demo režim (Nije odobreno)")
+    val permDemoNotGranted: String = s("Not granted (Demo mode)", "Nije odobreno (Demo režim)")
+    val permSmsTitle: String = s("SMS & MMS permissions", "SMS i MMS dozvole")
+    val permMicrophoneTitle: String = s("Microphone permission", "Dozvola za mikrofon")
+    val permMicrophoneSubGranted: String = s(
+        "Granted (enables recording voice messages via MMS)",
+        "Odobreno (omogućeno snimanje i slanje glasovnih poruka)"
+    )
+    val permMicrophoneSubNotGranted: String = s(
+        "Not granted (tap to allow voice message recording)",
+        "Nije odobreno (dodirnite da omogućite snimanje)"
+    )
+    val permContactsTitle: String = s("Contacts permission", "Dozvola za kontakte")
+    val permNotificationsTitle: String = s("Notifications permission", "Dozvola za obaveštenja")
+    val voiceMessageHoldToRecordHint: String = s(
+        "Press and hold microphone to record, slide right to cancel.",
+        "Zadržite mikrofon pritisnutim za snimanje, prevucite udesno za poništavanje."
+    )
     val defaultSmsRoleLabel: String = s("Default SMS app", "Podrazumevana SMS aplikacija")
     val roleActive: String = s("Active", "Postavljena")
     val roleNotSet: String = s("Not set", "Nije postavljena")
@@ -505,6 +538,12 @@ class AppStrings(val isSerbian: Boolean) {
     val mmsCreationModeWarning: String = s("Warning", "Upozorenje")
     val mmsCreationModeRestricted: String = s("Restricted", "Ograničeno")
 
+    // MMS Download actions
+    val mmsDownloadAction: String = s("Download MMS", "Preuzmi MMS")
+    val mmsDownloadingAction: String = s("Downloading MMS...", "Preuzimanje MMS-a...")
+    val mmsDownloadFailed: String = s("Download failed • Tap to retry", "Preuzimanje neuspešno • Dodirnite za ponovni pokušaj")
+    val mmsPendingTitle: String = s("Incoming MMS", "Dolazna MMS poruka")
+
     // 7. Wireless Emergency Alerts
     val emergencyAlertsTitle: String = s("Wireless emergency alerts", "Upozorenja o hitnom slučaju")
     val emergencyAlertsSub: String = s(
@@ -590,10 +629,10 @@ class AppStrings(val isSerbian: Boolean) {
     val simMessageDeletedToast: String = s("Message deleted from SIM", "Poruka je obrisana sa SIM kartice")
 
     // In-app interaction & sound settings (Screenshot 1)
-    val inAppSoundsTitle: String = s("Outgoing and incoming message sounds", "Zvuk za odlazne i dolazne poruke")
+    val inAppSoundsTitle: String = s("Sound feedback", "Zvučni odzivi")
     val inAppSoundsSub: String = s(
-        "Play sound effects while chatting when sending and receiving messages",
-        "Zvučni signali pri slanju i prijemu poruka unutar razgovora",
+        "Play sound effects while chatting, sending, receiving, and interacting",
+        "Zvučni signali pri interakcijama, slanju i prijemu poruka unutar aplikacije",
     )
     val pinchToZoomTitle: String = s("Pinch to zoom conversation text", "Uštinite da biste zumirali tekst konverzacije")
     val pinchToZoomSub: String = s(
@@ -604,6 +643,11 @@ class AppStrings(val isSerbian: Boolean) {
     val expressiveAnimationsSub: String = s(
         "Smooth bubble physics, transitions, and lively visual effects",
         "Glatke animacije mehurića, prelaza i vizuelnih detalja",
+    )
+    val flashAlertTitle: String = s("Light feedback", "Svetlosni odziv")
+    val flashAlertSub: String = s(
+        "Flash blinking synchronized with the notification sound rhythm",
+        "Treperenje blica sinhronizovano sa ritmom zvuka obaveštenja",
     )
     val hapticsTitle: String = s("Haptic feedback", "Haptički odzivi")
     val hapticsSub: String = s(
@@ -656,8 +700,8 @@ class AppStrings(val isSerbian: Boolean) {
     val swipeActionDelete: String = s("Trash", "Obriši")
     val swipeActionCall: String = s("Call", "Pozovi")
     val swipeActionMarkRead: String = s("Mark read / unread", "Pročitano / Nepročitano")
-    val swipeGestureMarkRead: String = s("Mark read", "Označi pročitano")
-    val swipeGestureMarkUnread: String = s("Mark unread", "Označi nepročitano")
+    val swipeGestureMarkRead: String = s("Read", "Pročitano")
+    val swipeGestureMarkUnread: String = s("Unread", "Nepročitano")
     val swipeActionNone: String = s("Disabled", "Isključeno")
     val deletedMessagesTitle: String = s("Deleted Messages", "Obrisane poruke")
     val deletedMessagesSubtitle: (Int, Int) -> String = { count, days ->

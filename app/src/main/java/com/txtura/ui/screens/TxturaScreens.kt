@@ -2,17 +2,35 @@
 
 package com.txtura.ui.screens
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.ContactsContract
+import android.os.Build
+import java.io.File
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.compose.ui.draw.alpha
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import android.graphics.ImageDecoder
+import android.graphics.drawable.AnimatedImageDrawable
+import android.widget.ImageView
+import androidx.compose.ui.viewinterop.AndroidView
+import com.txtura.data.DockBarItem
+import com.txtura.security.DynamicPermissionManager
+import com.txtura.telephony.CalendarEventManager
+import com.txtura.telephony.DocumentAttachmentHelper
+import com.txtura.telephony.MmsImageCompressor
+import com.txtura.telephony.VoiceMessageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,8 +39,12 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
@@ -85,6 +107,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.text.selection.rememberSelectionState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -120,6 +143,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -136,6 +160,8 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -143,6 +169,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.LinkAnnotation
@@ -356,6 +383,8 @@ fun ConversationsListScreen(
     swipeLeftAction: SwipeAction = SwipeAction.DELETE,
     categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder,
     onUpdateCategoryOrder: (List<ConversationFilter>) -> Unit = {},
+    dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
+    onUpdateDockBarOrder: (List<DockBarItem>) -> Unit = {},
     onOpenThread: (Long) -> Unit,
     onTogglePin: (Long) -> Unit,
     onRequestDeleteThread: (ConversationThread) -> Unit,
@@ -367,7 +396,9 @@ fun ConversationsListScreen(
     onCopyOtp: (String) -> Unit,
     onOpenNewMessage: () -> Unit,
     onOpenDeletedMessages: () -> Unit = {},
+    onOpenHighlightedMessages: () -> Unit = {},
     onMarkAllRead: () -> Unit = {},
+    onSelectionModeChange: (Boolean) -> Unit = {},
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -380,7 +411,6 @@ fun ConversationsListScreen(
     }
     var selectedFilter by remember { mutableStateOf(value = activeCategories.firstOrNull() ?: ConversationFilter.PEOPLE) }
     var showMarkAllReadConfirmation by remember { mutableStateOf(value = false) }
-    var showHighlightedMessagesScreen by remember { mutableStateOf(value = false) }
 
     val totalHighlightedCount = remember(threads) {
         threads.sumOf { thread -> thread.messages.count { it.isHighlighted } }
@@ -391,52 +421,42 @@ fun ConversationsListScreen(
     var selectedThreadIds by remember { mutableStateOf<Set<Long>>(value = emptySet()) }
     var pendingBatchAction by remember { mutableStateOf<BatchSelectionAction?>(value = null) }
 
+    LaunchedEffect(isSelectionMode) {
+        onSelectionModeChange(isSelectionMode)
+    }
+
     BackHandler(enabled = isSelectionMode) {
         isSelectionMode = false
         selectedThreadIds = emptySet()
     }
 
-    if (showHighlightedMessagesScreen) {
-        HighlightedMessagesScreen(
-            threads = threads,
-            mainWallpaper = mainWallpaper,
-            onBack = { showHighlightedMessagesScreen = false },
-            onOpenThread = { threadId ->
-                showHighlightedMessagesScreen = false
-                onOpenThread(threadId)
-            },
-            onToggleHighlight = { threadId, messageId ->
-                SmsMmsRepository.toggleHighlightMessage(context, threadId, messageId)
+    val filteredThreads = remember(threads, searchQuery, selectedFilter) {
+        val deduplicated = if (threads.size <= 1) threads else SmsMmsRepository.deduplicateAndMergeThreads(threads)
+        val isBlankSearch = searchQuery.isBlank()
+        val list = deduplicated.filter { (_, contactName, address, _, _, _, messages, unreadCount, _, isService) ->
+            val matchesFilter = when (selectedFilter) {
+                ConversationFilter.PEOPLE -> !isService
+                ConversationFilter.SERVICES -> isService
+                ConversationFilter.UNREAD -> unreadCount > 0
+                ConversationFilter.ALL -> true
             }
-        )
-    } else {
-        val filteredThreads = remember(threads, searchQuery, selectedFilter) {
-            val deduplicated = if (threads.size <= 1) threads else SmsMmsRepository.deduplicateAndMergeThreads(threads)
-            val isBlankSearch = searchQuery.isBlank()
-            val list = deduplicated.filter { (_, contactName, address, _, _, _, messages, unreadCount, _, isService) ->
-                val matchesFilter = when (selectedFilter) {
-                    ConversationFilter.PEOPLE -> !isService
-                    ConversationFilter.SERVICES -> isService
-                    ConversationFilter.UNREAD -> unreadCount > 0
-                    ConversationFilter.ALL -> true
-                }
-                if (!matchesFilter) return@filter false
+            if (!matchesFilter) return@filter false
 
-                if (isBlankSearch) {
-                    true
-                } else {
-                    contactName.contains(searchQuery, ignoreCase = true) ||
-                        address.contains(searchQuery, ignoreCase = true) ||
-                        messages.any { it.body.contains(searchQuery, ignoreCase = true) }
-                }
+            if (isBlankSearch) {
+                true
+            } else {
+                contactName.contains(searchQuery, ignoreCase = true) ||
+                    address.contains(searchQuery, ignoreCase = true) ||
+                    messages.any { it.body.contains(searchQuery, ignoreCase = true) }
             }
-            list.sortedWith(
-                compareByDescending<ConversationThread> { it.isPinned }
-                    .thenByDescending { it.lastMessage?.timestampMillis ?: 0L },
-            )
         }
+        list.sortedWith(
+            compareByDescending<ConversationThread> { it.isPinned }
+                .thenByDescending { it.lastMessage?.timestampMillis ?: 0L },
+        )
+    }
 
-    GlassBackground(wallpaperConfig = mainWallpaper) {
+    Box(modifier = Modifier.fillMaxSize()) {
         val palette = LocalGlassPalette.current
 
         // Confirmation dialog for "Označi sve kao pročitano" in the top bar
@@ -662,10 +682,27 @@ fun ConversationsListScreen(
             val density = LocalDensity.current
             val swipeThresholdPx = remember(density) { with(density) { 105.dp.toPx() } }
             val swipeMaxDragPx = remember(density) { with(density) { 165.dp.toPx() } }
+            val listState = rememberLazyListState()
+            val coroutineScope = rememberCoroutineScope()
+
+            val handleTogglePin: (Long) -> Unit = { threadId ->
+                val targetThread = filteredThreads.find { it.id == threadId } ?: threads.find { it.id == threadId }
+                val wasPinned = targetThread?.isPinned == true
+                onTogglePin(threadId)
+                coroutineScope.launch {
+                    kotlinx.coroutines.delay(60)
+                    if (wasPinned) {
+                        listState.scrollToItem(0)
+                    } else {
+                        listState.animateScrollToItem(0)
+                    }
+                }
+            }
 
             // Conversations List
             Box(modifier = Modifier.weight(1f)) {
                 LazyColumn(
+                    state = listState,
                     verticalArrangement = Arrangement.spacedBy(
                         if (listLayoutMode == MainListLayoutMode.COMPACT) (6 * metrics.scaleFactor).dp else (10 * metrics.scaleFactor).dp
                     ),
@@ -732,7 +769,7 @@ fun ConversationsListScreen(
                                     maxDragPx = swipeMaxDragPx,
                                     onExecuteSwipeAction = { action ->
                                         when (action) {
-                                            SwipeAction.PIN -> onTogglePin(thread.id)
+                                            SwipeAction.PIN -> handleTogglePin(thread.id)
                                             SwipeAction.DELETE -> onRequestDeleteThread(thread)
                                             SwipeAction.CALL -> onCallSender(thread.address)
                                             SwipeAction.MARK_READ -> onMarkThreadRead(thread.id)
@@ -758,7 +795,7 @@ fun ConversationsListScreen(
                                             isSelectionMode = true
                                             selectedThreadIds += thread.id
                                         },
-                                        onTogglePin = { onTogglePin(thread.id) },
+                                        onTogglePin = { handleTogglePin(thread.id) },
                                         onOpenContact = { onOpenContact(thread.address, thread.contactName) },
                                         onCopyOtp = onCopyOtp
                                     )
@@ -873,46 +910,41 @@ fun ConversationsListScreen(
                     }
                 }
             }
-
-            // Bottom Dock Bar with 5 shortcuts (as sketched by user)
-            AnimatedVisibility(
-                visible = !isSelectionMode,
-                enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
-                exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom)
-            ) {
-                HomeBottomDockBar(
-                    deletedCount = deletedCount,
-                    highlightedCount = totalHighlightedCount,
-                    strings = strings,
-                    onOpenDeletedMessages = onOpenDeletedMessages,
-                    onOpenHighlightedMessages = { showHighlightedMessagesScreen = true },
-                    onOpenNewMessage = onOpenNewMessage,
-                    onMarkAllRead = { showMarkAllReadConfirmation = true },
-                    onOpenSettings = onOpenSettings,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = (4 * metrics.scaleFactor).dp, bottom = metrics.safeBottomClearance)
-                )
-            }
         }
     }
 }
-}
 
 @Composable
-private fun HomeBottomDockBar(
+internal fun HomeBottomDockBar(
     deletedCount: Int,
     highlightedCount: Int,
     strings: AppStrings,
+    dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
+    onUpdateDockBarOrder: (List<DockBarItem>) -> Unit = {},
     onOpenDeletedMessages: () -> Unit,
     onOpenHighlightedMessages: () -> Unit,
     onOpenNewMessage: () -> Unit,
     onMarkAllRead: () -> Unit,
     onOpenSettings: () -> Unit,
+    activeItem: DockBarItem? = null,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalGlassPalette.current
     val metrics = LocalAdaptiveMetrics.current
+    val view = LocalView.current
+    val context = LocalContext.current
+
+    var localOrder by remember { mutableStateOf(dockBarOrder) }
+    var draggedItem by remember { mutableStateOf<DockBarItem?>(null) }
+    var dragOffsetX by remember { mutableFloatStateOf(0f) }
+    val itemWidthsPx = remember { mutableStateMapOf<DockBarItem, Int>() }
+
+    LaunchedEffect(dockBarOrder) {
+        if (draggedItem == null) {
+            localOrder = dockBarOrder.ifEmpty { DockBarItem.defaultOrder }
+        }
+    }
+
     Box(
         modifier = modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center
@@ -946,139 +978,221 @@ private fun HomeBottomDockBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                // 1. Ikonica za označavanje (Označi sve kao pročitano)
-                GlassTooltipIconButton(
-                    icon = TxturaIcons.CheckDouble,
-                    tooltipText = strings.markAllReadTooltip,
-                    tint = palette.accentPrimary,
-                    onClick = onMarkAllRead,
-                    size = metrics.dockIconButtonSize,
-                    iconSize = metrics.dockIconInnerSize
-                )
-
-                // 2. Ikonica za hajlajte (Hajlajtovane poruke od svih kontakata)
-                Box {
-                    GlassTooltipIconButton(
-                        icon = TxturaIcons.HighlightStar,
-                        tooltipText = strings.highlightedMessagesTooltip,
-                        tint = if (highlightedCount > 0) palette.cautionColor else palette.accentPrimary,
-                        onClick = onOpenHighlightedMessages,
-                        size = metrics.dockIconButtonSize,
-                        iconSize = metrics.dockIconInnerSize
-                    )
-                    if (highlightedCount > 0) {
+                localOrder.forEach { item ->
+                    key(item) {
+                        val isDragged = item == draggedItem
                         Box(
                             contentAlignment = Alignment.Center,
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .size((18 * metrics.scaleFactor).dp)
-                                .clip(CircleShape)
-                                .background(palette.cautionColor)
+                                .weight(1f)
+                                .zIndex(if (isDragged) 10f else 0f)
+                                .onSizeChanged { size ->
+                                    itemWidthsPx[item] = size.width
+                                }
+                                .graphicsLayer {
+                                    translationX = if (isDragged) dragOffsetX else 0f
+                                    scaleX = if (isDragged) 1.15f else 1f
+                                    scaleY = if (isDragged) 1.15f else 1f
+                                }
+                                .pointerInput(item) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            TxturaHaptics.longPress(view, context)
+                                            draggedItem = item
+                                            dragOffsetX = 0f
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragOffsetX += dragAmount.x
+                                            val currentIndex = localOrder.indexOf(item)
+                                            if (currentIndex != -1) {
+                                                if (dragOffsetX > 0f && currentIndex < localOrder.lastIndex) {
+                                                    val nextItem = localOrder[currentIndex + 1]
+                                                    val nextWidth = (itemWidthsPx[nextItem] ?: 120).toFloat()
+                                                    val threshold = nextWidth * 0.5f
+                                                    if (dragOffsetX > threshold) {
+                                                        val updated = localOrder.toMutableList().apply {
+                                                            val itm = removeAt(currentIndex)
+                                                            add(currentIndex + 1, itm)
+                                                        }
+                                                        localOrder = updated
+                                                        dragOffsetX -= nextWidth
+                                                        TxturaHaptics.tick(view, context)
+                                                        onUpdateDockBarOrder(updated)
+                                                    }
+                                                } else if (dragOffsetX < 0f && currentIndex > 0) {
+                                                    val prevItem = localOrder[currentIndex - 1]
+                                                    val prevWidth = (itemWidthsPx[prevItem] ?: 120).toFloat()
+                                                    val threshold = -(prevWidth * 0.5f)
+                                                    if (dragOffsetX < threshold) {
+                                                        val updated = localOrder.toMutableList().apply {
+                                                            val itm = removeAt(currentIndex)
+                                                            add(currentIndex - 1, itm)
+                                                        }
+                                                        localOrder = updated
+                                                        dragOffsetX += prevWidth
+                                                        TxturaHaptics.tick(view, context)
+                                                        onUpdateDockBarOrder(updated)
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            draggedItem = null
+                                            dragOffsetX = 0f
+                                            TxturaHaptics.confirm(view, context)
+                                            onUpdateDockBarOrder(localOrder)
+                                        },
+                                        onDragCancel = {
+                                            draggedItem = null
+                                            dragOffsetX = 0f
+                                        }
+                                    )
+                                }
                         ) {
-                            Text(
-                                text = highlightedCount.coerceAtMost(99).toString(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.Black,
-                                fontSize = (10 * metrics.scaleFactor).sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            when (item) {
+                                DockBarItem.MARK_ALL_READ -> {
+                                    GlassTooltipIconButton(
+                                        icon = TxturaIcons.CheckDouble,
+                                        tooltipText = strings.markAllReadTooltip,
+                                        tint = if (activeItem == item) palette.accentSecondary else palette.accentPrimary,
+                                        onClick = onMarkAllRead,
+                                        size = metrics.dockIconButtonSize,
+                                        iconSize = metrics.dockIconInnerSize,
+                                        enableTooltip = false
+                                    )
+                                }
+                                DockBarItem.HIGHLIGHTED -> {
+                                    Box {
+                                        GlassTooltipIconButton(
+                                            icon = TxturaIcons.HighlightStar,
+                                            tooltipText = strings.highlightedMessagesTooltip,
+                                            tint = if (highlightedCount > 0 || activeItem == item) palette.cautionColor else palette.accentPrimary,
+                                            onClick = onOpenHighlightedMessages,
+                                            size = metrics.dockIconButtonSize,
+                                            iconSize = metrics.dockIconInnerSize,
+                                            enableTooltip = false
+                                        )
+                                        if (highlightedCount > 0) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .size((18 * metrics.scaleFactor).dp)
+                                                    .clip(CircleShape)
+                                                    .background(palette.cautionColor)
+                                            ) {
+                                                Text(
+                                                    text = highlightedCount.coerceAtMost(99).toString(),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color.Black,
+                                                    fontSize = (10 * metrics.scaleFactor).sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                DockBarItem.NEW_MESSAGE -> {
+                                    val newMsgInteractionSource = remember { MutableInteractionSource() }
+                                    val isNewMsgPressed by newMsgInteractionSource.collectIsPressedAsState()
+                                    val isExpressiveDock = LocalExpressiveAnimations.current
+                                    val newMsgScale by animateFloatAsState(
+                                        targetValue = if (isNewMsgPressed && isExpressiveDock) 0.89f else 1f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        ),
+                                        label = "newMsgButtonScale"
+                                    )
+
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(metrics.centerActionSize)
+                                            .graphicsLayer {
+                                                scaleX = newMsgScale
+                                                scaleY = newMsgScale
+                                            }
+                                            .clip(CircleShape)
+                                            .background(
+                                                Brush.linearGradient(
+                                                    colors = listOf(
+                                                        palette.accentPrimary,
+                                                        palette.outgoingBubbleEnd
+                                                    )
+                                                )
+                                            )
+                                            .border(
+                                                width = 1.5.dp,
+                                                brush = Brush.verticalGradient(
+                                                    colors = listOf(
+                                                        Color.White.copy(alpha = 0.75f),
+                                                        palette.accentPrimary.copy(alpha = 0.90f)
+                                                    )
+                                                ),
+                                                shape = CircleShape
+                                            )
+                                            .clickable(
+                                                interactionSource = newMsgInteractionSource,
+                                                indication = null,
+                                                onClick = onOpenNewMessage
+                                            )
+                                    ) {
+                                        Icon(
+                                            imageVector = TxturaIcons.Plus,
+                                            contentDescription = strings.newMessage,
+                                            tint = if (palette.isDark) Color.Black else Color.White,
+                                            modifier = Modifier.size(metrics.centerActionIconSize)
+                                        )
+                                    }
+                                }
+                                DockBarItem.DELETED -> {
+                                    Box {
+                                        GlassTooltipIconButton(
+                                            icon = TxturaIcons.Delete,
+                                            tooltipText = strings.deletedMessagesTitle,
+                                            tint = if (activeItem == item) palette.cautionColor else palette.accentPrimary,
+                                            onClick = onOpenDeletedMessages,
+                                            size = metrics.dockIconButtonSize,
+                                            iconSize = metrics.dockIconInnerSize,
+                                            enableTooltip = false
+                                        )
+                                        if (deletedCount > 0) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .size((18 * metrics.scaleFactor).dp)
+                                                    .clip(CircleShape)
+                                                    .background(palette.accentPrimary)
+                                            ) {
+                                                Text(
+                                                    text = deletedCount.coerceAtMost(99).toString(),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = if (palette.isDark) Color.Black else Color.White,
+                                                    fontSize = (10 * metrics.scaleFactor).sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                DockBarItem.SETTINGS -> {
+                                    GlassTooltipIconButton(
+                                        icon = TxturaIcons.SettingsGear,
+                                        tooltipText = strings.settingsTooltip,
+                                        tint = if (activeItem == item) palette.accentSecondary else palette.accentPrimary,
+                                        onClick = onOpenSettings,
+                                        size = metrics.dockIconButtonSize,
+                                        iconSize = metrics.dockIconInnerSize,
+                                        enableTooltip = false
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-
-                // 3. Ikonica za novu poruku (Plus centriran u sredini)
-                val newMsgInteractionSource = remember { MutableInteractionSource() }
-                val isNewMsgPressed by newMsgInteractionSource.collectIsPressedAsState()
-                val isExpressiveDock = LocalExpressiveAnimations.current
-                val newMsgScale by animateFloatAsState(
-                    targetValue = if (isNewMsgPressed && isExpressiveDock) 0.89f else 1f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    ),
-                    label = "newMsgButtonScale"
-                )
-
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(metrics.centerActionSize)
-                        .graphicsLayer {
-                            scaleX = newMsgScale
-                            scaleY = newMsgScale
-                        }
-                        .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(
-                                    palette.accentPrimary,
-                                    palette.outgoingBubbleEnd
-                                )
-                            )
-                        )
-                        .border(
-                            width = 1.5.dp,
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.White.copy(alpha = 0.75f),
-                                    palette.accentPrimary.copy(alpha = 0.90f)
-                                )
-                            ),
-                            shape = CircleShape
-                        )
-                        .clickable(
-                            interactionSource = newMsgInteractionSource,
-                            indication = null,
-                            onClick = onOpenNewMessage
-                        )
-                ) {
-                    Icon(
-                        imageVector = TxturaIcons.Plus,
-                        contentDescription = strings.newMessage,
-                        tint = if (palette.isDark) Color.Black else Color.White,
-                        modifier = Modifier.size(metrics.centerActionIconSize)
-                    )
-                }
-
-                // 4. Obrisane poruke (Smeće)
-                Box {
-                    GlassTooltipIconButton(
-                        icon = TxturaIcons.Delete,
-                        tooltipText = strings.deletedMessagesTitle,
-                        tint = palette.accentPrimary,
-                        onClick = onOpenDeletedMessages,
-                        size = metrics.dockIconButtonSize,
-                        iconSize = metrics.dockIconInnerSize
-                    )
-                    if (deletedCount > 0) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .size((18 * metrics.scaleFactor).dp)
-                                .clip(CircleShape)
-                                .background(palette.accentPrimary)
-                        ) {
-                            Text(
-                                text = deletedCount.coerceAtMost(99).toString(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (palette.isDark) Color.Black else Color.White,
-                                fontSize = (10 * metrics.scaleFactor).sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-
-                // 5. Podešavanja
-                GlassTooltipIconButton(
-                    icon = TxturaIcons.SettingsGear,
-                    tooltipText = strings.settingsTooltip,
-                    tint = palette.accentPrimary,
-                    onClick = onOpenSettings,
-                    size = metrics.dockIconButtonSize,
-                    iconSize = metrics.dockIconInnerSize
-                )
             }
         }
     }
@@ -1095,7 +1209,14 @@ fun HighlightedMessagesScreen(
     mainWallpaper: WallpaperConfig = WallpaperConfig(),
     onBack: () -> Unit,
     onOpenThread: (Long) -> Unit,
-    onToggleHighlight: (Long, Long) -> Unit
+    onToggleHighlight: (Long, Long) -> Unit,
+    deletedCount: Int = 0,
+    dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
+    onUpdateDockBarOrder: (List<DockBarItem>) -> Unit = {},
+    onOpenDeletedMessages: () -> Unit = {},
+    onOpenNewMessage: () -> Unit = {},
+    onMarkAllRead: () -> Unit = {},
+    onOpenSettings: () -> Unit = {}
 ) {
     val palette = LocalGlassPalette.current
     val metrics = LocalAdaptiveMetrics.current
@@ -1111,12 +1232,11 @@ fun HighlightedMessagesScreen(
 
     BackHandler(onBack = onBack)
 
-    GlassBackground(wallpaperConfig = mainWallpaper) {
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding()
                 .padding(horizontal = 16.dp)
         ) {
             Spacer(modifier = Modifier.height(10.dp))
@@ -1209,14 +1329,17 @@ fun HighlightedMessagesScreen(
                                 text = strings.noHighlightedMessages,
                                 style = MaterialTheme.typography.titleMedium,
                                 color = palette.textPrimary,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
                                 text = strings.noHighlightedMessagesSub,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = palette.textSecondary,
-                                textAlign = TextAlign.Center
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
@@ -1619,12 +1742,12 @@ fun SettingsScreen(
     onTogglePinchToZoom: (Boolean) -> Unit = {},
     expressiveAnimationsEnabled: Boolean = true,
     onToggleExpressiveAnimations: (Boolean) -> Unit = {},
+    flashAlertEnabled: Boolean = false,
+    onToggleFlashAlert: (Boolean) -> Unit = {},
     hapticsEnabled: Boolean = true,
     onToggleHaptics: (Boolean) -> Unit = {},
     smsNotificationSound: SmsNotificationSound = SmsNotificationSound.SYSTEM,
     onSelectSmsNotificationSound: (SmsNotificationSound) -> Unit = {},
-    blockScreenshotsEnabled: Boolean = false,
-    onToggleBlockScreenshots: (Boolean) -> Unit = {},
     bubblesEnabled: Boolean = true,
     onToggleBubbles: (Boolean) -> Unit = {},
     onOpenSystemBubbleSettings: () -> Unit = {},
@@ -1637,6 +1760,9 @@ fun SettingsScreen(
     blockedSenders: List<String> = emptyList(),
     lastBackupTimestamp: Long = 0L,
     hasSmsPermission: Boolean,
+    hasMicrophonePermission: Boolean = false,
+    hasContactsPermission: Boolean = false,
+    hasNotificationPermission: Boolean = true,
     isDefaultSmsApp: Boolean,
     rationaleMessage: String?,
     onBack: () -> Unit,
@@ -1661,6 +1787,9 @@ fun SettingsScreen(
     onRestoreLocalBackup: () -> Unit = {},
     onShareBackupFile: () -> Unit = {},
     onRequestSmsPermissions: () -> Unit,
+    onRequestMicrophonePermission: () -> Unit = {},
+    onRequestContactsPermission: () -> Unit = {},
+    onRequestNotificationPermission: () -> Unit = {},
     onRequestDefaultSmsRole: () -> Unit,
     onOpenSystemAppSettings: () -> Unit,
     onLockAppNow: () -> Unit = {},
@@ -1672,10 +1801,10 @@ fun SettingsScreen(
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val vName = pkgInfo.versionName ?: "2.4"
+            val vName = pkgInfo.versionName ?: "3.0"
             val vCode = pkgInfo.longVersionCode
             vName to vCode
-        }.getOrDefault("2.4" to 7L)
+        }.getOrDefault("3.0" to 8L)
     }
 
     val coroutineScope = rememberCoroutineScope()
@@ -1737,7 +1866,7 @@ fun SettingsScreen(
     }
 
     CompositionLocalProvider(LocalActiveDropdownId provides activeDropdownId) {
-        GlassBackground(wallpaperConfig = mainWallpaper) {
+        Box(modifier = Modifier.fillMaxSize()) {
             val palette = LocalGlassPalette.current
 
             val isExpressive = LocalExpressiveAnimations.current
@@ -1785,7 +1914,6 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .navigationBarsPadding()
                     .padding(horizontal = 16.dp)
             ) {
                 Spacer(modifier = Modifier.height(10.dp))
@@ -1855,7 +1983,7 @@ fun SettingsScreen(
 
                         // 2. Notifications, Sounds & Haptics (Obaveštenja, zvuk i odziv)
                         SettingsCategoryWindowCard(
-                            icon = TxturaIcons.ChatBubble,
+                            icon = TxturaIcons.NotificationBell,
                             iconTint = palette.accentPrimary,
                             title = strings.settingsCategoryNotifications,
                             accentHighlight = null,
@@ -1871,7 +1999,7 @@ fun SettingsScreen(
 
                         // 4. Privacy & Security (Privatnost i bezbednost)
                         SettingsCategoryWindowCard(
-                            icon = TxturaIcons.ShieldCheck,
+                            icon = TxturaIcons.SecurityLock,
                             iconTint = palette.accentPrimary,
                             title = strings.settingsCategoryPrivacy,
                             accentHighlight = null,
@@ -1887,7 +2015,7 @@ fun SettingsScreen(
 
                         // 6. Messaging & Network (SMS i MMS podešavanja)
                         SettingsCategoryWindowCard(
-                            icon = TxturaIcons.Send,
+                            icon = TxturaIcons.CellularNetwork,
                             iconTint = palette.accentPrimary,
                             title = strings.settingsCategoryMessaging,
                             accentHighlight = null,
@@ -2466,12 +2594,20 @@ fun SettingsScreen(
                                     )
                                 }
 
-                                // 2B. Emituj zvuk za odlazne i dolazne poruke (Hear Outgoing and Incoming Message Sounds)
+                                // 2B. Zvučni odzivi (Sound Feedback)
                                 SettingsSwitchRow(
                                     title = strings.inAppSoundsTitle,
                                     subtitle = strings.inAppSoundsSub,
                                     checked = inAppSoundsEnabled,
                                     onCheckedChange = onToggleInAppSounds
+                                )
+
+                                // Svetlosni odziv (Flash Alert - rhythm synchronized torch notification)
+                                SettingsSwitchRow(
+                                    title = strings.flashAlertTitle,
+                                    subtitle = strings.flashAlertSub,
+                                    checked = flashAlertEnabled,
+                                    onCheckedChange = onToggleFlashAlert
                                 )
 
                                 // 2C. Haptički odzivi (Haptic Feedback)
@@ -2926,8 +3062,9 @@ fun SettingsScreen(
                                             fontWeight = FontWeight.Bold
                                         )
 
+                                        // 1. SMS i MMS dozvole
                                         SettingsSwitchRow(
-                                            title = strings.permissionsSectionTitle,
+                                            title = strings.permSmsTitle,
                                             subtitle = if (hasSmsPermission) strings.permGranted else strings.permDemoNotGranted,
                                             checked = hasSmsPermission
                                         ) {
@@ -2942,6 +3079,36 @@ fun SettingsScreen(
                                             )
                                         }
 
+                                        // 2. Dozvola za mikrofon (za slanje glasovnih poruka)
+                                        SettingsSwitchRow(
+                                            title = strings.permMicrophoneTitle,
+                                            subtitle = if (hasMicrophonePermission) strings.permMicrophoneSubGranted else strings.permMicrophoneSubNotGranted,
+                                            checked = hasMicrophonePermission
+                                        ) {
+                                            if (!hasMicrophonePermission) onRequestMicrophonePermission() else onOpenSystemAppSettings()
+                                        }
+
+                                        // 3. Dozvola za kontakte
+                                        SettingsSwitchRow(
+                                            title = strings.permContactsTitle,
+                                            subtitle = if (hasContactsPermission) strings.permGranted else strings.permDemoNotGranted,
+                                            checked = hasContactsPermission
+                                        ) {
+                                            if (!hasContactsPermission) onRequestContactsPermission() else onOpenSystemAppSettings()
+                                        }
+
+                                        // 4. Dozvola za obaveštenja (Android 13+)
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                            SettingsSwitchRow(
+                                                title = strings.permNotificationsTitle,
+                                                subtitle = if (hasNotificationPermission) strings.permGranted else strings.permDemoNotGranted,
+                                                checked = hasNotificationPermission
+                                            ) {
+                                                if (!hasNotificationPermission) onRequestNotificationPermission() else onOpenSystemAppSettings()
+                                            }
+                                        }
+
+                                        // 5. Podrazumevana SMS aplikacija
                                         SettingsSwitchRow(
                                             title = strings.defaultSmsRoleLabel,
                                             subtitle = if (isDefaultSmsApp) strings.roleActive else strings.roleNotSet,
@@ -3376,10 +3543,7 @@ fun SettingsScreen(
                                     }
                                 }
 
-                                // 2B. Zabrana skrinšotovanja četova i liste poruka (Block Screenshots)
-                                var currentBlockScreenshots by remember(blockScreenshotsEnabled) {
-                                    mutableStateOf(blockScreenshotsEnabled)
-                                }
+                                // 3. Lokalna enkripcija baze podataka (Local Database Encryption)
                                 GlassCard(
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(18.dp),
@@ -3401,75 +3565,35 @@ fun SettingsScreen(
                                             )
                                             Spacer(modifier = Modifier.width(10.dp))
                                             Text(
-                                                text = strings.blockScreenshotsTitle,
+                                                text = strings.dbEncryptionTitle,
                                                 style = MaterialTheme.typography.titleMedium,
                                                 color = palette.textPrimary,
-                                                fontWeight = FontWeight.Bold
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.weight(1f)
                                             )
                                         }
 
-                                        Text(
-                                            text = strings.blockScreenshotsSub,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = palette.textSecondary
-                                        )
-
-                                        SettingsSwitchRow(
-                                            title = strings.blockScreenshotsSwitchLabel,
-                                            checked = currentBlockScreenshots,
-                                            onCheckedChange = { checked ->
-                                                currentBlockScreenshots = checked
-                                                AppSecurityManager.setBlockScreenshotsEnabled(context, checked)
-                                                onToggleBlockScreenshots(checked)
-                                            }
-                                        )
-                                    }
-                                }
-
-                                // 3. Lokalna enkripcija baze podataka (Local Database Encryption)
-                                GlassCard(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(18.dp),
-                                    contentPadding = PaddingValues(14.dp)
-                                ) {
-                                    Column(
-                                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            modifier = Modifier.fillMaxWidth()
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(50))
+                                                .background(if (dbEncryptionEnabled) palette.safeColor.copy(alpha = 0.15f) else palette.textSecondary.copy(alpha = 0.15f))
+                                                .border(
+                                                    0.8.dp,
+                                                    if (dbEncryptionEnabled) palette.safeColor.copy(alpha = 0.45f) else palette.textSecondary.copy(alpha = 0.35f),
+                                                    RoundedCornerShape(50)
+                                                )
+                                                .padding(horizontal = 10.dp, vertical = 4.dp)
                                         ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier.weight(1f)
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Icon(
-                                                    imageVector = TxturaIcons.ShieldCheck,
-                                                    contentDescription = null,
-                                                    tint = palette.accentPrimary,
-                                                    modifier = Modifier.size(20.dp)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(6.dp)
+                                                        .clip(CircleShape)
+                                                        .background(if (dbEncryptionEnabled) palette.safeColor else palette.textSecondary)
                                                 )
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Text(
-                                                    text = strings.dbEncryptionTitle,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    color = palette.textPrimary,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(50))
-                                                    .background(if (dbEncryptionEnabled) palette.safeColor.copy(alpha = 0.15f) else palette.textSecondary.copy(alpha = 0.15f))
-                                                    .border(
-                                                        0.8.dp,
-                                                        if (dbEncryptionEnabled) palette.safeColor.copy(alpha = 0.45f) else palette.textSecondary.copy(alpha = 0.35f),
-                                                        RoundedCornerShape(50)
-                                                    )
-                                                    .padding(horizontal = 9.dp, vertical = 3.dp)
-                                            ) {
                                                 Text(
                                                     text = strings.dbEncryptionBadge,
                                                     style = MaterialTheme.typography.labelSmall,
@@ -3486,7 +3610,7 @@ fun SettingsScreen(
                                         )
 
                                         SettingsSwitchRow(
-                                            title = strings.dbEncryptionTitle,
+                                            title = strings.dbEncryptionSwitchLabel,
                                             checked = dbEncryptionEnabled,
                                             onCheckedChange = { checked ->
                                                 dbEncryptionEnabled = checked
@@ -3510,38 +3634,45 @@ fun SettingsScreen(
                                     ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
                                             modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(
+                                                imageVector = TxturaIcons.Link,
+                                                contentDescription = null,
+                                                tint = palette.accentPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Text(
+                                                text = strings.sslPinningTitle,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = palette.textPrimary,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(50))
+                                                .background(if (sslPinningEnabled) palette.safeColor.copy(alpha = 0.15f) else palette.textSecondary.copy(alpha = 0.15f))
+                                                .border(
+                                                    0.8.dp,
+                                                    if (sslPinningEnabled) palette.safeColor.copy(alpha = 0.45f) else palette.textSecondary.copy(alpha = 0.35f),
+                                                    RoundedCornerShape(50)
+                                                )
+                                                .padding(horizontal = 10.dp, vertical = 4.dp)
                                         ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier.weight(1f)
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Icon(
-                                                    imageVector = TxturaIcons.Link,
-                                                    contentDescription = null,
-                                                    tint = palette.accentPrimary,
-                                                    modifier = Modifier.size(20.dp)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(6.dp)
+                                                        .clip(CircleShape)
+                                                        .background(if (sslPinningEnabled) palette.safeColor else palette.textSecondary)
                                                 )
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Text(
-                                                    text = strings.sslPinningTitle,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    color = palette.textPrimary,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(50))
-                                                    .background(if (sslPinningEnabled) palette.safeColor.copy(alpha = 0.15f) else palette.textSecondary.copy(alpha = 0.15f))
-                                                    .border(
-                                                        0.8.dp,
-                                                        if (sslPinningEnabled) palette.safeColor.copy(alpha = 0.45f) else palette.textSecondary.copy(alpha = 0.35f),
-                                                        RoundedCornerShape(50)
-                                                    )
-                                                    .padding(horizontal = 9.dp, vertical = 3.dp)
-                                            ) {
                                                 Text(
                                                     text = strings.sslPinningBadge,
                                                     style = MaterialTheme.typography.labelSmall,
@@ -3558,7 +3689,7 @@ fun SettingsScreen(
                                         )
 
                                         SettingsSwitchRow(
-                                            title = strings.sslPinningTitle,
+                                            title = strings.sslPinningSwitchLabel,
                                             checked = sslPinningEnabled,
                                             onCheckedChange = { checked ->
                                                 sslPinningEnabled = checked
@@ -3580,38 +3711,45 @@ fun SettingsScreen(
                                     ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
                                             modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(
+                                                imageVector = TxturaIcons.EyePreview,
+                                                contentDescription = null,
+                                                tint = palette.accentPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Text(
+                                                text = strings.metadataMinimizationTitle,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = palette.textPrimary,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(50))
+                                                .background(if (metadataMinimizationEnabled) palette.safeColor.copy(alpha = 0.15f) else palette.textSecondary.copy(alpha = 0.15f))
+                                                .border(
+                                                    0.8.dp,
+                                                    if (metadataMinimizationEnabled) palette.safeColor.copy(alpha = 0.45f) else palette.textSecondary.copy(alpha = 0.35f),
+                                                    RoundedCornerShape(50)
+                                                )
+                                                .padding(horizontal = 10.dp, vertical = 4.dp)
                                         ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier.weight(1f)
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Icon(
-                                                    imageVector = TxturaIcons.EyePreview,
-                                                    contentDescription = null,
-                                                    tint = palette.accentPrimary,
-                                                    modifier = Modifier.size(20.dp)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(6.dp)
+                                                        .clip(CircleShape)
+                                                        .background(if (metadataMinimizationEnabled) palette.safeColor else palette.textSecondary)
                                                 )
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Text(
-                                                    text = strings.metadataMinimizationTitle,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    color = palette.textPrimary,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(50))
-                                                    .background(if (metadataMinimizationEnabled) palette.safeColor.copy(alpha = 0.15f) else palette.textSecondary.copy(alpha = 0.15f))
-                                                    .border(
-                                                        0.8.dp,
-                                                        if (metadataMinimizationEnabled) palette.safeColor.copy(alpha = 0.45f) else palette.textSecondary.copy(alpha = 0.35f),
-                                                        RoundedCornerShape(50)
-                                                    )
-                                                    .padding(horizontal = 9.dp, vertical = 3.dp)
-                                            ) {
                                                 Text(
                                                     text = strings.metadataMinimizationBadge,
                                                     style = MaterialTheme.typography.labelSmall,
@@ -3628,7 +3766,7 @@ fun SettingsScreen(
                                         )
 
                                         SettingsSwitchRow(
-                                            title = strings.metadataMinimizationTitle,
+                                            title = strings.metadataMinimizationSwitchLabel,
                                             checked = metadataMinimizationEnabled,
                                             onCheckedChange = { checked ->
                                                 metadataMinimizationEnabled = checked
@@ -3650,39 +3788,45 @@ fun SettingsScreen(
                                     ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
                                             modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(
+                                                imageVector = if (!rootStatus.isRooted) TxturaIcons.ShieldCheck else TxturaIcons.Warning,
+                                                contentDescription = null,
+                                                tint = if (!rootStatus.isRooted) palette.safeColor else palette.cautionColor,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Text(
+                                                text = strings.rootDetectionTitle,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = palette.textPrimary,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(50))
+                                                .background(if (!rootStatus.isRooted) palette.safeColor.copy(alpha = 0.15f) else palette.cautionColor.copy(alpha = 0.15f))
+                                                .border(
+                                                    0.8.dp,
+                                                    if (!rootStatus.isRooted) palette.safeColor.copy(alpha = 0.45f) else palette.cautionColor.copy(alpha = 0.45f),
+                                                    RoundedCornerShape(50)
+                                                )
+                                                .padding(horizontal = 10.dp, vertical = 4.dp)
                                         ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier.weight(1f)
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Icon(
-                                                    imageVector = if (!rootStatus.isRooted) TxturaIcons.ShieldCheck else TxturaIcons.Warning,
-                                                    contentDescription = null,
-                                                    tint = if (!rootStatus.isRooted) palette.safeColor else palette.cautionColor,
-                                                    modifier = Modifier.size(20.dp)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(6.dp)
+                                                        .clip(CircleShape)
+                                                        .background(if (!rootStatus.isRooted) palette.safeColor else palette.cautionColor)
                                                 )
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Text(
-                                                    text = strings.rootDetectionTitle,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    color = palette.textPrimary,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(50))
-                                                    .background(if (!rootStatus.isRooted) palette.safeColor.copy(alpha = 0.15f) else palette.cautionColor.copy(alpha = 0.15f))
-                                                    .border(
-                                                        0.8.dp,
-                                                        if (!rootStatus.isRooted) palette.safeColor.copy(alpha = 0.45f) else palette.cautionColor.copy(alpha = 0.45f),
-                                                        RoundedCornerShape(50)
-                                                    )
-                                                    .padding(horizontal = 9.dp, vertical = 3.dp)
-                                            ) {
                                                 Text(
                                                     text = if (!rootStatus.isRooted) strings.rootStateSafe else strings.rootStateCompromised,
                                                     style = MaterialTheme.typography.labelSmall,
@@ -4515,6 +4659,7 @@ private fun <T> SettingsSelectorRow(
                             activeDropdown.value = null
                         }
                     },
+                    modifier = Modifier.widthIn(min = 180.dp, max = 280.dp),
                     shape = menuShape,
                     containerColor = palette.popupContainerColor,
                     tonalElevation = 0.dp,
@@ -4535,6 +4680,7 @@ private fun <T> SettingsSelectorRow(
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
                             trailingIcon = if (isSelected) {
                                 {
                                     Icon(
@@ -6406,6 +6552,7 @@ fun ConversationDetailScreen(
     onBlockContact: () -> Unit = {},
     onToggleSenderCategory: () -> Unit = {},
     onPickMmsPhoto: () -> Unit,
+    onAttachUri: (Uri) -> Unit = {},
     onClearAttachment: () -> Unit,
     onSendMessage: (String, Uri?) -> Unit,
     onScheduleMessage: (String, Uri?, Long) -> Unit = { _, _, _ -> },
@@ -6459,6 +6606,144 @@ fun ConversationDetailScreen(
 
     var showShareContactDialog by remember { mutableStateOf(false) }
     var showBroadcastDialog by remember { mutableStateOf(false) }
+    var showCalendarPickerDialog by remember { mutableStateOf(false) }
+
+    val calendarPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            showCalendarPickerDialog = true
+        } else {
+            Toast.makeText(
+                context,
+                if (strings.isSerbian) "Dozvola za kalendar je odbijena." else "Calendar permission denied.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            showShareContactDialog = true
+        } else {
+            Toast.makeText(
+                context,
+                if (strings.isSerbian) "Dozvola za kontakte je odbijena." else "Contacts permission denied.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val handleKeyboardMedia: (Uri) -> Boolean = { mediaUri ->
+        val isGif = isGifUri(context, mediaUri)
+        val sizeBytes = try {
+            context.contentResolver.openAssetFileDescriptor(mediaUri, "r")?.use { it.length }
+                ?: context.contentResolver.openInputStream(mediaUri)?.use { it.available().toLong() }
+                ?: 0L
+        } catch (_: Exception) { 0L }
+
+        val maxBytes = MmsImageCompressor.MAX_MMS_IMAGE_BYTES // 299_900L
+        if (sizeBytes > maxBytes) {
+            val sizeKb = (sizeBytes / 1024.0).let { "%.1f".format(it) }
+            Toast.makeText(
+                context,
+                if (strings.isSerbian) "GIF animacija prelazi maksimalnu veličinu od 299.9 kB ($sizeKb kB). Izaberite manji GIF."
+                else "GIF animation exceeds maximum allowed size of 299.9 kB ($sizeKb kB). Please choose a smaller GIF.",
+                Toast.LENGTH_LONG
+            ).show()
+            false
+        } else {
+            val cacheDir = File(context.cacheDir, "mms_attachments").apply { mkdirs() }
+            val ext = if (isGif) "gif" else "jpg"
+            val cachedFile = File(cacheDir, "mms_keyboard_${System.currentTimeMillis()}.$ext")
+            try {
+                context.contentResolver.openInputStream(mediaUri)?.use { input ->
+                    cachedFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                val contentUri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    cachedFile
+                )
+                onAttachUri(contentUri)
+                val sizeKb = (cachedFile.length() / 1024.0).let { "%.1f".format(it) }
+                Toast.makeText(
+                    context,
+                    if (strings.isSerbian) "GIF animacija dodata kao MMS prilog ($sizeKb kB)"
+                    else "GIF animation added as MMS attachment ($sizeKb kB)",
+                    Toast.LENGTH_SHORT
+                ).show()
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
+    DisposableEffect(view) {
+        val mimeTypes = arrayOf("image/gif", "image/*")
+        ViewCompat.setOnReceiveContentListener(view, mimeTypes) { _, payload ->
+            val split = payload.partition { item -> item.uri != null }
+            val mediaContent = split.first
+            if (mediaContent != null) {
+                val clipData = mediaContent.clip
+                for (i in 0 until clipData.itemCount) {
+                    val u = clipData.getItemAt(i).uri
+                    if (u != null) {
+                        handleKeyboardMedia(u)
+                    }
+                }
+            }
+            split.second
+        }
+        onDispose {
+            ViewCompat.setOnReceiveContentListener(view, mimeTypes, null)
+        }
+    }
+
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val (cachedUri, error) = DocumentAttachmentHelper.processDocumentUri(context, uri)
+            if (cachedUri != null) {
+                onAttachUri(cachedUri)
+            } else if (error != null) {
+                Toast.makeText(context, error, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    var hasMicPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val recordAudioLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasMicPermission = isGranted
+        if (isGranted) {
+            Toast.makeText(
+                context,
+                if (strings.isSerbian) "Dozvola za mikrofon odobrena. Zadržite mikrofon za snimanje."
+                else "Microphone permission granted. Hold microphone to record.",
+                Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            Toast.makeText(
+                context,
+                strings.voiceMessagePermissionRequired,
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
     val systemShareContactPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -6495,7 +6780,15 @@ fun ConversationDetailScreen(
         }
     }
 
-    val listState = rememberLazyListState()
+    val inputFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    val initialMessageScrollIndex = remember(thread.id) {
+        (thread.messages.size - 1).coerceAtLeast(0)
+    }
+    val listState = key(thread.id) {
+        rememberLazyListState(initialFirstVisibleItemIndex = initialMessageScrollIndex)
+    }
     val coroutineScope = rememberCoroutineScope()
     val pinnedMessages = thread.pinnedMessages
     var activePinnedIndex by remember(thread.id) { mutableStateOf(0) }
@@ -6556,6 +6849,8 @@ fun ConversationDetailScreen(
     // If user leaves the conversation while a 6s countdown was NOT canceled, dispatch the message so it isn't lost
     DisposableEffect(Unit) {
         onDispose {
+            VoiceMessageManager.stopPlayback()
+            VoiceMessageManager.cancelRecording()
             currentPendingDelayed?.let { uncancelled ->
                 currentOnSendMessage(uncancelled.body, uncancelled.attachmentUri)
             }
@@ -6587,9 +6882,12 @@ fun ConversationDetailScreen(
                 status = DeliveryStatus.SENT,
                 securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(pending.body),
                 attachment = pending.attachmentUri?.let { uri ->
+                    val isAudio = uri.path?.endsWith(".amr", ignoreCase = true) == true ||
+                        uri.toString().contains("voice_") ||
+                        pending.body == strings.voiceMessageTitle
                     MmsAttachment(
                         uri = uri,
-                        mimeType = "image/jpeg",
+                        mimeType = if (isAudio) "audio/amr" else "image/jpeg",
                         caption = pending.body
                     )
                 }
@@ -6601,10 +6899,18 @@ fun ConversationDetailScreen(
     var showMoreMenu by remember { mutableStateOf(false) }
     var showConfirmBlockContactDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(thread.messages.size, pendingOutgoingPreviewMessage?.id) {
+    var isInitialScrollDone by remember(thread.id) { mutableStateOf(false) }
+
+    LaunchedEffect(thread.id, thread.messages.size, pendingOutgoingPreviewMessage?.id) {
         val totalItems = thread.messages.size + (if (pendingOutgoingPreviewMessage != null) 1 else 0)
         if (totalItems > 0) {
-            listState.animateScrollToItem(totalItems - 1)
+            val target = totalItems - 1
+            if (!isInitialScrollDone) {
+                isInitialScrollDone = true
+                listState.scrollToItem(target)
+            } else {
+                listState.animateScrollToItem(target)
+            }
         }
     }
 
@@ -6948,6 +7254,16 @@ fun ConversationDetailScreen(
             )
         }
 
+        if (showCalendarPickerDialog) {
+            CalendarEventPickerDialog(
+                onSelectEventUri = { calUri ->
+                    onAttachUri(calUri)
+                    showCalendarPickerDialog = false
+                },
+                onDismiss = { showCalendarPickerDialog = false }
+            )
+        }
+
         if (showBroadcastDialog) {
             MultiRecipientBroadcastDialog(
                 initialMessageBody = draftText,
@@ -7072,6 +7388,7 @@ fun ConversationDetailScreen(
                         DropdownMenu(
                             expanded = showMoreMenu,
                             onDismissRequest = { showMoreMenu = false },
+                            modifier = Modifier.widthIn(min = 250.dp, max = 340.dp),
                             shape = menuShape,
                             containerColor = palette.popupContainerColor,
                             tonalElevation = 0.dp,
@@ -7088,15 +7405,17 @@ fun ConversationDetailScreen(
                                         color = palette.textPrimary
                                     )
                                 },
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
                                 leadingIcon = {
                                     Icon(
-                                        imageVector = TxturaIcons.AttachImage,
+                                        imageVector = TxturaIcons.WallpaperLandscape,
                                         contentDescription = null,
                                         tint = palette.accentPrimary,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 },
                                 onClick = {
+                                    TxturaHaptics.click(view, context)
                                     showMoreMenu = false
                                     onOpenChatWallpaperPicker()
                                 }
@@ -7109,6 +7428,7 @@ fun ConversationDetailScreen(
                                         color = palette.textPrimary
                                     )
                                 },
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
                                 leadingIcon = {
                                     Icon(
                                         imageVector = TxturaIcons.Pin,
@@ -7118,6 +7438,7 @@ fun ConversationDetailScreen(
                                     )
                                 },
                                 onClick = {
+                                    TxturaHaptics.click(view, context)
                                     showMoreMenu = false
                                     onTogglePinThread()
                                 }
@@ -7137,15 +7458,17 @@ fun ConversationDetailScreen(
                                         )
                                     }
                                 },
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
                                 leadingIcon = {
                                     Icon(
-                                        imageVector = if (thread.isService) TxturaIcons.ContactPerson else TxturaIcons.ShieldCheck,
+                                        imageVector = if (thread.isService) TxturaIcons.ContactPerson else TxturaIcons.BusinessBuilding,
                                         contentDescription = null,
                                         tint = palette.accentPrimary,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 },
                                 onClick = {
+                                    TxturaHaptics.click(view, context)
                                     showMoreMenu = false
                                     onToggleSenderCategory()
                                 }
@@ -7158,6 +7481,7 @@ fun ConversationDetailScreen(
                                         color = palette.textPrimary
                                     )
                                 },
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
                                 leadingIcon = {
                                     Icon(
                                         imageVector = TxturaIcons.Forward,
@@ -7167,6 +7491,7 @@ fun ConversationDetailScreen(
                                     )
                                 },
                                 onClick = {
+                                    TxturaHaptics.click(view, context)
                                     showMoreMenu = false
                                     showBroadcastDialog = true
                                 }
@@ -7179,6 +7504,7 @@ fun ConversationDetailScreen(
                                         color = palette.textPrimary
                                     )
                                 },
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
                                 leadingIcon = {
                                     Icon(
                                         imageVector = TxturaIcons.ContactPerson,
@@ -7188,6 +7514,7 @@ fun ConversationDetailScreen(
                                     )
                                 },
                                 onClick = {
+                                    TxturaHaptics.click(view, context)
                                     showMoreMenu = false
                                     onOpenContact()
                                 }
@@ -7201,6 +7528,7 @@ fun ConversationDetailScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                 },
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
                                 leadingIcon = {
                                     Icon(
                                         imageVector = TxturaIcons.Block,
@@ -7210,6 +7538,7 @@ fun ConversationDetailScreen(
                                     )
                                 },
                                 onClick = {
+                                    TxturaHaptics.click(view, context)
                                     showMoreMenu = false
                                     showConfirmBlockContactDialog = true
                                 }
@@ -7549,7 +7878,7 @@ fun ConversationDetailScreen(
             // Messages Thread with two-finger Pinch-to-Zoom and Long-Press Context Menu on each bubble
             LazyColumn(
                 state = listState,
-                verticalArrangement = Arrangement.spacedBy((7f * bubbleZoomScale.coerceIn(0.75f, 1.65f)).dp),
+                verticalArrangement = Arrangement.spacedBy((7f * bubbleZoomScale.coerceIn(0.75f, 1.65f)).dp, Alignment.Bottom),
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                 modifier = Modifier
                     .weight(1f)
@@ -7592,7 +7921,7 @@ fun ConversationDetailScreen(
                         isJumpHighlighted = jumpedToMessageId == msg.id,
                         onClickMessage = {
                             if (isSelectionMode) {
-                                selectedMessageIds = if (isMsgSelected) {
+                                selectedMessageIds = if (msg.id in selectedMessageIds) {
                                     selectedMessageIds - msg.id
                                 } else {
                                     selectedMessageIds + msg.id
@@ -7600,7 +7929,7 @@ fun ConversationDetailScreen(
                             }
                         },
                         onLongPressMessage = {
-                            selectedMessageIds = if (isMsgSelected) {
+                            selectedMessageIds = if (msg.id in selectedMessageIds) {
                                 selectedMessageIds - msg.id
                             } else {
                                 selectedMessageIds + msg.id
@@ -7932,6 +8261,21 @@ fun ConversationDetailScreen(
             ) {
                 Column {
                     if (pendingAttachmentUri != null) {
+                        val uriStr = pendingAttachmentUri.toString()
+                        val isPendingCal = uriStr.contains("mms_cal") || uriStr.endsWith(".ics", ignoreCase = true) || uriStr.endsWith(".vcs", ignoreCase = true)
+                        val isPendingDoc = !isPendingCal && (uriStr.contains("mms_doc") ||
+                            (!uriStr.endsWith(".jpg", true) && !uriStr.endsWith(".jpeg", true) &&
+                             !uriStr.endsWith(".png", true) && !uriStr.endsWith(".webp", true)))
+                        val previewTitle = when {
+                            isPendingCal -> strings.calendarEventTitle
+                            isPendingDoc -> DocumentAttachmentHelper.getFileName(context, pendingAttachmentUri)
+                            else -> strings.mmsAttachedTitle
+                        }
+                        val previewSub = when {
+                            isPendingCal -> strings.calendarEventSub
+                            isPendingDoc -> strings.documentFileSub
+                            else -> strings.mmsAutoCompressedSub
+                        }
                         GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -7945,26 +8289,47 @@ fun ConversationDetailScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    MmsImageThumbnail(
-                                        uri = pendingAttachmentUri,
-                                        hdrLabel = strings.hdrMmsPhoto,
-                                        modifier = Modifier
-                                            .size(44.dp)
-                                            .clip(RoundedCornerShape(10.dp))
-                                    )
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f, fill = false)) {
+                                    if (isPendingCal || isPendingDoc) {
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .size(44.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(palette.accentSecondary.copy(alpha = 0.15f))
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isPendingCal) TxturaIcons.CalendarEvent else TxturaIcons.DocumentFile,
+                                                contentDescription = previewTitle,
+                                                tint = palette.accentSecondary,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    } else {
+                                        MmsImageThumbnail(
+                                            uri = pendingAttachmentUri,
+                                            hdrLabel = strings.hdrMmsPhoto,
+                                            modifier = Modifier
+                                                .size(44.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                        )
+                                    }
                                     Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
+                                    Column(modifier = Modifier.weight(1f, fill = false)) {
                                         Text(
-                                            text = strings.mmsAttachedTitle,
+                                            text = previewTitle,
                                             style = MaterialTheme.typography.labelMedium,
                                             color = palette.accentSecondary,
-                                            fontWeight = FontWeight.Bold
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = strings.mmsZeroPermissionSub,
+                                            text = previewSub,
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = palette.textSecondary
+                                            color = palette.textSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
@@ -7978,222 +8343,579 @@ fun ConversationDetailScreen(
                         }
                     }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
+                    val isVoiceRecording by VoiceMessageManager.isRecording
+                    var recordDragOffsetXPx by remember { mutableFloatStateOf(0f) }
+                    val cancelThresholdPx = with(LocalDensity.current) { 45.dp.toPx() }
+                    val isCancelTargetReached = recordDragOffsetXPx > cancelThresholdPx
+                    val canSend = draftText.isNotBlank() || pendingAttachmentUri != null
+                    val isCountingDown = pendingDelayedSend != null
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp)
                     ) {
-                        val plusRotation by animateFloatAsState(
-                            targetValue = if (showAttachmentActions) 45f else 0f,
-                            animationSpec = if (expressiveAnimationsEnabled) {
-                                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
-                            } else {
-                                spring(dampingRatio = Spring.DampingRatioNoBouncy)
-                            },
-                            label = "plus_rotation"
-                        )
-
-                        // 1. Plus (+) icon toggle for attachment options
-                        GlassIconButton(
-                            icon = TxturaIcons.Plus,
-                            contentDescription = strings.attachMmsImage,
-                            tint = if (showAttachmentActions) palette.accentPrimary else palette.accentSecondary,
-                            onClick = { showAttachmentActions = !showAttachmentActions },
-                            size = if (showAttachmentActions) 34.dp else 38.dp,
-                            modifier = Modifier.rotate(plusRotation)
-                        )
-
-                        // 2. Expandable attachment actions (Image & Contact)
-                        AnimatedVisibility(
-                            visible = showAttachmentActions,
-                            enter = if (expressiveAnimationsEnabled) {
-                                fadeIn(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) +
-                                    expandHorizontally(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy))
-                            } else {
-                                fadeIn() + expandHorizontally()
-                            },
-                            exit = if (expressiveAnimationsEnabled) {
-                                fadeOut(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy)) +
-                                    shrinkHorizontally(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy))
-                            } else {
-                                fadeOut() + shrinkHorizontally()
-                            }
-                        ) {
+                        if (isVoiceRecording) {
+                            // 1. Levi deo: Povećan REC brojač i tačno ispod remaining "Slide to cancel"
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(3.dp),
-                                modifier = Modifier.padding(start = 3.dp)
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 44.dp)
+                                    .padding(start = 8.dp, end = 94.dp),
+                                horizontalArrangement = Arrangement.Start
                             ) {
-                                GlassIconButton(
-                                    icon = TxturaIcons.AttachImage,
-                                    contentDescription = strings.attachMmsImage,
-                                    tint = palette.accentSecondary,
-                                    onClick = {
-                                        showAttachmentActions = false
-                                        onPickMmsPhoto()
-                                    },
-                                    size = 34.dp
+                                val recPulseTransition = rememberInfiniteTransition(label = "rec_pulse")
+                                val recDotAlpha by recPulseTransition.animateFloat(
+                                    initialValue = 0.3f,
+                                    targetValue = 1.0f,
+                                    animationSpec = infiniteRepeatable(
+                                        animation = tween(500),
+                                        repeatMode = RepeatMode.Reverse
+                                    ),
+                                    label = "dot_alpha"
                                 )
 
-                                GlassIconButton(
-                                    icon = TxturaIcons.ContactPerson,
-                                    contentDescription = strings.shareContactTooltip,
-                                    tint = palette.accentSecondary,
-                                    onClick = {
-                                        showAttachmentActions = false
-                                        showShareContactDialog = true
-                                    },
-                                    size = 34.dp
-                                )
-                            }
-                        }
+                                val elapsedMs = VoiceMessageManager.recordingDurationMillis.value
+                                val remSecs = VoiceMessageManager.recordingRemainingSeconds.value
+                                val remText = VoiceMessageManager.formatDuration(remSecs * 1000L)
+                                val elapsedText = VoiceMessageManager.formatDuration(elapsedMs)
 
-                        Spacer(modifier = Modifier.width(if (showAttachmentActions) 3.dp else 4.dp))
-
-                        // 3. Lupa (Search) icon to toggle search bar
-                        GlassIconButton(
-                            icon = TxturaIcons.Search,
-                            contentDescription = strings.searchInChatPlaceholder,
-                            tint = if (isChatSearchVisible) palette.accentPrimary else palette.textSecondary,
-                            onClick = {
-                                isChatSearchVisible = !isChatSearchVisible
-                                if (!isChatSearchVisible) {
-                                    chatSearchQuery = ""
-                                    activeSearchMatchIndex = 0
-                                }
-                            },
-                            size = if (showAttachmentActions) 34.dp else 38.dp
-                        )
-
-                        Spacer(modifier = Modifier.width(if (showAttachmentActions) 6.dp else 8.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Box {
-                                if (draftText.isEmpty()) {
+                                // Povećan REC brojač sa pulsirajućom tačkom
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(11.dp)
+                                            .clip(CircleShape)
+                                            .background(palette.dangerColor.copy(alpha = recDotAlpha))
+                                    )
                                     Text(
-                                        text = if (isMmsMode) strings.addMmsCaptionPlaceholder else strings.writeSmsPlaceholder,
-                                        style = MaterialTheme.typography.bodyLarge.copy(
-                                            fontSize = if (showAttachmentActions) 13.5.sp else 15.sp
+                                        text = elapsedText,
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 19.sp
                                         ),
-                                        color = palette.textSecondary,
+                                        color = palette.textPrimary
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(10.dp))
+
+                                // Remaining tekst i tačno ispod njega centriran "Slide to cancel"
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Text(
+                                        text = strings.voiceMessageTimeRemaining(remText),
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        color = palette.accentSecondary,
+                                        textAlign = TextAlign.Center,
                                         maxLines = 1,
-                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    Text(
+                                        text = if (isCancelTargetReached) (if (strings.isSerbian) "Otpustite za poništavanje" else "Release to cancel") else strings.voiceMessageSlideToCancel,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 12.5.sp,
+                                            fontWeight = if (isCancelTargetReached) FontWeight.Bold else FontWeight.Medium
+                                        ),
+                                        color = if (isCancelTargetReached) palette.dangerColor else palette.textSecondary,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                BasicTextField(
-                                    value = draftText,
-                                    onValueChange = { draftText = it },
-                                    textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                        color = palette.textPrimary,
-                                        fontSize = if (showAttachmentActions && draftText.length > 20) 14.sp else 15.5.sp
-                                    ),
-                                    cursorBrush = SolidColor(palette.accentPrimary),
-                                    maxLines = 4,
-                                    modifier = Modifier.fillMaxWidth()
+                            }
+
+                            // 2. Crveni 'X' cilj za poništavanje snimanja: postavljen DESNO od mikrofona
+                            val cancelScale by animateFloatAsState(
+                                targetValue = if (isCancelTargetReached) 1.25f else 1.0f,
+                                label = "cancel_scale"
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .padding(end = 4.dp)
+                                    .size(38.dp)
+                                    .scale(cancelScale)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isCancelTargetReached) palette.dangerColor.copy(alpha = 0.35f)
+                                        else palette.dangerColor.copy(alpha = 0.15f)
+                                    )
+                                    .border(
+                                        width = if (isCancelTargetReached) 2.dp else 1.dp,
+                                        color = palette.dangerColor,
+                                        shape = CircleShape
+                                    )
+                                    .clickable {
+                                        VoiceMessageManager.cancelRecording()
+                                        if (inAppSoundsEnabled) {
+                                            SmsMmsRepository.playVoiceRecordCancelSound(context)
+                                        }
+                                        TxturaHaptics.reject(view, context)
+                                        recordDragOffsetXPx = 0f
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = TxturaIcons.Close,
+                                    contentDescription = strings.cancel,
+                                    tint = palette.dangerColor,
+                                    modifier = Modifier.size(19.dp)
                                 )
                             }
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = if (isMmsMode) {
-                                    strings.mmsModeIndicator
-                                } else {
-                                    "${draftText.length}/$charsPerSegment ($smsSegments) • SMS"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isMmsMode) palette.accentSecondary else palette.textSecondary
-                            )
                         }
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        val canSend = draftText.isNotBlank() || pendingAttachmentUri != null
-                        val isCountingDown = pendingDelayedSend != null
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .alpha(if (isVoiceRecording) 0f else 1f)
                         ) {
-                            // 6-second countdown timer badge placed directly LEFT of the Send/Cancel button
-                            AnimatedVisibility(
-                                visible = isCountingDown,
-                                enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
-                                exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End)
-                            ) {
-                                val activeDelayed = pendingDelayedSend
-                                val totalMs = activeDelayed?.durationMillis ?: 6_000L
-                                val secondsLeft = ceil(delayedRemainingMillis / 1000.0).toInt().coerceIn(1, 6)
-                                val fraction = (delayedRemainingMillis.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
+                            val plusRotation by animateFloatAsState(
+                                targetValue = if (showAttachmentActions) 45f else 0f,
+                                animationSpec = if (expressiveAnimationsEnabled) {
+                                    spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
+                                } else {
+                                    spring(dampingRatio = Spring.DampingRatioNoBouncy)
+                                },
+                                label = "plus_rotation"
+                            )
 
-                                SendCountdownTimerBadge(
-                                    secondsLeft = secondsLeft,
-                                    progressFraction = fraction,
-                                    contentDescription = "${secondsLeft}s"
-                                )
+                            // 1. Plus (+) icon toggle for attachment options
+                            GlassIconButton(
+                                icon = TxturaIcons.Plus,
+                                contentDescription = strings.attachMmsImage,
+                                tint = if (showAttachmentActions) palette.accentPrimary else palette.accentSecondary,
+                                onClick = { showAttachmentActions = !showAttachmentActions },
+                                size = if (showAttachmentActions) 34.dp else 38.dp,
+                                modifier = Modifier.rotate(plusRotation)
+                            )
+
+                            // 2. Expandable attachment actions (Image & Contact)
+                            AnimatedVisibility(
+                                visible = showAttachmentActions,
+                                enter = if (expressiveAnimationsEnabled) {
+                                    fadeIn(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) +
+                                        expandHorizontally(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy))
+                                } else {
+                                    fadeIn() + expandHorizontally()
+                                },
+                                exit = if (expressiveAnimationsEnabled) {
+                                    fadeOut(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy)) +
+                                        shrinkHorizontally(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy))
+                                } else {
+                                    fadeOut() + shrinkHorizontally()
+                                }
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                    modifier = Modifier.padding(start = 3.dp)
+                                ) {
+                                    GlassIconButton(
+                                        icon = TxturaIcons.AttachImage,
+                                        contentDescription = strings.attachMmsImage,
+                                        tint = palette.accentSecondary,
+                                        onClick = {
+                                            showAttachmentActions = false
+                                            onPickMmsPhoto()
+                                        },
+                                        size = 34.dp
+                                    )
+
+                                    GlassIconButton(
+                                        icon = TxturaIcons.CalendarEvent,
+                                        contentDescription = strings.attachCalendarEvent,
+                                        tint = palette.accentSecondary,
+                                        onClick = {
+                                            showAttachmentActions = false
+                                            DynamicPermissionManager.checkAndRequest(
+                                                context = context,
+                                                permission = Manifest.permission.READ_CALENDAR,
+                                                companionMessage = if (strings.isSerbian) "Potrebna je dozvola za kalendar radi odabira događaja" else "Calendar permission required to pick events",
+                                                permanentlyDeniedMessage = if (strings.isSerbian) "Dozvola za kalendar je trajno odbijena. Uključite je u podešavanjima." else "Calendar permission permanently denied. Enable in Settings.",
+                                                requestLauncher = { calendarPermissionLauncher.launch(it) },
+                                                onAlreadyGranted = { showCalendarPickerDialog = true }
+                                            )
+                                        },
+                                        size = 34.dp
+                                    )
+
+                                    GlassIconButton(
+                                        icon = TxturaIcons.DocumentFile,
+                                        contentDescription = strings.attachDocumentFile,
+                                        tint = palette.accentSecondary,
+                                        onClick = {
+                                            showAttachmentActions = false
+                                            documentPickerLauncher.launch(arrayOf("*/*"))
+                                        },
+                                        size = 34.dp
+                                    )
+
+                                    GlassIconButton(
+                                        icon = TxturaIcons.ContactPerson,
+                                        contentDescription = strings.shareContactTooltip,
+                                        tint = palette.accentSecondary,
+                                        onClick = {
+                                            showAttachmentActions = false
+                                            DynamicPermissionManager.checkAndRequest(
+                                                context = context,
+                                                permission = Manifest.permission.READ_CONTACTS,
+                                                companionMessage = if (strings.isSerbian) "Potrebna je dozvola za kontakte radi deljenja" else "Contacts permission required to share contacts",
+                                                permanentlyDeniedMessage = if (strings.isSerbian) "Dozvola za kontakte je trajno odbijena. Uključite je u podešavanjima." else "Contacts permission permanently denied. Enable in Settings.",
+                                                requestLauncher = { contactsPermissionLauncher.launch(it) },
+                                                onAlreadyGranted = { showShareContactDialog = true }
+                                            )
+                                        },
+                                        size = 34.dp
+                                    )
+                                }
                             }
 
-                            // Send button: replaced by Red "X" (Close) during countdown to cancel sending
+                            Spacer(modifier = Modifier.width(if (showAttachmentActions) 3.dp else 4.dp))
+
+                            // 3. Lupa (Search) icon to toggle search bar
                             GlassIconButton(
-                                icon = if (isCountingDown) TxturaIcons.Close else TxturaIcons.Send,
-                                contentDescription = if (isCountingDown) strings.cancelDelayedSendTooltip else strings.send,
-                                tint = if (isCountingDown) palette.dangerColor else if (canSend) palette.sendButtonColor else palette.textSecondary,
-                                accentHighlight = if (isCountingDown) palette.dangerColor else if (canSend) palette.accentPrimary else null,
+                                icon = TxturaIcons.Search,
+                                contentDescription = strings.searchInChatPlaceholder,
+                                tint = if (isChatSearchVisible) palette.accentPrimary else palette.textSecondary,
                                 onClick = {
-                                    if (isCountingDown) {
-                                        TxturaHaptics.reject(view, context)
-                                        val cancelled = pendingDelayedSend
-                                        pendingDelayedSend = null
-                                        delayedRemainingMillis = 0L
-                                        if (cancelled != null && cancelled.body.isNotEmpty()) {
-                                            draftText = if (draftText.isEmpty()) {
-                                                cancelled.body
-                                            } else {
-                                                "${cancelled.body} $draftText"
-                                            }
-                                        }
-                                        if (inAppSoundsEnabled) {
-                                            SmsMmsRepository.playInAppMessageCancelledSound(context)
-                                        }
-                                        Toast.makeText(
-                                            context,
-                                            strings.messageSendCancelledToast,
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    } else if (canSend) {
-                                        TxturaHaptics.confirm(view, context)
-                                        // Flush any already-counting message before handling the new message
-                                        pendingDelayedSend?.let { prev ->
-                                            onSendMessage(prev.body, prev.attachmentUri)
-                                            pendingDelayedSend = null
-                                            delayedRemainingMillis = 0L
-                                        }
-                                        val msgBodyToSend = draftText
-                                        draftText = ""
-                                        SmsMmsRepository.clearDraftForThread(context, thread.id)
-                                        if (pendingAttachmentUri != null) {
-                                            onClearAttachment()
-                                        }
-                                        if (recallMessagesEnabled) {
-                                            delayedRemainingMillis = 6_000L
-                                            pendingDelayedSend = PendingDelayedMessage(
-                                                id = System.nanoTime(),
-                                                body = msgBodyToSend,
-                                                attachmentUri = pendingAttachmentUri,
-                                                startedAtMillis = System.currentTimeMillis(),
-                                                durationMillis = 6_000L
-                                            )
-                                        } else {
-                                            onSendMessage(msgBodyToSend, pendingAttachmentUri)
-                                        }
+                                    isChatSearchVisible = !isChatSearchVisible
+                                    if (!isChatSearchVisible) {
+                                        chatSearchQuery = ""
+                                        activeSearchMatchIndex = 0
                                     }
                                 },
-                                onLongClick = if (!isCountingDown) {
-                                    {
-                                        TxturaHaptics.longPress(view, context)
-                                        showScheduleMessageDialog = true
-                                    }
-                                } else null,
-                                size = 42.dp
+                                size = if (showAttachmentActions) 34.dp else 38.dp
                             )
+
+                            Spacer(modifier = Modifier.width(if (showAttachmentActions) 6.dp else 8.dp))
+
+                            if (!showAttachmentActions) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Box {
+                                        if (draftText.isEmpty()) {
+                                            Text(
+                                                text = if (isMmsMode) strings.addMmsCaptionPlaceholder else strings.writeSmsPlaceholder,
+                                                style = MaterialTheme.typography.bodyLarge.copy(
+                                                    fontSize = 15.sp
+                                                ),
+                                                color = palette.textSecondary,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        BasicTextField(
+                                            value = draftText,
+                                            onValueChange = { draftText = it },
+                                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                                color = palette.textPrimary,
+                                                fontSize = 15.5.sp
+                                            ),
+                                            cursorBrush = SolidColor(palette.accentPrimary),
+                                            maxLines = 4,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .focusRequester(inputFocusRequester)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Text(
+                                        text = if (isMmsMode) {
+                                            strings.mmsModeIndicator
+                                        } else {
+                                            "${draftText.length}/$charsPerSegment ($smsSegments) • SMS"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isMmsMode) palette.accentSecondary else palette.textSecondary
+                                    )
+                                }
+                            } else {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            val canSend = draftText.isNotBlank() || pendingAttachmentUri != null
+                            val isCountingDown = pendingDelayedSend != null
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                // 6-second countdown timer badge placed directly LEFT of the Send/Cancel button
+                                AnimatedVisibility(
+                                    visible = isCountingDown,
+                                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
+                                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End)
+                                ) {
+                                    val activeDelayed = pendingDelayedSend
+                                    val totalMs = activeDelayed?.durationMillis ?: 6_000L
+                                    val secondsLeft = ceil(delayedRemainingMillis / 1000.0).toInt().coerceIn(1, 6)
+                                    val fraction = (delayedRemainingMillis.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
+
+                                    SendCountdownTimerBadge(
+                                        secondsLeft = secondsLeft,
+                                        progressFraction = fraction,
+                                        contentDescription = "${secondsLeft}s"
+                                    )
+                                }
+
+                                // Spacer placeholder for persistent Microphone button (42.dp)
+                                if (!isCountingDown) {
+                                    Spacer(modifier = Modifier.size(42.dp))
+                                }
+
+                                // Send button: replaced by Red "X" (Close) during countdown to cancel sending
+                                GlassIconButton(
+                                    icon = if (isCountingDown) TxturaIcons.Close else TxturaIcons.Send,
+                                    contentDescription = if (isCountingDown) strings.cancelDelayedSendTooltip else strings.send,
+                                    tint = if (isCountingDown) palette.dangerColor else if (canSend) palette.sendButtonColor else palette.textSecondary,
+                                    accentHighlight = if (isCountingDown) palette.dangerColor else if (canSend) palette.accentPrimary else null,
+                                    onClick = {
+                                        if (isCountingDown) {
+                                            TxturaHaptics.reject(view, context)
+                                            val cancelled = pendingDelayedSend
+                                            pendingDelayedSend = null
+                                            delayedRemainingMillis = 0L
+                                            if (cancelled != null) {
+                                                if (cancelled.attachmentUri != null) {
+                                                    try {
+                                                        val path = cancelled.attachmentUri.path
+                                                        if (path != null && path.contains("voice_msg")) {
+                                                            File(context.cacheDir, "voice_messages/${File(path).name}").delete()
+                                                        }
+                                                    } catch (_: Exception) {}
+                                                }
+                                                if (cancelled.body.isNotEmpty() && cancelled.attachmentUri == null) {
+                                                    draftText = if (draftText.isEmpty()) {
+                                                        cancelled.body
+                                                    } else {
+                                                        "${cancelled.body} $draftText"
+                                                    }
+                                                }
+                                            }
+                                            if (inAppSoundsEnabled) {
+                                                SmsMmsRepository.playInAppMessageCancelledSound(context)
+                                            }
+                                            coroutineScope.launch {
+                                                kotlinx.coroutines.delay(100)
+                                                try {
+                                                    inputFocusRequester.requestFocus()
+                                                    keyboardController?.show()
+                                                } catch (_: Exception) { }
+                                            }
+                                            Toast.makeText(
+                                                context,
+                                                strings.messageSendCancelledToast,
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else if (canSend) {
+                                            TxturaHaptics.confirm(view, context)
+                                            // Flush any already-counting message before handling the new message
+                                            pendingDelayedSend?.let { prev ->
+                                                onSendMessage(prev.body, prev.attachmentUri)
+                                                pendingDelayedSend = null
+                                                delayedRemainingMillis = 0L
+                                            }
+                                            val msgBodyToSend = draftText
+                                            draftText = ""
+                                            SmsMmsRepository.clearDraftForThread(context, thread.id)
+                                            if (pendingAttachmentUri != null) {
+                                                onClearAttachment()
+                                            }
+                                            if (recallMessagesEnabled) {
+                                                delayedRemainingMillis = 6_000L
+                                                pendingDelayedSend = PendingDelayedMessage(
+                                                    id = System.nanoTime(),
+                                                    body = msgBodyToSend,
+                                                    attachmentUri = pendingAttachmentUri,
+                                                    startedAtMillis = System.currentTimeMillis(),
+                                                    durationMillis = 6_000L
+                                                )
+                                            } else {
+                                                onSendMessage(msgBodyToSend, pendingAttachmentUri)
+                                            }
+                                        }
+                                    },
+                                    onLongClick = if (!isCountingDown) {
+                                        {
+                                            TxturaHaptics.longPress(view, context)
+                                            showScheduleMessageDialog = true
+                                        }
+                                    } else null,
+                                    size = 42.dp
+                                )
+                            }
+                        }
+
+                        // 3. Persistent Microphone button (stays alive and tracks gesture smoothly)
+                        if (!isCountingDown) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .padding(end = 50.dp)
+                                    .offset { IntOffset(recordDragOffsetXPx.roundToInt().coerceIn(0, (cancelThresholdPx * 1.25f).toInt()), 0) }
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isVoiceRecording) {
+                                            if (isCancelTargetReached) SolidColor(palette.dangerColor.copy(alpha = 0.85f))
+                                            else Brush.linearGradient(listOf(palette.accentPrimary, palette.accentSecondary))
+                                        } else {
+                                            SolidColor(palette.glassSurfaceElevated.copy(alpha = 0.6f))
+                                        }
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isVoiceRecording && isCancelTargetReached) palette.dangerColor else palette.glassBorderTop,
+                                        shape = CircleShape
+                                    )
+                                    .pointerInput(canSend, recallMessagesEnabled) {
+                                        awaitEachGesture {
+                                            val down = awaitFirstDown(requireUnconsumed = false)
+                                            val granted = DynamicPermissionManager.hasPermission(context, Manifest.permission.RECORD_AUDIO)
+                                            if (!granted) {
+                                                hasMicPermission = false
+                                                DynamicPermissionManager.checkAndRequest(
+                                                    context = context,
+                                                    permission = Manifest.permission.RECORD_AUDIO,
+                                                    companionMessage = strings.voiceMessagePermissionRequired,
+                                                    permanentlyDeniedMessage = if (strings.isSerbian) "Dozvola za mikrofon je trajno odbijena. Uključite je u podešavanjima." else "Microphone permission permanently denied. Enable in Settings.",
+                                                    requestLauncher = { recordAudioLauncher.launch(it) },
+                                                    onAlreadyGranted = { /* proceed */ }
+                                                )
+                                                return@awaitEachGesture
+                                            }
+                                            hasMicPermission = true
+
+                                            recordDragOffsetXPx = 0f
+                                            val started = VoiceMessageManager.startRecording(context) { limitFile ->
+                                                TxturaHaptics.confirm(view, context)
+                                                val audioUri = FileProvider.getUriForFile(
+                                                    context,
+                                                    "${context.packageName}.fileprovider",
+                                                    limitFile
+                                                )
+                                                val voiceTitle = if (strings.isSerbian) "Govorna poruka" else "Voice message"
+                                                if (recallMessagesEnabled) {
+                                                    delayedRemainingMillis = 6_000L
+                                                    pendingDelayedSend = PendingDelayedMessage(
+                                                        id = System.nanoTime(),
+                                                        body = voiceTitle,
+                                                        attachmentUri = audioUri,
+                                                        startedAtMillis = System.currentTimeMillis(),
+                                                        durationMillis = 6_000L
+                                                    )
+                                                } else {
+                                                    onSendMessage(voiceTitle, audioUri)
+                                                }
+                                                if (inAppSoundsEnabled) {
+                                                    SmsMmsRepository.playInAppMessageSentSound(context)
+                                                }
+                                            }
+
+                                            if (!started) {
+                                                Toast.makeText(
+                                                    context,
+                                                    if (strings.isSerbian) "Greška pri pokretanju mikrofona." else "Failed to start microphone.",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                                return@awaitEachGesture
+                                            }
+
+                                            if (inAppSoundsEnabled) {
+                                                SmsMmsRepository.playVoiceRecordStartSound(context)
+                                            }
+                                            TxturaHaptics.confirm(view, context)
+
+                                            var cancelled = false
+                                            var currentDragX = 0f
+
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                if (!change.pressed) {
+                                                    change.consume()
+                                                    break
+                                                }
+                                                val dragX = change.position.x - change.previousPosition.x
+                                                currentDragX = (currentDragX + dragX).coerceAtLeast(0f)
+                                                recordDragOffsetXPx = currentDragX
+                                                cancelled = currentDragX > cancelThresholdPx
+                                            }
+
+                                            if (cancelled) {
+                                                VoiceMessageManager.cancelRecording()
+                                                if (inAppSoundsEnabled) {
+                                                    SmsMmsRepository.playVoiceRecordCancelSound(context)
+                                                }
+                                                TxturaHaptics.reject(view, context)
+                                            } else {
+                                                val recDur = VoiceMessageManager.recordingDurationMillis.value
+                                                val recFile = VoiceMessageManager.stopRecording()
+                                                if (recFile != null && recFile.exists() && recFile.length() > 200L && recDur >= 500L) {
+                                                    TxturaHaptics.confirm(view, context)
+                                                    val audioUri = FileProvider.getUriForFile(
+                                                        context,
+                                                        "${context.packageName}.fileprovider",
+                                                        recFile
+                                                    )
+                                                    val voiceTitle = if (strings.isSerbian) "Govorna poruka" else "Voice message"
+                                                    if (recallMessagesEnabled) {
+                                                        delayedRemainingMillis = 6_000L
+                                                        pendingDelayedSend = PendingDelayedMessage(
+                                                            id = System.nanoTime(),
+                                                            body = voiceTitle,
+                                                            attachmentUri = audioUri,
+                                                            startedAtMillis = System.currentTimeMillis(),
+                                                            durationMillis = 6_000L
+                                                        )
+                                                    } else {
+                                                        onSendMessage(voiceTitle, audioUri)
+                                                    }
+                                                    if (inAppSoundsEnabled) {
+                                                        SmsMmsRepository.playInAppMessageSentSound(context)
+                                                    }
+                                                } else {
+                                                    try { recFile?.delete() } catch (_: Exception) {}
+                                                    if (recDur < 500L) {
+                                                        Toast.makeText(
+                                                            context,
+                                                            strings.voiceMessageHoldToRecordHint,
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
+                                                }
+                                            }
+                                            recordDragOffsetXPx = 0f
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = TxturaIcons.Microphone,
+                                    contentDescription = strings.voiceMessageTooltip,
+                                    tint = if (isVoiceRecording) Color.White else palette.accentSecondary,
+                                    modifier = Modifier.size(if (isVoiceRecording) 22.dp else 20.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -8675,6 +9397,7 @@ private fun MessageBubbleItem(
     val cornerRadius = (18f * s).coerceIn(12f, 26f).dp
     val tailRadius = (4f * s).coerceIn(3f, 8f).dp
     val currentOnLongPress by rememberUpdatedState(onLongPressMessage)
+    val currentOnClick by rememberUpdatedState(onClickMessage)
 
     var activeDetectedEntity by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     val detectedPhones = remember(message.body) {
@@ -8909,7 +9632,7 @@ private fun MessageBubbleItem(
                             } else if (longPress == false) {
                                 if (isSelectionMode) {
                                     TxturaHaptics.tick(view, context)
-                                    onClickMessage()
+                                    currentOnClick()
                                 } else {
                                     selectionState.clear()
                                 }
@@ -8943,37 +9666,93 @@ private fun MessageBubbleItem(
                     }
                 }
 
+                val isAudioAttachment = message.attachment?.isAudio == true ||
+                    message.attachment?.mimeType?.startsWith("audio/", ignoreCase = true) == true
+                val isPendingMms = !isAudioAttachment && (message.status == DeliveryStatus.PENDING ||
+                    message.status == DeliveryStatus.DOWNLOADING ||
+                    (message.status == DeliveryStatus.FAILED && message.attachment?.mimeType == "application/vnd.wap.mms-message") ||
+                    message.attachment?.mimeType == "application/vnd.wap.mms-message")
+
                 if (message.attachment != null) {
-                    MmsAttachmentCard(
-                        uri = message.attachment.uri,
-                        caption = message.attachment.caption,
-                        hdrLabel = strings.hdrMmsPhoto
-                    )
+                    if (isPendingMms) {
+                        MmsPendingDownloadCard(
+                            message = message,
+                            strings = strings,
+                            palette = palette,
+                            fontScale = s
+                        )
+                    } else if (isAudioAttachment) {
+                        VoiceMessagePlayerCard(
+                            uri = message.attachment.uri,
+                            isOutgoing = isOutgoing,
+                            palette = palette,
+                            fontScale = s
+                        )
+                    } else if (message.attachment.isCalendar) {
+                        MmsCalendarEventCard(
+                            attachment = message.attachment,
+                            isOutgoing = isOutgoing,
+                            palette = palette,
+                            fontScale = s
+                        )
+                    } else if (message.attachment.isDocument) {
+                        MmsDocumentCard(
+                            attachment = message.attachment,
+                            isOutgoing = isOutgoing,
+                            palette = palette,
+                            fontScale = s
+                        )
+                    } else {
+                        MmsAttachmentCard(
+                            uri = message.attachment.uri,
+                            caption = message.attachment.caption,
+                            hdrLabel = strings.hdrMmsPhoto
+                        )
+                    }
                     Spacer(modifier = Modifier.height((6f * s).dp))
                 }
 
-                CompositionLocalProvider(LocalTextSelectionColors provides selectionColors) {
-                    if (isSelectionMode) {
-                        Text(
-                            text = annotatedMessageText,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontSize = (14f * s).sp,
-                                lineHeight = (19f * s).sp
-                            ),
-                            color = if (isOutgoing) Color.White else palette.textPrimary,
-                            modifier = Modifier.clickable { onClickMessage() }
-                        )
-                    } else {
-                        SelectionContainer(state = selectionState) {
+                val isPureVoiceOrAttachment = (isAudioAttachment && (
+                    message.body.isBlank() ||
+                    message.body == "Govorna poruka" ||
+                    message.body == "Voice message" ||
+                    message.body == strings.voiceMessageTitle
+                )) || (message.attachment?.isCalendar == true && (
+                    message.body.isBlank() ||
+                    message.body == "Kalendarski događaj" ||
+                    message.body == "Calendar event" ||
+                    message.body == strings.calendarEventTitle
+                )) || (message.attachment?.isDocument == true && (
+                    message.body.isBlank() ||
+                    message.body == "Dokument" ||
+                    message.body == "Document" ||
+                    message.body == strings.documentFileTitle ||
+                    message.body == message.attachment.caption
+                ))
+
+                if (!isPendingMms && !isPureVoiceOrAttachment) {
+                    CompositionLocalProvider(LocalTextSelectionColors provides selectionColors) {
+                        if (isSelectionMode) {
                             Text(
                                 text = annotatedMessageText,
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     fontSize = (14f * s).sp,
                                     lineHeight = (19f * s).sp
                                 ),
-                                color = if (isOutgoing) Color.White else palette.textPrimary,
-                                modifier = Modifier.onGloballyPositioned { textCoordinates = it }
+                                color = if (isOutgoing) Color.White else palette.textPrimary
                             )
+                        } else {
+                            SelectionContainer(state = selectionState) {
+                                Text(
+                                    text = annotatedMessageText,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontSize = (14f * s).sp,
+                                        lineHeight = (19f * s).sp
+                                    ),
+                                    color = if (isOutgoing) Color.White else palette.textPrimary,
+                                    modifier = Modifier.onGloballyPositioned { textCoordinates = it }
+                                )
+                            }
                         }
                     }
                 }
@@ -9291,12 +10070,691 @@ private fun MessageBubbleItem(
 }
 
 @Composable
+private fun MmsPendingDownloadCard(
+    message: ChatMessage,
+    strings: AppStrings,
+    palette: GlassPalette,
+    fontScale: Float
+) {
+    val context = LocalContext.current
+    val isDownloading = message.status == DeliveryStatus.DOWNLOADING
+    val isFailed = message.status == DeliveryStatus.FAILED
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape((14f * fontScale).dp))
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        palette.accentPrimary.copy(alpha = 0.25f),
+                        palette.accentSecondary.copy(alpha = 0.18f)
+                    )
+                )
+            )
+            .border(1.dp, palette.glassBorderTop, RoundedCornerShape((14f * fontScale).dp))
+            .padding((12f * fontScale).dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(
+                modifier = Modifier
+                    .size((36f * fontScale).dp)
+                    .clip(CircleShape)
+                    .background(if (isFailed) palette.cautionColor.copy(alpha = 0.2f) else palette.accentPrimary.copy(alpha = 0.2f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (isFailed) TxturaIcons.Warning else TxturaIcons.AttachImage,
+                    contentDescription = null,
+                    tint = if (isFailed) palette.cautionColor else palette.accentPrimary,
+                    modifier = Modifier.size((18f * fontScale).dp)
+                )
+            }
+            Spacer(modifier = Modifier.width((10f * fontScale).dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = strings.mmsPendingTitle,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontSize = (13f * fontScale).sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = palette.textPrimary
+                )
+                val caption = message.attachment?.caption
+                if (!caption.isNullOrBlank()) {
+                    Text(
+                        text = caption,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontSize = (11f * fontScale).sp
+                        ),
+                        color = palette.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height((10f * fontScale).dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape((10f * fontScale).dp))
+                .background(
+                    if (isFailed) palette.cautionColor.copy(alpha = 0.85f)
+                    else if (isDownloading) palette.accentPrimary.copy(alpha = 0.5f)
+                    else palette.accentPrimary
+                )
+                .clickable(enabled = !isDownloading) {
+                    SmsMmsRepository.downloadPendingMms(context, message.id)
+                }
+                .padding(vertical = (8f * fontScale).dp, horizontal = (12f * fontScale).dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                if (isDownloading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size((14f * fontScale).dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.width((8f * fontScale).dp))
+                    Text(
+                        text = strings.mmsDownloadingAction,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontSize = (12f * fontScale).sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = Color.White
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (isFailed) TxturaIcons.Restore else TxturaIcons.CloudDownload,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size((16f * fontScale).dp)
+                    )
+                    Spacer(modifier = Modifier.width((8f * fontScale).dp))
+                    Text(
+                        text = if (isFailed) strings.mmsDownloadFailed else strings.mmsDownloadAction,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontSize = (12f * fontScale).sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceMessagePlayerCard(
+    uri: Uri,
+    isOutgoing: Boolean,
+    palette: GlassPalette,
+    fontScale: Float
+) {
+    val context = LocalContext.current
+    val strings = TxturaStrings.current()
+    val isPlayingThis = VoiceMessageManager.playingUri.value == uri && VoiceMessageManager.isPlaying.value
+    val isLoadedThis = VoiceMessageManager.playingUri.value == uri
+    val progress = if (isLoadedThis) VoiceMessageManager.progressFraction.value else 0f
+    val currentMs = if (isLoadedThis) VoiceMessageManager.currentPositionMs.value else 0
+
+    var durationMs by remember(uri) {
+        mutableLongStateOf(VoiceMessageManager.getAudioDurationMs(context, uri))
+    }
+    LaunchedEffect(uri) {
+        if (durationMs <= 0L) {
+            val dur = VoiceMessageManager.getAudioDurationMs(context, uri)
+            if (dur > 0L) durationMs = dur
+        }
+    }
+
+    val displayDuration = if (isPlayingThis) {
+        VoiceMessageManager.formatDuration(currentMs.toLong())
+    } else {
+        val ms = if (isLoadedThis && VoiceMessageManager.totalDurationMs.value > 0) {
+            VoiceMessageManager.totalDurationMs.value.toLong()
+        } else if (durationMs > 0L) {
+            durationMs
+        } else {
+            0L
+        }
+        VoiceMessageManager.formatDuration(ms)
+    }
+
+    val activeColor = if (isOutgoing) Color.White else palette.accentPrimary
+    val inactiveColor = if (isOutgoing) Color.White.copy(alpha = 0.35f) else palette.textSecondary.copy(alpha = 0.35f)
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                if (isOutgoing) {
+                    Color.White.copy(alpha = 0.12f)
+                } else {
+                    palette.glassSurfaceElevated.copy(alpha = 0.55f)
+                }
+            )
+            .border(
+                width = 1.dp,
+                color = if (isOutgoing) Color.White.copy(alpha = 0.2f) else palette.glassBorderTop,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size((38f * fontScale).dp)
+                .clip(CircleShape)
+                .background(
+                    if (isOutgoing) {
+                        SolidColor(Color.White.copy(alpha = 0.25f))
+                    } else {
+                        Brush.linearGradient(
+                            listOf(palette.accentPrimary, palette.accentSecondary)
+                        )
+                    }
+                )
+                .clickable {
+                    VoiceMessageManager.togglePlayPause(context, uri)
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = if (isPlayingThis) TxturaIcons.Pause else TxturaIcons.Play,
+                contentDescription = if (isPlayingThis) "Pauza" else "Pusti",
+                tint = Color.White,
+                modifier = Modifier.size((18f * fontScale).dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(10.dp))
+
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .pointerInput(uri) {
+                    detectTapGestures { offset ->
+                        val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        VoiceMessageManager.seekTo(uri, fraction)
+                    }
+                }
+        ) {
+            val barCount = 24
+            val barHeights = remember(uri) {
+                val seed = uri.toString().hashCode()
+                val random = java.util.Random(seed.toLong())
+                List(barCount) {
+                    (4 + random.nextInt(18)).dp
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(24.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.5.dp)
+            ) {
+                barHeights.forEachIndexed { index, height ->
+                    val barFraction = (index + 1).toFloat() / barCount.toFloat()
+                    val isPassed = progress >= barFraction
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(height)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(if (isPassed) activeColor else inactiveColor)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(3.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = displayDuration,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = (11.5f * fontScale).sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    color = if (isOutgoing) Color.White.copy(alpha = 0.9f) else palette.textPrimary
+                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = TxturaIcons.Microphone,
+                        contentDescription = null,
+                        tint = if (isOutgoing) Color.White.copy(alpha = 0.7f) else palette.accentSecondary,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Text(
+                        text = strings.voiceMessageTitle,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = (10f * fontScale).sp
+                        ),
+                        color = if (isOutgoing) Color.White.copy(alpha = 0.7f) else palette.textSecondary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MmsCalendarEventCard(
+    attachment: MmsAttachment,
+    isOutgoing: Boolean,
+    palette: GlassPalette,
+    fontScale: Float
+) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    val strings = TxturaStrings.current()
+    val eventTitle = attachment.caption.ifBlank { strings.calendarEventTitle }
+    val activeColor = if (isOutgoing) Color.White else palette.accentPrimary
+    val subColor = if (isOutgoing) Color.White.copy(alpha = 0.75f) else palette.textSecondary
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                if (isOutgoing) Color.White.copy(alpha = 0.14f)
+                else palette.glassSurfaceElevated.copy(alpha = 0.65f)
+            )
+            .border(
+                width = 1.dp,
+                color = if (isOutgoing) Color.White.copy(alpha = 0.25f) else palette.glassBorderTop,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .clickable {
+                TxturaHaptics.click(view, context)
+                DocumentAttachmentHelper.openAttachmentInExternalApp(
+                    context = context,
+                    uri = attachment.uri,
+                    mimeType = "text/calendar",
+                    fallbackName = attachment.caption
+                )
+            }
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(
+                    if (isOutgoing) Color.White.copy(alpha = 0.20f)
+                    else palette.accentPrimary.copy(alpha = 0.18f)
+                )
+        ) {
+            Icon(
+                imageVector = TxturaIcons.CalendarEvent,
+                contentDescription = strings.calendarEventTitle,
+                tint = activeColor,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = eventTitle,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = (14f * fontScale).sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = if (isOutgoing) Color.White else palette.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "vCalendar (.ics) • " + if (strings.isSerbian) "Klikni za otvaranje" else "Tap to open",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = (11f * fontScale).sp
+                ),
+                color = subColor
+            )
+        }
+
+        Icon(
+            imageVector = TxturaIcons.Forward,
+            contentDescription = null,
+            tint = subColor,
+            modifier = Modifier.size(18.dp)
+        )
+    }
+}
+
+@Composable
+private fun MmsDocumentCard(
+    attachment: MmsAttachment,
+    isOutgoing: Boolean,
+    palette: GlassPalette,
+    fontScale: Float
+) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    val strings = TxturaStrings.current()
+    val docName = attachment.caption.ifBlank { strings.documentFileTitle }
+    val ext = docName.substringAfterLast('.', "").uppercase().take(4)
+    val extLabel = if (ext.isNotBlank()) "$ext fajl" else strings.documentFileTitle
+    val activeColor = if (isOutgoing) Color.White else palette.accentSecondary
+    val subColor = if (isOutgoing) Color.White.copy(alpha = 0.75f) else palette.textSecondary
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                if (isOutgoing) Color.White.copy(alpha = 0.14f)
+                else palette.glassSurfaceElevated.copy(alpha = 0.65f)
+            )
+            .border(
+                width = 1.dp,
+                color = if (isOutgoing) Color.White.copy(alpha = 0.25f) else palette.glassBorderTop,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .clickable {
+                TxturaHaptics.click(view, context)
+                DocumentAttachmentHelper.openAttachmentInExternalApp(
+                    context = context,
+                    uri = attachment.uri,
+                    mimeType = attachment.mimeType,
+                    fallbackName = docName
+                )
+            }
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(
+                    if (isOutgoing) Color.White.copy(alpha = 0.20f)
+                    else palette.accentSecondary.copy(alpha = 0.18f)
+                )
+        ) {
+            Icon(
+                imageVector = TxturaIcons.DocumentFile,
+                contentDescription = strings.documentFileTitle,
+                tint = activeColor,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = docName,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = (14f * fontScale).sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = if (isOutgoing) Color.White else palette.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "$extLabel • " + if (strings.isSerbian) "Klikni za otvaranje" else "Tap to open",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = (11f * fontScale).sp
+                ),
+                color = subColor
+            )
+        }
+
+        Icon(
+            imageVector = TxturaIcons.Forward,
+            contentDescription = null,
+            tint = subColor,
+            modifier = Modifier.size(18.dp)
+        )
+    }
+}
+
+@Composable
+fun CalendarEventPickerDialog(
+    onSelectEventUri: (Uri) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val palette = LocalGlassPalette.current
+    val strings = TxturaStrings.current()
+    val isSr = strings.isSerbian
+
+    val events = remember { CalendarEventManager.getDeviceCalendarEvents(context) }
+    var searchQuery by remember { mutableStateOf("") }
+    var quickInviteTitle by remember { mutableStateOf("") }
+
+    val filteredEvents = remember(events, searchQuery) {
+        if (searchQuery.isBlank()) events
+        else events.filter { it.title.contains(searchQuery, ignoreCase = true) || it.location?.contains(searchQuery, ignoreCase = true) == true }
+    }
+
+    val dateFormat = remember { SimpleDateFormat("dd. MMM yyyy. HH:mm", Locale.getDefault()) }
+
+    GlassAlertDialog(
+        onDismissRequest = onDismiss,
+        accentBorderColor = palette.accentPrimary,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = TxturaIcons.CalendarEvent,
+                    contentDescription = null,
+                    tint = palette.accentPrimary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = strings.calendarPickerTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (events.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(palette.glassSurface.copy(alpha = 0.3f))
+                            .border(1.dp, palette.glassBorderBottom.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        if (searchQuery.isEmpty()) {
+                            Text(
+                                text = if (isSr) "Pretraži događaje..." else "Search events...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textSecondary
+                            )
+                        }
+                        BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = palette.textPrimary),
+                            cursorBrush = SolidColor(palette.accentPrimary),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(filteredEvents) { event ->
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                elevated = false,
+                                contentPadding = PaddingValues(10.dp),
+                                onClick = {
+                                    val (uri, _) = CalendarEventManager.createVCalendarFileUri(context, event)
+                                    onSelectEventUri(uri)
+                                }
+                            ) {
+                                Column {
+                                    Text(
+                                        text = event.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = palette.textPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = dateFormat.format(Date(event.startMillis)) + if (!event.location.isNullOrBlank()) " • ${event.location}" else "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = strings.noCalendarEventsFound,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textSecondary
+                    )
+                }
+
+                // Quick Invitation creation section
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.glassSurfaceElevated.copy(alpha = 0.4f))
+                        .border(1.dp, palette.accentSecondary.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = strings.quickInviteOption,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.accentSecondary,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(palette.glassSurface.copy(alpha = 0.3f))
+                            .border(1.dp, palette.glassBorderBottom.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        if (quickInviteTitle.isEmpty()) {
+                            Text(
+                                text = if (isSr) "Naziv: npr. Sastanak, Rođendan..." else "Title: e.g. Meeting, Birthday...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.textSecondary
+                            )
+                        }
+                        BasicTextField(
+                            value = quickInviteTitle,
+                            onValueChange = { quickInviteTitle = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodySmall.copy(color = palette.textPrimary),
+                            cursorBrush = SolidColor(palette.accentSecondary),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(palette.accentSecondary)
+                                .clickable {
+                                    val title = quickInviteTitle.ifBlank { if (isSr) "Sastanak" else "Meeting" }
+                                    val (uri, _) = CalendarEventManager.createQuickInvitationUri(
+                                        context = context,
+                                        title = title,
+                                        startMillis = System.currentTimeMillis() + 3600_000L
+                                    )
+                                    onSelectEventUri(uri)
+                                }
+                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                        ) {
+                            Text(
+                                text = if (isSr) "Kreiraj .ics" else "Create .ics",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = strings.cancel,
+                    color = palette.textSecondary
+                )
+            }
+        }
+    )
+}
+
+@Composable
 private fun MmsAttachmentCard(
     uri: Uri,
     caption: String,
-    hdrLabel: String
+    hdrLabel: String,
+    onClick: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
     val palette = LocalGlassPalette.current
+    val handleClick = onClick ?: { SmsMmsRepository.openImageInGallery(context, uri) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -9310,16 +10768,35 @@ private fun MmsAttachmentCard(
                 )
             )
             .border(1.dp, palette.glassBorderTop, RoundedCornerShape(14.dp))
+            .clickable(onClick = handleClick)
             .padding(10.dp)
     ) {
-        MmsImageThumbnail(
-            uri = uri,
-            hdrLabel = hdrLabel,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(140.dp)
-                .clip(RoundedCornerShape(10.dp))
-        )
+        Box {
+            MmsImageThumbnail(
+                uri = uri,
+                hdrLabel = hdrLabel,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(140.dp)
+                    .clip(RoundedCornerShape(10.dp))
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = TxturaIcons.EyePreview,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -9339,6 +10816,22 @@ private fun MmsAttachmentCard(
     }
 }
 
+private fun isGifUri(context: Context, uri: Uri): Boolean {
+    val mime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+    if (mime?.equals("image/gif", ignoreCase = true) == true) return true
+    val path = uri.path?.lowercase()
+    if (path?.endsWith(".gif") == true) return true
+    val uriStr = uri.toString().lowercase()
+    if (uriStr.endsWith(".gif") || uriStr.contains("image%2fgif") || uriStr.contains("image/gif")) return true
+    return runCatching {
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            val header = ByteArray(6)
+            val read = stream.read(header)
+            read >= 3 && header[0] == 'G'.code.toByte() && header[1] == 'I'.code.toByte() && header[2] == 'F'.code.toByte()
+        } ?: false
+    }.getOrDefault(false)
+}
+
 @Composable
 private fun MmsImageThumbnail(
     uri: Uri,
@@ -9346,58 +10839,117 @@ private fun MmsImageThumbnail(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, key1 = uri) {
+    val isGif by produceState(initialValue = false, key1 = uri) {
         value = withContext(Dispatchers.IO) {
-            if (uri.isDemoUri()) {
-                null
-            } else {
+            isGifUri(context, uri)
+        }
+    }
+
+    val gifDrawable by produceState<android.graphics.drawable.Drawable?>(initialValue = null, key1 = uri, key2 = isGif) {
+        if (isGif) {
+            value = withContext(Dispatchers.IO) {
                 try {
-                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                        val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-                        BitmapFactory.decodeStream(stream, null, opts)
+                    val source = ImageDecoder.createSource(context.contentResolver, uri)
+                    ImageDecoder.decodeDrawable(source).also { d ->
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && d is AnimatedImageDrawable) {
+                            d.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
+                        }
                     }
                 } catch (_: Exception) {
                     null
                 }
             }
+        } else {
+            value = null
         }
     }
 
-    val loadedBitmap = bitmap
-    if (loadedBitmap != null) {
-        Image(
-            bitmap = loadedBitmap.asImageBitmap(),
-            contentDescription = hdrLabel,
-            contentScale = ContentScale.Crop,
-            modifier = modifier
-        )
-    } else {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = modifier.background(
-                Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF0284C7).copy(alpha = 0.55f),
-                        Color(0xFF6366F1).copy(alpha = 0.55f),
-                        Color(0xFFA855F7).copy(alpha = 0.55f)
-                    )
-                )
+    if (isGif) {
+        Box(modifier = modifier) {
+            AndroidView(
+                factory = { ctx ->
+                    ImageView(ctx).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                    }
+                },
+                update = { imageView ->
+                    val d = gifDrawable
+                    imageView.setImageDrawable(d)
+                    (d as? android.graphics.drawable.Animatable)?.start()
+                },
+                modifier = Modifier.fillMaxSize()
             )
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = TxturaIcons.AttachImage,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(28.dp)
-                )
-                Spacer(modifier = Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
                 Text(
-                    text = hdrLabel,
+                    text = "GIF",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp
                 )
+            }
+        }
+    } else {
+        val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, key1 = uri) {
+            value = withContext(Dispatchers.IO) {
+                if (uri.isDemoUri()) {
+                    null
+                } else {
+                    try {
+                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                            val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
+                            BitmapFactory.decodeStream(stream, null, opts)
+                        }
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }
+        }
+
+        val loadedBitmap = bitmap
+        if (loadedBitmap != null) {
+            Image(
+                bitmap = loadedBitmap.asImageBitmap(),
+                contentDescription = hdrLabel,
+                contentScale = ContentScale.Crop,
+                modifier = modifier
+            )
+        } else {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = modifier.background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFF0284C7).copy(alpha = 0.55f),
+                            Color(0xFF6366F1).copy(alpha = 0.55f),
+                            Color(0xFFA855F7).copy(alpha = 0.55f)
+                        )
+                    )
+                )
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = TxturaIcons.AttachImage,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = hdrLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }
@@ -11490,7 +13042,14 @@ fun DeletedMessagesScreen(
     onSelectGroupingMode: (DeletedGroupingMode) -> Unit,
     onRestoreThread: (Long) -> Unit,
     onPermanentlyDeleteThread: (Long) -> Unit,
-    onEmptyTrash: () -> Unit
+    onEmptyTrash: () -> Unit,
+    highlightedCount: Int = 0,
+    dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
+    onUpdateDockBarOrder: (List<DockBarItem>) -> Unit = {},
+    onOpenHighlightedMessages: () -> Unit = {},
+    onOpenNewMessage: () -> Unit = {},
+    onMarkAllRead: () -> Unit = {},
+    onOpenSettings: () -> Unit = {}
 ) {
     val strings = TxturaStrings.current()
     var pendingPermanentDeleteEntry by remember { mutableStateOf<DeletedConversationEntry?>(null) }
@@ -11519,14 +13078,13 @@ fun DeletedMessagesScreen(
             }
         }
 
-    GlassBackground(wallpaperConfig = mainWallpaper) {
+    Box(modifier = Modifier.fillMaxSize()) {
         val palette = LocalGlassPalette.current
         val metrics = LocalAdaptiveMetrics.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding()
                 .padding(horizontal = 16.dp)
         ) {
             Spacer(modifier = Modifier.height(10.dp))
@@ -11676,7 +13234,9 @@ fun DeletedMessagesScreen(
                             Text(
                                 text = strings.emptyTrashMessage,
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = palette.textSecondary
+                                color = palette.textSecondary,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
@@ -13131,10 +14691,10 @@ fun AppLockScreen(
                         Text(
                             text = if (isSr) {
                                 if (isDeviceSecure) "Biometrijska zaštita i PIN su aktivni. Potvrdite identitet za pregled poruka."
-                                else "Telefon nema podešen PIN niti biometriju zaključavanja ekrana. Dodirnite dugme ispod da otključate aplikaciju."
+                                else "Telefon nema podešeno zaključavanja ekrana. Dodirnite dugme ispod da otključate aplikaciju."
                             } else {
                                 if (isDeviceSecure) "Biometric protection and PIN are active. Confirm identity to access messages."
-                                else "Device has no screen lock (PIN or biometrics) set up. Tap below to unlock the app."
+                                else "Device has no screen lock set up. Tap below to unlock the app."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = palette.textSecondary,
@@ -13166,9 +14726,9 @@ fun AppLockScreen(
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = if (isSr) {
-                                    if (isDeviceSecure) "Otključaj biometrijom / PIN-om" else "Otključaj aplikaciju"
+                                    if (isDeviceSecure) "Otključaj aplikaciju" else "Pristupi aplikaciji"
                                 } else {
-                                    if (isDeviceSecure) "Unlock with Biometrics / PIN" else "Unlock App"
+                                    if (isDeviceSecure) "Unlock App" else "Access App"
                                 },
                                 style = MaterialTheme.typography.titleSmall,
                                 color = palette.accentPrimary,

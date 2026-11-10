@@ -75,30 +75,24 @@ data class GlassPalette(
             val accentRgb = accentPrimary.copy(alpha = 1f)
             val baseTone = when {
                 !isDark -> lerp(
-                    Color(0xFFE4ECF5),
+                    Color(0xFFF4F7FB),
                     accentRgb,
-                    0.05f
+                    0.03f
                 )
                 isAmoled -> lerp(
-                    Color(0xFF06080D),
+                    Color(0xFF07090E),
+                    accentRgb,
+                    0.02f
+                )
+                else -> lerp(
+                    Color(0xFF151C28),
                     accentRgb,
                     0.04f
                 )
-                else -> lerp(
-                    Color(0xFF141C28),
-                    accentRgb,
-                    0.05f
-                )
             }
-            // Frosted glass translucency that scales smoothly with uiOpacity:
-            // 100% Providno -> crystal-clear translucent glass (~0.40f)
-            // 50% Providno (Podrazumevano) -> refined, balanced frosted glass (~0.64f)
-            // 0% Providno (Najzamućenije) -> dense smoked obsidian glass (~0.88f)
-            val solidity = (1.0f - uiOpacity.coerceIn(0f, 1f)).coerceIn(0f, 1f)
-            val minAlpha = if (isDark) 0.40f else 0.46f
-            val maxAlpha = if (isDark) 0.88f else 0.90f
-            val targetAlpha = minAlpha + ((maxAlpha - minAlpha) * solidity)
-            return baseTone.copy(alpha = targetAlpha)
+            // Floating popups and dropdown menus require an opaque background to prevent
+            // underlying UI controls (switches, text, icons, cards) from bleeding through.
+            return baseTone.copy(alpha = 1.0f)
         }
 }
 

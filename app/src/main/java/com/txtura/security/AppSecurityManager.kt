@@ -33,7 +33,6 @@ object AppSecurityManager {
     private const val KEY_APP_PIN_HASH = "pref_app_pin_hash_v1"
     private const val KEY_SSL_PINNING = "pref_ssl_pinning_enabled"
     private const val KEY_METADATA_MINIMIZATION = "pref_metadata_minimization_enabled"
-    private const val KEY_BLOCK_SCREENSHOTS = "pref_block_screenshots_enabled"
     private const val KEY_INTENT_SANITIZER = "pref_intent_sanitizer_enabled"
     private const val KEY_ZERO_PERM_PHOTO_PICKER = "pref_zero_perm_photo_picker_enabled"
     private const val KEY_SENSITIVE_CLIPBOARD_COPY = "pref_sensitive_clipboard_copy_enabled"
@@ -308,13 +307,6 @@ object AppSecurityManager {
         getPrefs(context).edit { putInt(KEY_LOCK_TIMEOUT, timeoutMinutes) }
     }
 
-    fun isBlockScreenshotsEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_BLOCK_SCREENSHOTS, false)
-    }
-
-    fun setBlockScreenshotsEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit { putBoolean(KEY_BLOCK_SCREENSHOTS, enabled) }
-    }
 
     fun isSslPinningEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_SSL_PINNING, true)

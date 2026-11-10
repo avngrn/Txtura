@@ -97,4 +97,175 @@ class ExampleUnitTest {
         assertTrue(com.txtura.telephony.EmergencyAlertManager.isGlobalCatastropheText("Planetary crisis declared by international council"))
         assertFalse(com.txtura.telephony.EmergencyAlertManager.isGlobalCatastropheText("Lokalni radovi na putu i zastoj"))
     }
+
+    @Test
+    fun testMmsNotificationIndParsing() {
+        // Construct binary m-notification-ind (0x82) PDU
+        val out = java.io.ByteArrayOutputStream()
+        out.write(0x8C); out.write(0x82) // Message-Type: m-notification-ind
+        out.write(0x98); out.write("TX123".toByteArray(Charsets.US_ASCII)); out.write(0x00) // Transaction-ID
+        out.write(0x8D); out.write(0x92) // Version: 1.2
+        // From: length 22, token 0x80, address "+38164123456/TYPE=PLMN\0"
+        val fromAddr = "+38164123456/TYPE=PLMN".toByteArray(Charsets.US_ASCII)
+        out.write(0x89)
+        out.write(fromAddr.size + 2) // length
+        out.write(0x80) // Address-present-token
+        out.write(fromAddr)
+        out.write(0x00)
+        // Content-Location
+        val url = "http://mms.carrier.rs/servlets/mms?id=456"
+        out.write(0x8A)
+        out.write(url.toByteArray(Charsets.US_ASCII))
+        out.write(0x00)
+        // Message-Size: 2 bytes, 1024
+        out.write(0x8E)
+        out.write(0x02)
+        out.write(0x04); out.write(0x00)
+
+        val bytes = out.toByteArray()
+        val notif = com.txtura.telephony.MmsPduHelper.parseNotificationInd(bytes)
+
+        assertNotNull(notif)
+        assertEquals("TX123", notif!!.transactionId)
+        assertEquals(url, notif.contentLocation)
+        assertEquals("+38164123456", notif.senderAddress)
+        assertEquals(1024L, notif.messageSize)
+    }
+
+    @Test
+    fun testMmsRetrieveConfParsing() {
+        val out = java.io.ByteArrayOutputStream()
+        out.write(0x8C); out.write(0x84) // Message-Type: m-retrieve-conf
+        out.write(0x98); out.write("RET99".toByteArray(Charsets.US_ASCII)); out.write(0x00)
+        out.write(0x8D); out.write(0x92)
+        out.write(0x85); out.write(0x04); out.write(0x00); out.write(0x00); out.write(0x01); out.write(0x00) // Date
+        // From
+        val fromAddr = "064998877/TYPE=PLMN".toByteArray(Charsets.US_ASCII)
+        out.write(0x89)
+        out.write(fromAddr.size + 2)
+        out.write(0x80)
+        out.write(fromAddr)
+        out.write(0x00)
+        // Content-Type: application/vnd.wap.multipart.related
+        out.write(0x84)
+        out.write("application/vnd.wap.multipart.related".toByteArray(Charsets.US_ASCII))
+        out.write(0x00)
+
+        // Multipart: 2 parts (text + fake image)
+        out.write(0x02) // 2 parts
+
+        // Part 1: text/plain
+        val textBytes = "Zdravo ovo je probni MMS!".toByteArray(Charsets.UTF_8)
+        val h1 = java.io.ByteArrayOutputStream()
+        h1.write("text/plain".toByteArray(Charsets.US_ASCII)); h1.write(0x00)
+        val h1Bytes = h1.toByteArray()
+        out.write(h1Bytes.size) // header len
+        out.write(textBytes.size) // data len
+        out.write(h1Bytes)
+        out.write(textBytes)
+
+        // Part 2: image/jpeg with JPEG magic bytes (0xFF, 0xD8, 0xFF, ...)
+        val imgBytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0x12, 0x34, 0xFF.toByte(), 0xD9.toByte())
+        val h2 = java.io.ByteArrayOutputStream()
+        h2.write("image/jpeg".toByteArray(Charsets.US_ASCII)); h2.write(0x00)
+        val h2Bytes = h2.toByteArray()
+        out.write(h2Bytes.size)
+        out.write(imgBytes.size)
+        out.write(h2Bytes)
+        out.write(imgBytes)
+
+        val pdu = out.toByteArray()
+        val retrieved = com.txtura.telephony.MmsPduHelper.parseRetrieveConf(pdu)
+
+        assertNotNull(retrieved)
+        assertEquals("064998877", retrieved!!.senderAddress)
+        assertEquals("Zdravo ovo je probni MMS!", retrieved.bodyText)
+        assertNotNull(retrieved.imageBytes)
+        assertEquals("image/jpeg", retrieved.imageMimeType)
+    }
+
+    @Test
+    fun testVoiceMmsRetrieveConfParsing() {
+        val out = java.io.ByteArrayOutputStream()
+        out.write(0x8C); out.write(0x84) // Message-Type: m-retrieve-conf
+        out.write(0x98); out.write("VOICE1".toByteArray(Charsets.US_ASCII)); out.write(0x00)
+        out.write(0x8D); out.write(0x92)
+        out.write(0x85); out.write(0x04); out.write(0x00); out.write(0x00); out.write(0x01); out.write(0x00)
+        // From
+        val fromAddr = "060112233/TYPE=PLMN".toByteArray(Charsets.US_ASCII)
+        out.write(0x89)
+        out.write(fromAddr.size + 2)
+        out.write(0x80)
+        out.write(fromAddr)
+        out.write(0x00)
+        // Content-Type: application/vnd.wap.multipart.related
+        out.write(0x84)
+        out.write("application/vnd.wap.multipart.related".toByteArray(Charsets.US_ASCII))
+        out.write(0x00)
+
+        // Multipart: 1 part (audio/amr)
+        out.write(0x01) // 1 part
+
+        // Part 1: audio/amr with AMR header "#!AMR\n"
+        val audioData = byteArrayOf(0x23, 0x21, 0x41, 0x4D, 0x52, 0x0A, 0x3C, 0x4D, 0x5E)
+        val h1 = java.io.ByteArrayOutputStream()
+        h1.write("audio/amr".toByteArray(Charsets.US_ASCII)); h1.write(0x00)
+        val h1Bytes = h1.toByteArray()
+        out.write(h1Bytes.size)
+        out.write(audioData.size)
+        out.write(h1Bytes)
+        out.write(audioData)
+
+        val pdu = out.toByteArray()
+        val retrieved = com.txtura.telephony.MmsPduHelper.parseRetrieveConf(pdu)
+
+        assertNotNull(retrieved)
+        assertEquals("060112233", retrieved!!.senderAddress)
+        assertNotNull(retrieved.audioBytes)
+        assertEquals("audio/amr", retrieved.audioMimeType)
+    }
+
+    @Test
+    fun testMmsImageCompressorConstantsAndLimit() {
+        assertEquals(299_900L, com.txtura.telephony.MmsImageCompressor.MAX_MMS_IMAGE_BYTES)
+        assertEquals(299_900L, com.txtura.telephony.VoiceMessageManager.MAX_VOICE_MMS_BYTES)
+    }
+
+    @Test
+    fun testVoiceMessageDurationFormatting() {
+        assertEquals("0:00", com.txtura.telephony.VoiceMessageManager.formatDuration(0L))
+        assertEquals("0:05", com.txtura.telephony.VoiceMessageManager.formatDuration(5_000L))
+        assertEquals("1:00", com.txtura.telephony.VoiceMessageManager.formatDuration(60_000L))
+        assertEquals("3:16", com.txtura.telephony.VoiceMessageManager.formatDuration(196_000L))
+    }
+
+    @Test
+    fun testFlashNotificationManager() {
+        assertEquals(35L, com.txtura.telephony.FlashNotificationManager.LED_HARDWARE_DELAY_COMPENSATION_MS)
+        val serbian = TxturaStrings.forLocale(Locale.forLanguageTag("sr-RS"))
+        assertEquals("Svetlosni odziv", serbian.flashAlertTitle)
+        assertTrue(serbian.flashAlertSub.contains("sinhronizovano"))
+        assertEquals("Zvučni odzivi", serbian.inAppSoundsTitle)
+    }
+
+    @Test
+    fun testDockBarItemSerializationAndReorder() {
+        val defaultList = com.txtura.data.DockBarItem.defaultOrder
+        assertEquals(5, defaultList.size)
+        val serialized = com.txtura.data.DockBarItem.serializeOrder(defaultList)
+        val deserialized = com.txtura.data.DockBarItem.deserializeOrder(serialized)
+        assertEquals(defaultList, deserialized)
+
+        // Custom reorder: move SETTINGS to the first position
+        val customOrder = listOf(
+            com.txtura.data.DockBarItem.SETTINGS,
+            com.txtura.data.DockBarItem.MARK_ALL_READ,
+            com.txtura.data.DockBarItem.HIGHLIGHTED,
+            com.txtura.data.DockBarItem.NEW_MESSAGE,
+            com.txtura.data.DockBarItem.DELETED,
+        )
+        val customSerialized = com.txtura.data.DockBarItem.serializeOrder(customOrder)
+        val customDeserialized = com.txtura.data.DockBarItem.deserializeOrder(customSerialized)
+        assertEquals(customOrder, customDeserialized)
+    }
 }

@@ -57,6 +57,28 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     }
                 }
             }
+            SmsMmsRepository.ACTION_MMS_DOWNLOADED -> {
+                val pduPath = intent.getStringExtra("pdu_path")
+                val fallbackSender = intent.getStringExtra("sender_address").orEmpty()
+                val existingMsgId = intent.getLongExtra("existing_message_id", -1L)
+                val dlResultCode = resultCode
+                val pendingResult = goAsync()
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        SmsMmsRepository.onMmsDownloaded(
+                            context = appContext,
+                            resultCode = dlResultCode,
+                            pduPath = pduPath,
+                            fallbackSender = fallbackSender,
+                            existingMessageId = if (existingMsgId > 0) existingMsgId else null
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to handle downloaded MMS in receiver", e)
+                    } finally {
+                        pendingResult.finish()
+                    }
+                }
+            }
             SmsMmsRepository.ACTION_NOTIFICATION_DIRECT_REPLY -> {
                 val remoteInputBundle = RemoteInput.getResultsFromIntent(intent)
                 val replyText = remoteInputBundle

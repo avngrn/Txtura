@@ -53,7 +53,9 @@ enum class DeliveryStatus {
     SENDING,
     SENT,
     DELIVERED,
-    FAILED
+    FAILED,
+    PENDING,
+    DOWNLOADING
 }
 
 enum class MmsAutoRetrieveMode {
@@ -145,6 +147,38 @@ enum class ConversationFilter {
         }
 
         fun serializeOrder(order: List<ConversationFilter>): String {
+            return order.asSequence().distinct().joinToString(",") { it.name }
+        }
+    }
+}
+
+enum class DockBarItem {
+    MARK_ALL_READ,
+    HIGHLIGHTED,
+    NEW_MESSAGE,
+    DELETED,
+    SETTINGS;
+
+    companion object {
+        val defaultOrder: List<DockBarItem> = listOf(
+            MARK_ALL_READ,
+            HIGHLIGHTED,
+            NEW_MESSAGE,
+            DELETED,
+            SETTINGS,
+        )
+
+        fun deserializeOrder(raw: String?): List<DockBarItem> {
+            if (raw.isNullOrBlank()) return defaultOrder
+            val parsed = raw.splitToSequence(",")
+                .mapNotNull { name -> entries.find { it.name == name.trim() } }
+                .distinct()
+                .toList()
+            val missing = defaultOrder.filter { it !in parsed }
+            return if (parsed.isEmpty()) defaultOrder else (parsed + missing)
+        }
+
+        fun serializeOrder(order: List<DockBarItem>): String {
             return order.asSequence().distinct().joinToString(",") { it.name }
         }
     }
@@ -363,8 +397,23 @@ data class WallpaperConfig(
 data class MmsAttachment(
     val uri: Uri,
     val mimeType: String = "image/jpeg",
-    val caption: String = "MMS Photo"
-)
+    val caption: String = "MMS Photo",
+    val durationMs: Long = 0L
+) {
+    val isAudio: Boolean get() = mimeType.startsWith("audio/", ignoreCase = true) ||
+        uri.path?.endsWith(".amr", ignoreCase = true) == true ||
+        uri.path?.endsWith(".3gp", ignoreCase = true) == true ||
+        uri.path?.endsWith(".aac", ignoreCase = true) == true ||
+        uri.path?.endsWith(".m4a", ignoreCase = true) == true ||
+        caption.endsWith(".amr", ignoreCase = true)
+    val isImage: Boolean get() = mimeType.startsWith("image/", ignoreCase = true)
+    val isCalendar: Boolean get() = mimeType.contains("calendar", ignoreCase = true) ||
+        uri.path?.endsWith(".ics", ignoreCase = true) == true ||
+        uri.path?.endsWith(".vcs", ignoreCase = true) == true ||
+        caption.endsWith(".ics", ignoreCase = true) ||
+        caption.endsWith(".vcs", ignoreCase = true)
+    val isDocument: Boolean get() = !isAudio && !isImage && !isCalendar
+}
 
 data class ChatMessage(
     val id: Long,
@@ -458,11 +507,13 @@ data class AppSettingsSnapshot(
     val uiColorMode: UiColorMode = UiColorMode.COLORFUL,
     val uiOpacity: Float = 0.50f,
     val categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder,
+    val dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
     val recallMessagesEnabled: Boolean = true,
     val identifyMaliciousWebsites: Boolean = true,
     val inAppSoundsEnabled: Boolean = true,
     val pinchToZoomEnabled: Boolean = true,
     val expressiveAnimationsEnabled: Boolean = true,
+    val flashAlertEnabled: Boolean = false,
     val hapticsEnabled: Boolean = true,
     val bubblesEnabled: Boolean = true,
     val autoPreviewsShowAll: Boolean = true,
@@ -565,11 +616,13 @@ object BackupManager {
         settingsObj.put("uiColorMode", settings.uiColorMode.name)
         settingsObj.put("uiOpacity", settings.uiOpacity.toDouble())
         settingsObj.put("categoryOrder", ConversationFilter.serializeOrder(settings.categoryOrder))
+        settingsObj.put("dockBarOrder", DockBarItem.serializeOrder(settings.dockBarOrder))
         settingsObj.put("recallMessagesEnabled", settings.recallMessagesEnabled)
         settingsObj.put("identifyMaliciousWebsites", settings.identifyMaliciousWebsites)
         settingsObj.put("inAppSoundsEnabled", settings.inAppSoundsEnabled)
         settingsObj.put("pinchToZoomEnabled", settings.pinchToZoomEnabled)
         settingsObj.put("expressiveAnimationsEnabled", settings.expressiveAnimationsEnabled)
+        settingsObj.put("flashAlertEnabled", settings.flashAlertEnabled)
         settingsObj.put("hapticsEnabled", settings.hapticsEnabled)
         settingsObj.put("bubblesEnabled", settings.bubblesEnabled)
         settingsObj.put("autoPreviewsShowAll", settings.autoPreviewsShowAll)
@@ -701,11 +754,13 @@ object BackupManager {
         val uiColorMode = UiColorMode.entries.find { it.name == uiColorModeStr } ?: UiColorMode.COLORFUL
         val uiOpacity = settingsObj.optDouble("uiOpacity", 0.50).toFloat().coerceIn(0.0f, 1.0f)
         val categoryOrder = ConversationFilter.deserializeOrder(settingsObj.optString("categoryOrder", ""))
+        val dockBarOrder = DockBarItem.deserializeOrder(settingsObj.optString("dockBarOrder", ""))
         val recallMessagesEnabled = settingsObj.optBoolean("recallMessagesEnabled", true)
         val identifyMaliciousWebsites = settingsObj.optBoolean("identifyMaliciousWebsites", true)
         val inAppSoundsEnabled = settingsObj.optBoolean("inAppSoundsEnabled", true)
         val pinchToZoomEnabled = settingsObj.optBoolean("pinchToZoomEnabled", true)
         val expressiveAnimationsEnabled = settingsObj.optBoolean("expressiveAnimationsEnabled", true)
+        val flashAlertEnabled = settingsObj.optBoolean("flashAlertEnabled", false)
         val hapticsEnabled = settingsObj.optBoolean("hapticsEnabled", true)
         val bubblesEnabled = settingsObj.optBoolean("bubblesEnabled", true)
         val autoPreviewsShowAll = settingsObj.optBoolean("autoPreviewsShowAll", true)
@@ -737,11 +792,13 @@ object BackupManager {
             uiColorMode = uiColorMode,
             uiOpacity = uiOpacity,
             categoryOrder = categoryOrder,
+            dockBarOrder = dockBarOrder,
             recallMessagesEnabled = recallMessagesEnabled,
             identifyMaliciousWebsites = identifyMaliciousWebsites,
             inAppSoundsEnabled = inAppSoundsEnabled,
             pinchToZoomEnabled = pinchToZoomEnabled,
             expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+            flashAlertEnabled = flashAlertEnabled,
             hapticsEnabled = hapticsEnabled,
             bubblesEnabled = bubblesEnabled,
             autoPreviewsShowAll = autoPreviewsShowAll,
