@@ -19,7 +19,7 @@ import javax.net.ssl.SSLPeerUnverifiedException
 /**
  * Manages device-level privacy and security controls for Txtura:
  * 1. Root state detection & OS integrity scanning
- * 2. SQLCipher local database encryption management
+ * 2. Local conversation cache encryption preference management
  * 3. Biometric & PIN / Passphrase app lock policies
  * 4. HTTPS & TLS/SSL certificate pinning enforcement
  * 5. Metadata minimization & Zero-telemetry policies
@@ -288,7 +288,7 @@ object AppSecurityManager {
 
     fun setDbEncryptionEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit { putBoolean(KEY_DB_ENCRYPTION, enabled) }
-        com.txtura.data.SmsMmsRepository.reencryptCache(context, enabled)
+        com.txtura.data.SmsMmsRepository.reencryptCache(context)
     }
 
     fun isBiometricLockEnabled(context: Context): Boolean {

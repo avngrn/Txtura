@@ -249,6 +249,7 @@ object WallpaperHarmonyEngine {
             WallpaperPreset.ROYAL_AMETHYST -> if (isDark) Color(0xFFFACC15) else Color(0xFFCA8A04)
             WallpaperPreset.STARLIGHT_GALAXY -> if (isDark) Color(0xFF93C5FD) else Color(0xFF2563EB)
             WallpaperPreset.CRIMSON_VELVET -> if (isDark) Color(0xFF2DD4BF) else Color(0xFF0F766E)
+            WallpaperPreset.BURGUNDY_ANITA -> if (isDark) Color(0xFFFB7185) else Color(0xFFBE123C)
             WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFDA4AF) else Color(0xFFE11D48)
             WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
 
@@ -260,6 +261,7 @@ object WallpaperHarmonyEngine {
             WallpaperPreset.MONO_PLUM -> if (isDark) Color(0xFFC084FC) else Color(0xFF7C3AED)
             WallpaperPreset.MONO_GRAPHITE -> if (isDark) Color(0xFFE2E8F0) else Color(0xFF334155)
             WallpaperPreset.MONO_ROSE -> if (isDark) Color(0xFFFB7185) else Color(0xFFE11D48)
+            WallpaperPreset.MONO_BURGUNDY -> if (isDark) Color(0xFFFB7185) else Color(0xFF9F1239)
             WallpaperPreset.MONO_NAVY -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
             WallpaperPreset.MONO_SMOKE -> if (isDark) Color(0xFF2DD4BF) else Color(0xFF0D9488)
             WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFFB923C) else Color(0xFFEA580C)
@@ -284,6 +286,7 @@ object WallpaperHarmonyEngine {
             WallpaperPreset.ROYAL_AMETHYST -> if (isDark) Color(0xFF34D399) else Color(0xFF059669)
             WallpaperPreset.STARLIGHT_GALAXY -> if (isDark) Color(0xFFC084FC) else Color(0xFF7C3AED)
             WallpaperPreset.CRIMSON_VELVET -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+            WallpaperPreset.BURGUNDY_ANITA -> if (isDark) Color(0xFFFDE047) else Color(0xFFD97706)
             WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFCD34D) else Color(0xFFD97706)
             WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
             else -> presetComplementaryAccent(preset, isDark)

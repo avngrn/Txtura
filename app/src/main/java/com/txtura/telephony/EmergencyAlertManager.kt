@@ -16,8 +16,12 @@ import androidx.core.content.edit
 import com.txtura.MainActivity
 import com.txtura.R
 import com.txtura.ui.i18n.TxturaStrings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -62,14 +66,38 @@ object EmergencyAlertManager {
     private val _alerts = MutableStateFlow<List<EmergencyAlert>>(emptyList())
     val alerts = _alerts.asStateFlow()
 
+    private val initializationLock = Any()
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile
     private var isInitialized = false
+    private var isInitializing = false
 
     fun initialize(context: Context) {
-        if (isInitialized) return
-        isInitialized = true
-        ensureNotificationChannel(context)
-        loadAlerts(context)
-        syncSystemCellBroadcasts(context)
+        val appContext = context.applicationContext
+        val shouldInitialize = synchronized(initializationLock) {
+            if (isInitialized || isInitializing) {
+                false
+            } else {
+                isInitializing = true
+                true
+            }
+        }
+        if (!shouldInitialize) return
+
+        ioScope.launch {
+            try {
+                ensureNotificationChannel(appContext)
+                loadAlerts(appContext)
+                syncSystemCellBroadcasts(appContext)
+                isInitialized = true
+            } catch (e: Exception) {
+                Log.w(TAG, "Background emergency-alert initialization failed", e)
+            } finally {
+                synchronized(initializationLock) {
+                    isInitializing = false
+                }
+            }
+        }
     }
 
     fun getDeviceCountryIso(context: Context): String {

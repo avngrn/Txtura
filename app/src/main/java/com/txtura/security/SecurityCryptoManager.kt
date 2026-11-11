@@ -6,6 +6,8 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
+import android.util.AtomicFile
+import java.io.File
 import java.nio.ByteBuffer
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -22,10 +24,11 @@ class DeviceKeyMismatchException(message: String) : Exception(message)
 class InvalidBackupPasswordException(message: String) : Exception(message)
 
 /**
- * Enterprise-grade cryptographic engine for Txtura:
- * 1. Device-bound hardware KeyStore encryption (AES-256-GCM) for the local conversation disk cache.
- * 2. Authenticated backup encryption (AES-256-GCM) with PBKDF2-HMAC-SHA256 key derivation
- *    or device hardware key, preventing any unauthorized extraction via USB, PC, or file managers.
+ * Authenticated encryption for the local conversation snapshot and exported backups.
+ *
+ * The local snapshot uses a random AES-256 data key wrapped by Android Keystore. The
+ * unwrapped key is held in process memory for the session so large snapshots do not
+ * cross the Keystore boundary for every read/write.
  */
 object SecurityCryptoManager {
 
@@ -35,12 +38,20 @@ object SecurityCryptoManager {
     private const val GCM_TAG_LENGTH_BITS = 128
     private const val GCM_IV_LENGTH_BYTES = 12
 
-    // Magic 4-byte header: "TENC" (Txtura Encrypted) + 1-byte version (0x01)
     private val CACHE_MAGIC_HEADER = byteArrayOf('T'.code.toByte(), 'E'.code.toByte(), 'N'.code.toByte(), 'C'.code.toByte())
-    private const val CACHE_FORMAT_VERSION: Byte = 1
+    private val CACHE_KEY_MAGIC_HEADER = byteArrayOf('T'.code.toByte(), 'K'.code.toByte(), 'E'.code.toByte(), 'Y'.code.toByte())
+    private const val CACHE_FORMAT_VERSION_V1: Byte = 1
+    private const val CACHE_FORMAT_VERSION_V2: Byte = 2
+    private const val CACHE_DATA_KEY_FILE = "txtura_cache_data_key_v2"
+    private const val CACHE_FILE_NAME = "threads_cache.enc"
+    private val CACHE_V2_AAD = CACHE_MAGIC_HEADER + byteArrayOf(CACHE_FORMAT_VERSION_V2)
 
     private const val KEY_ALIAS_CACHE = "txtura_conversations_cache_v1"
     private const val KEY_ALIAS_BACKUP = "txtura_backup_device_key_v1"
+
+    private val cacheKeyLock = Any()
+    @Volatile
+    private var cacheSessionKey: ByteArray? = null
 
     private const val PBKDF2_ALGORITHM = "PBKDF2WithHmacSHA256"
     private const val PBKDF2_ITERATIONS = 100_000
@@ -54,7 +65,7 @@ object SecurityCryptoManager {
     private val secureRandom = SecureRandom()
 
     // =========================================================================
-    // 1. Android KeyStore (Hardware-Backed) Master Key Management
+    // 1. Android Keystore-Managed Key Management
     // =========================================================================
 
     @Synchronized
@@ -83,61 +94,207 @@ object SecurityCryptoManager {
     }
 
     // =========================================================================
-    // 2. Local Conversation Disk Cache Encryption (Hardware TEE / StrongBox)
+    // 2. Local Conversation Snapshot Encryption
     // =========================================================================
 
     /**
-     * Encrypts plaintext bytes using hardware-backed AES-256-GCM.
-     * Output format: [4 bytes MAGIC ("TENC")] [1 byte VERSION] [12 bytes IV] [Ciphertext + 16 bytes GCM Tag]
+     * Initializes the cache data key on a worker thread. Keystore is used once to unwrap
+     * the data key. New v2 snapshots use AES-GCM with the in-memory raw key.
      */
-    fun encryptCache(plaintextBytes: ByteArray): ByteArray {
-        val key = getOrCreateKeyStoreSecretKey(KEY_ALIAS_CACHE)
-        val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, key)
+    fun initializeCacheSessionKey(context: android.content.Context) {
+        if (cacheSessionKey != null) return
+        synchronized(cacheKeyLock) {
+            if (cacheSessionKey != null) return
 
-        val iv = cipher.iv ?: throw IllegalStateException("Cipher failed to generate IV")
-        val ciphertext = cipher.doFinal(plaintextBytes)
-
-        val buffer = ByteBuffer.allocate(CACHE_MAGIC_HEADER.size + 1 + iv.size + ciphertext.size)
-        buffer.put(CACHE_MAGIC_HEADER)
-        buffer.put(CACHE_FORMAT_VERSION)
-        buffer.put(iv)
-        buffer.put(ciphertext)
-        return buffer.array()
+            val keyFile = File(context.noBackupFilesDir, CACHE_DATA_KEY_FILE)
+            val atomicKeyFile = AtomicFile(keyFile)
+            val backupKeyFile = File(keyFile.path + ".bak")
+            val keyBytes = if (keyFile.exists() || backupKeyFile.exists()) {
+                val wrappedKey = atomicKeyFile.openRead().use { it.readBytes() }
+                try {
+                    unwrapCacheDataKey(wrappedKey)
+                } catch (error: java.security.GeneralSecurityException) {
+                    Log.w(TAG, "Discarding cache snapshot whose wrapped key can no longer be opened", error)
+                    discardUnrecoverableCache(context, atomicKeyFile)
+                    createAndPersistCacheDataKey(keyFile)
+                } catch (error: IllegalArgumentException) {
+                    Log.w(TAG, "Discarding cache snapshot with an invalid wrapped key", error)
+                    discardUnrecoverableCache(context, atomicKeyFile)
+                    createAndPersistCacheDataKey(keyFile)
+                } finally {
+                    wrappedKey.fill(0)
+                }
+            } else {
+                if (hasV2CacheFile(context)) {
+                    Log.w(TAG, "Discarding cache snapshot without its wrapped data key")
+                    File(context.filesDir, CACHE_FILE_NAME).delete()
+                }
+                createAndPersistCacheDataKey(keyFile)
+            }
+            cacheSessionKey = keyBytes
+        }
     }
 
     /**
-     * Authenticates and decrypts the encrypted cache file using hardware-backed AES-256-GCM.
-     * Throws an exception if the file has been tampered with or corrupted.
+     * Encrypts a snapshot using the cached random AES-256 data key.
+     * V2 format: [TENC] [version 2] [12-byte IV] [ciphertext + GCM tag].
      */
-    fun decryptCache(encryptedBytes: ByteArray): ByteArray {
-        val minLength = CACHE_MAGIC_HEADER.size + 1 + GCM_IV_LENGTH_BYTES + (GCM_TAG_LENGTH_BITS / 8)
-        if (encryptedBytes.size < minLength) {
-            throw IllegalArgumentException("Corrupted or truncated cache file (size ${encryptedBytes.size})")
-        }
+    fun encryptCache(context: android.content.Context, plaintextBytes: ByteArray): ByteArray {
+        initializeCacheSessionKey(context)
+        val keyBytes = copyCacheSessionKey()
+        try {
+            val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"))
+            cipher.updateAAD(CACHE_V2_AAD)
+            val iv = cipher.iv ?: throw IllegalStateException("Cipher failed to generate IV")
+            val ciphertext = cipher.doFinal(plaintextBytes)
 
-        // Validate header
-        for (i in CACHE_MAGIC_HEADER.indices) {
-            if (encryptedBytes[i] != CACHE_MAGIC_HEADER[i]) {
-                throw IllegalArgumentException("Invalid cache file header: not a Txtura encrypted file")
-            }
+            return ByteBuffer.allocate(CACHE_MAGIC_HEADER.size + 1 + iv.size + ciphertext.size)
+                .put(CACHE_MAGIC_HEADER)
+                .put(CACHE_FORMAT_VERSION_V2)
+                .put(iv)
+                .put(ciphertext)
+                .array()
+        } finally {
+            keyBytes.fill(0)
+        }
+    }
+
+    /** Reads both the original Keystore-encrypted v1 file and the v2 wrapped-data-key format. */
+    fun decryptCache(context: android.content.Context, encryptedBytes: ByteArray): ByteArray {
+        val minLength = CACHE_MAGIC_HEADER.size + 1 + GCM_IV_LENGTH_BYTES + (GCM_TAG_LENGTH_BITS / 8)
+        require(encryptedBytes.size >= minLength) {
+            "Corrupted or truncated cache file (size ${encryptedBytes.size})"
+        }
+        require(CACHE_MAGIC_HEADER.indices.all { encryptedBytes[it] == CACHE_MAGIC_HEADER[it] }) {
+            "Invalid cache file header: not a Txtura encrypted file"
         }
 
         val version = encryptedBytes[CACHE_MAGIC_HEADER.size]
-        if (version != CACHE_FORMAT_VERSION) {
-            throw IllegalArgumentException("Unsupported cache format version: $version")
-        }
-
         val ivOffset = CACHE_MAGIC_HEADER.size + 1
         val iv = encryptedBytes.copyOfRange(ivOffset, ivOffset + GCM_IV_LENGTH_BYTES)
-        val ciphertextOffset = ivOffset + GCM_IV_LENGTH_BYTES
-        val ciphertext = encryptedBytes.copyOfRange(ciphertextOffset, encryptedBytes.size)
-
-        val key = getOrCreateKeyStoreSecretKey(KEY_ALIAS_CACHE)
+        val ciphertext = encryptedBytes.copyOfRange(ivOffset + GCM_IV_LENGTH_BYTES, encryptedBytes.size)
         val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
 
-        return cipher.doFinal(ciphertext)
+        return when (version) {
+            CACHE_FORMAT_VERSION_V1 -> {
+                val key = getOrCreateKeyStoreSecretKey(KEY_ALIAS_CACHE)
+                cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+                cipher.doFinal(ciphertext)
+            }
+            CACHE_FORMAT_VERSION_V2 -> {
+                initializeCacheSessionKey(context)
+                val keyBytes = copyCacheSessionKey()
+                try {
+                    cipher.init(
+                        Cipher.DECRYPT_MODE,
+                        SecretKeySpec(keyBytes, "AES"),
+                        GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+                    )
+                    cipher.updateAAD(CACHE_V2_AAD)
+                    cipher.doFinal(ciphertext)
+                } finally {
+                    keyBytes.fill(0)
+                }
+            }
+            else -> throw IllegalArgumentException("Unsupported cache format version: $version")
+        }
+    }
+
+    fun isLegacyCacheFormat(encryptedBytes: ByteArray): Boolean =
+        encryptedBytes.size >= CACHE_MAGIC_HEADER.size + 1 &&
+            CACHE_MAGIC_HEADER.indices.all { encryptedBytes[it] == CACHE_MAGIC_HEADER[it] } &&
+            encryptedBytes[CACHE_MAGIC_HEADER.size] == CACHE_FORMAT_VERSION_V1
+
+    /** Clears the in-process data key and optionally removes its wrapped copy. */
+    fun clearCacheSessionKey(context: android.content.Context, deleteWrappedKey: Boolean = false) {
+        synchronized(cacheKeyLock) {
+            cacheSessionKey?.fill(0)
+            cacheSessionKey = null
+            if (deleteWrappedKey) {
+                AtomicFile(File(context.noBackupFilesDir, CACHE_DATA_KEY_FILE)).delete()
+            }
+        }
+    }
+
+    private fun copyCacheSessionKey(): ByteArray = synchronized(cacheKeyLock) {
+        cacheSessionKey?.copyOf() ?: error("Cache session key has not been initialized")
+    }
+
+    private fun createAndPersistCacheDataKey(keyFile: File): ByteArray {
+        val generatedKey = ByteArray(32)
+        secureRandom.nextBytes(generatedKey)
+        try {
+            writeWrappedCacheDataKey(keyFile, wrapCacheDataKey(generatedKey))
+            return generatedKey
+        } catch (error: Exception) {
+            generatedKey.fill(0)
+            throw error
+        }
+    }
+
+    private fun discardUnrecoverableCache(context: android.content.Context, keyFile: AtomicFile) {
+        File(context.filesDir, CACHE_FILE_NAME).delete()
+        keyFile.delete()
+    }
+
+    private fun wrapCacheDataKey(keyBytes: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKeyStoreSecretKey(KEY_ALIAS_CACHE))
+        cipher.updateAAD(CACHE_KEY_MAGIC_HEADER)
+        val iv = cipher.iv ?: throw IllegalStateException("Cipher failed to generate cache-key IV")
+        val encryptedKey = cipher.doFinal(keyBytes)
+        return ByteBuffer.allocate(CACHE_KEY_MAGIC_HEADER.size + iv.size + encryptedKey.size)
+            .put(CACHE_KEY_MAGIC_HEADER)
+            .put(iv)
+            .put(encryptedKey)
+            .array()
+    }
+
+    private fun unwrapCacheDataKey(wrappedBytes: ByteArray): ByteArray {
+        val expectedLength = CACHE_KEY_MAGIC_HEADER.size + GCM_IV_LENGTH_BYTES + 32 + (GCM_TAG_LENGTH_BITS / 8)
+        require(wrappedBytes.size == expectedLength) { "Invalid wrapped cache key length" }
+        require(CACHE_KEY_MAGIC_HEADER.indices.all { wrappedBytes[it] == CACHE_KEY_MAGIC_HEADER[it] }) {
+            "Invalid wrapped cache key header"
+        }
+
+        val ivOffset = CACHE_KEY_MAGIC_HEADER.size
+        val iv = wrappedBytes.copyOfRange(ivOffset, ivOffset + GCM_IV_LENGTH_BYTES)
+        val encryptedKey = wrappedBytes.copyOfRange(ivOffset + GCM_IV_LENGTH_BYTES, wrappedBytes.size)
+        val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            getOrCreateKeyStoreSecretKey(KEY_ALIAS_CACHE),
+            GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+        )
+        cipher.updateAAD(CACHE_KEY_MAGIC_HEADER)
+        return cipher.doFinal(encryptedKey)
+    }
+
+    private fun writeWrappedCacheDataKey(file: File, bytes: ByteArray) {
+        file.parentFile?.mkdirs()
+        val atomicFile = AtomicFile(file)
+        val stream = atomicFile.startWrite()
+        try {
+            stream.write(bytes)
+            atomicFile.finishWrite(stream)
+        } catch (error: Exception) {
+            atomicFile.failWrite(stream)
+            throw error
+        } finally {
+            bytes.fill(0)
+        }
+    }
+
+    private fun hasV2CacheFile(context: android.content.Context): Boolean {
+        val cacheFile = File(context.filesDir, CACHE_FILE_NAME)
+        if (!cacheFile.isFile || cacheFile.length() < CACHE_MAGIC_HEADER.size + 1L) return false
+        return cacheFile.inputStream().buffered().use { input ->
+            val header = ByteArray(CACHE_MAGIC_HEADER.size + 1)
+            input.read(header) == header.size &&
+                CACHE_MAGIC_HEADER.indices.all { header[it] == CACHE_MAGIC_HEADER[it] } &&
+                header[CACHE_MAGIC_HEADER.size] == CACHE_FORMAT_VERSION_V2
+        }
     }
 
     // =========================================================================
@@ -174,7 +331,7 @@ object SecurityCryptoManager {
     /**
      * Encrypts the entire backup JSON string:
      * - If [password] is provided: uses PBKDF2 (100k iterations) + AES-256-GCM (portable to any device).
-     * - If [password] is null/blank: uses Android KeyStore hardware key (tamper-proof on current device).
+     * - If [password] is null/blank: uses an Android Keystore-managed key bound to this installation.
      */
     fun encryptBackup(jsonPlaintext: String, password: String? = null): String {
         val plaintextBytes = jsonPlaintext.toByteArray(Charsets.UTF_8)
@@ -204,7 +361,7 @@ object SecurityCryptoManager {
             root.put("iv", Base64.encodeToString(iv, Base64.NO_WRAP))
             root.put("ciphertext", Base64.encodeToString(ciphertext, Base64.NO_WRAP))
         } else {
-            // Device KeyStore encryption (hardware-bound, zero-password convenience)
+            // Device Keystore encryption (installation-bound, zero-password convenience)
             val key = getOrCreateKeyStoreSecretKey(KEY_ALIAS_BACKUP)
             val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, key)
@@ -289,9 +446,20 @@ object SecurityCryptoManager {
         salt: ByteArray,
         iterations: Int = PBKDF2_ITERATIONS
     ): SecretKey {
-        val spec = PBEKeySpec(password.toCharArray(), salt, iterations, KEY_LENGTH_BITS)
-        val factory = SecretKeyFactory.getInstance(PBKDF2_ALGORITHM)
-        val keyBytes = factory.generateSecret(spec).encoded
-        return SecretKeySpec(keyBytes, "AES")
+        val passwordChars = password.toCharArray()
+        val spec = PBEKeySpec(passwordChars, salt, iterations, KEY_LENGTH_BITS)
+        try {
+            val keyBytes = SecretKeyFactory.getInstance(PBKDF2_ALGORITHM)
+                .generateSecret(spec)
+                .encoded
+            return try {
+                SecretKeySpec(keyBytes, "AES")
+            } finally {
+                keyBytes.fill(0)
+            }
+        } finally {
+            spec.clearPassword()
+            passwordChars.fill('\u0000')
+        }
     }
 }

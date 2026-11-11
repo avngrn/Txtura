@@ -18,8 +18,15 @@ class MmsWapPushReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
-        if (action != Telephony.Sms.Intents.WAP_PUSH_DELIVER_ACTION &&
-            action != "android.provider.Telephony.WAP_PUSH_RECEIVED"
+        if ((action != Telephony.Sms.Intents.WAP_PUSH_DELIVER_ACTION) &&
+            (action != Telephony.Sms.Intents.WAP_PUSH_RECEIVED_ACTION)
+        ) {
+            return
+        }
+
+        // The default SMS app receives both actions; only DELIVER is for processing.
+        if ((action == Telephony.Sms.Intents.WAP_PUSH_RECEIVED_ACTION) &&
+            (SmsMmsRepository.isDefaultSmsApp(context))
         ) {
             return
         }
@@ -32,7 +39,8 @@ class MmsWapPushReceiver : BroadcastReceiver() {
 
         val pendingResult = goAsync()
         val appContext = context.applicationContext
-        val subId = intent.getIntExtra("subscription", -1)
+        @Suppress("DEPRECATION")
+        val subId = (intent.extras?.get("subscription") as? Number)?.toInt() ?: -1
 
         CoroutineScope(Dispatchers.IO).launch {
             try {

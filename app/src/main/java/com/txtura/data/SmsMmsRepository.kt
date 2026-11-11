@@ -20,8 +20,10 @@ import android.os.Build
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.provider.Telephony
+import android.telephony.CarrierConfigManager
 import android.telephony.PhoneNumberUtils
 import android.telephony.SmsManager
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.widget.Toast
@@ -186,14 +188,47 @@ object SmsMmsRepository {
     }
 
     private var appContext: Context? = null
+    private val initializationLock = Any()
+    @Volatile
+    private var isInitialized = false
+    private var isInitializing = false
+    @Volatile
+    private var initializationJob: Job? = null
 
     fun initializePersistedState(context: Context) {
-        appContext = context.applicationContext
-        preloadInAppSounds(context)
-        loadPersistedPins(context)
-        loadDiskCache(context)
-        ensureNotificationChannel(context)
-        scanAllThreadsForMaliciousWebsitesOnline(context)
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        val shouldInitialize = synchronized(initializationLock) {
+            if (isInitialized || isInitializing) {
+                false
+            } else {
+                isInitializing = true
+                true
+            }
+        }
+        if (!shouldInitialize) return
+
+        initializationJob = ioScope.launch {
+            try {
+                ensureNotificationChannel(appCtx)
+                loadDiskCache(appCtx)
+                preloadInAppSounds(appCtx)
+                isInitialized = true
+                ioScope.launch {
+                    scanAllThreadsForMaliciousWebsitesOnline(appCtx)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Background repository initialization failed", e)
+            } finally {
+                synchronized(initializationLock) {
+                    isInitializing = false
+                }
+            }
+        }
+    }
+
+    suspend fun awaitInitialization() {
+        initializationJob?.join()
     }
 
     /**
@@ -464,82 +499,90 @@ object SmsMmsRepository {
     }
 
     /**
-     * Instantly restores the last known conversation snapshot from hardware-encrypted storage
-     * so that upon app cold start, all conversations and messages are visible immediately in frame 1
-     * without any blank screen or multi-second IPC delay.
-     * The file is encrypted with AES-256-GCM using Android KeyStore, unreadable from PC or ADB.
+     * Restores the local conversation snapshot. Callers run this from Dispatchers.IO:
+     * file reads, preference access, Keystore migration, and JSON decoding can be expensive.
      */
-    fun loadDiskCache(context: Context) {
+    private fun loadDiskCache(context: Context) {
         if (_threads.value.isNotEmpty()) return
-        try {
-            val encFile = File(context.filesDir, THREADS_CACHE_ENC_FILE)
-            val legacyFile = File(context.filesDir, LEGACY_THREADS_CACHE_FILE)
-            val isEncryptedMode = com.txtura.security.AppSecurityManager.isDbEncryptionEnabled(context)
-            val jsonContent: String = when {
-                isEncryptedMode && encFile.exists() && encFile.length() > 0L -> {
-                    val decryptedBytes = SecurityCryptoManager.decryptCache(encFile.readBytes())
-                    String(decryptedBytes, Charsets.UTF_8)
+        synchronized(diskCacheLock) {
+            if (_threads.value.isNotEmpty()) return
+            try {
+                loadPersistedPins(context)
+                val encFile = File(context.filesDir, THREADS_CACHE_ENC_FILE)
+                val legacyFile = File(context.filesDir, LEGACY_THREADS_CACHE_FILE)
+                val isEncryptedMode = com.txtura.security.AppSecurityManager.isDbEncryptionEnabled(context)
+                var needsV1Migration = false
+                val jsonContent: String = when {
+                    isEncryptedMode && encFile.exists() && encFile.length() > 0L -> {
+                        val encryptedBytes = encFile.readBytes()
+                        needsV1Migration = SecurityCryptoManager.isLegacyCacheFormat(encryptedBytes)
+                        val decryptedBytes = SecurityCryptoManager.decryptCache(context, encryptedBytes)
+                        String(decryptedBytes, Charsets.UTF_8)
+                    }
+                    legacyFile.exists() && legacyFile.length() > 0L -> {
+                        legacyFile.readText()
+                    }
+                    encFile.exists() && encFile.length() > 0L -> {
+                        val encryptedBytes = encFile.readBytes()
+                        val decryptedBytes = SecurityCryptoManager.decryptCache(context, encryptedBytes)
+                        String(decryptedBytes, Charsets.UTF_8)
+                    }
+                    else -> return
                 }
-                legacyFile.exists() && legacyFile.length() > 0L -> {
-                    legacyFile.readText()
-                }
-                encFile.exists() && encFile.length() > 0L -> {
-                    val decryptedBytes = SecurityCryptoManager.decryptCache(encFile.readBytes())
-                    String(decryptedBytes, Charsets.UTF_8)
-                }
-                else -> return
-            }
 
-            if (jsonContent.isBlank()) return
+                if (jsonContent.isBlank()) return
 
-            val root = JSONObject(jsonContent)
-            val threadsArray = root.optJSONArray("threads") ?: return
+                val root = JSONObject(jsonContent)
+                val threadsArray = root.optJSONArray("threads") ?: return
 
-            val cachedThreads = mutableListOf<ConversationThread>()
-            for (i in 0 until threadsArray.length()) {
-                val tObj = threadsArray.optJSONObject(i) ?: continue
-                val thread = parseCachedThread(tObj) ?: continue
-                if (isSenderBlocked(thread.address) || (thread.id in deletedThreadTimestamps)) {
-                    continue
-                }
-                cachedThreads.add(thread)
-            }
-
-            val cachedDeleted = mutableListOf<DeletedConversationEntry>()
-            root.optJSONArray("deletedThreads")?.let { dArr ->
-                for (i in 0 until dArr.length()) {
-                    val dObj = dArr.optJSONObject(i) ?: continue
-                    val deletedAt = dObj.optLong("deletedAtMillis", System.currentTimeMillis())
-                    val tObj = dObj.optJSONObject("thread") ?: continue
+                val cachedThreads = ArrayList<ConversationThread>(threadsArray.length())
+                for (i in 0 until threadsArray.length()) {
+                    val tObj = threadsArray.optJSONObject(i) ?: continue
                     val thread = parseCachedThread(tObj) ?: continue
-                    cachedDeleted.add(DeletedConversationEntry(thread = thread, deletedAtMillis = deletedAt))
+                    if (isSenderBlocked(thread.address) || (thread.id in deletedThreadTimestamps)) {
+                        continue
+                    }
+                    cachedThreads.add(thread)
                 }
-            }
 
-            if (cachedThreads.isNotEmpty()) {
-                _threads.value = sortThreads(cachedThreads)
-            }
-            if (cachedDeleted.isNotEmpty()) {
-                _deletedThreads.value = cachedDeleted
-            }
+                val cachedDeleted = ArrayList<DeletedConversationEntry>()
+                root.optJSONArray("deletedThreads")?.let { dArr ->
+                    for (i in 0 until dArr.length()) {
+                        val dObj = dArr.optJSONObject(i) ?: continue
+                        val deletedAt = dObj.optLong("deletedAtMillis", System.currentTimeMillis())
+                        val tObj = dObj.optJSONObject("thread") ?: continue
+                        val thread = parseCachedThread(tObj) ?: continue
+                        cachedDeleted.add(DeletedConversationEntry(thread = thread, deletedAtMillis = deletedAt))
+                    }
+                }
 
-            // Sync with current encryption setting if loaded from mismatched format
-            if (isEncryptedMode && !encFile.exists() && legacyFile.exists()) {
-                saveDiskCacheInternal(context)
-            } else if (!isEncryptedMode && encFile.exists() && !legacyFile.exists()) {
-                saveDiskCacheInternal(context)
+                if (cachedThreads.isNotEmpty()) {
+                    val deduplicated = if (cachedThreads.size <= 1) cachedThreads else deduplicateAndMergeThreads(cachedThreads)
+                    _threads.value = sortThreads(deduplicated)
+                }
+                if (cachedDeleted.isNotEmpty()) {
+                    _deletedThreads.value = cachedDeleted
+                }
+
+                // Migrate the old Keystore-encrypted snapshot after it has been safely decoded.
+                if (isEncryptedMode && needsV1Migration) {
+                    saveDiskCacheInternal(context)
+                } else if (isEncryptedMode && !encFile.exists() && legacyFile.exists()) {
+                    saveDiskCacheInternal(context)
+                } else if (!isEncryptedMode && encFile.exists() && !legacyFile.exists()) {
+                    saveDiskCacheInternal(context)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load threads cache from disk", e)
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to load threads cache from disk", e)
         }
     }
 
     /**
-     * Persists the current conversations and deleted threads snapshot to internal disk cache.
-     * When local database encryption is enabled, encrypts using hardware-backed AES-256-GCM (SQLCipher container format).
-     * Uses atomic rename via temporary file to guarantee crash resistance.
+     * Persists the current conversation snapshot to internal storage.
+     * Call from a worker dispatcher; serialization and AES-GCM operate on the full snapshot.
      */
-    fun saveDiskCacheInternal(context: Context) {
+    private fun saveDiskCacheInternal(context: Context) {
         synchronized(diskCacheLock) {
             try {
                 val currentThreads = _threads.value
@@ -572,7 +615,7 @@ object SmsMmsRepository {
                 val legacyFile = File(context.filesDir, LEGACY_THREADS_CACHE_FILE)
 
                 if (isEncrypted) {
-                    val encryptedBytes = SecurityCryptoManager.encryptCache(jsonBytes)
+                    val encryptedBytes = SecurityCryptoManager.encryptCache(context, jsonBytes)
                     val tmpFile = File(context.filesDir, THREADS_CACHE_ENC_TMP_FILE)
                     tmpFile.writeBytes(encryptedBytes)
                     if (!tmpFile.renameTo(encFile)) {
@@ -592,6 +635,7 @@ object SmsMmsRepository {
                     if (encFile.exists()) {
                         encFile.delete()
                     }
+                    SecurityCryptoManager.clearCacheSessionKey(context, deleteWrappedKey = true)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to persist threads cache", e)
@@ -602,7 +646,7 @@ object SmsMmsRepository {
     /**
      * Re-encrypts or decrypts the local cache when user changes the encryption preference in settings.
      */
-    fun reencryptCache(context: Context, encrypt: Boolean) {
+    fun reencryptCache(context: Context) {
         saveDiskCacheAsync(context, immediate = true)
     }
 
@@ -619,7 +663,7 @@ object SmsMmsRepository {
             synchronized(diskCacheLock) {
                 diskCacheSaveJob?.cancel()
                 diskCacheSaveJob = ioScope.launch {
-                    delay(300.milliseconds)
+                    delay(1500.milliseconds)
                     saveDiskCacheInternal(appCtx)
                 }
             }
@@ -1032,6 +1076,12 @@ object SmsMmsRepository {
             putString(KEY_SMSC_NUMBER, address.trim())
         }
     }
+
+    // Carrier MMS is handled natively by Android's telephony service and carrier bundle
+
+
+
+
 
     fun onMessageDelivered(messageId: Long, context: Context? = null) {
         _threads.update { currentThreads ->
@@ -1582,7 +1632,7 @@ object SmsMmsRepository {
         retentionDays: Int = 30
     ) = withContext(Dispatchers.IO) {
         loadPersistedPins(context)
-        purgeExpiredDeletedThreads(context, retentionDays)
+        purgeExpiredDeletedThreadsInternal(context, retentionDays)
         if (!hasReadSmsPermission(context)) {
             _threads.value = emptyList()
             return@withContext
@@ -2410,7 +2460,10 @@ object SmsMmsRepository {
             }
         } else if (isMms) {
             try {
-                if (!isDataAllowedForMms(context)) {
+                if (!hasSendSmsPermission(context)) {
+                    Log.w(TAG, "MMS send blocked: SEND_SMS permission is not granted")
+                    deliveryStatus = DeliveryStatus.FAILED
+                } else if (!isDataAllowedForMms(context)) {
                     Log.w(TAG, "Cellular MMS send blocked: mobile data disabled for MMS according to user settings")
                     deliveryStatus = DeliveryStatus.FAILED
                 } else {
@@ -2545,9 +2598,12 @@ object SmsMmsRepository {
                         putBoolean(SmsManager.MMS_CONFIG_MMS_DELIVERY_REPORT_ENABLED, requestDeliveryReport)
                         putBoolean(SmsManager.MMS_CONFIG_MMS_READ_REPORT_ENABLED, requestReadReport)
                         putInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, maxBytesLimit)
+                        putBoolean(SmsManager.MMS_CONFIG_SUPPORT_MMS_CONTENT_DISPOSITION, true)
                     }
 
-                    smsManager?.sendMultimediaMessage(
+                    val activeSmsManager = smsManager
+                        ?: throw IllegalStateException("SmsManager is unavailable for MMS sending")
+                    activeSmsManager.sendMultimediaMessage(
                         context,
                         pduUri,
                         null,
@@ -2826,7 +2882,7 @@ object SmsMmsRepository {
         }
 
         context?.let { ctx ->
-            saveDiskCacheInternal(ctx)
+            saveDiskCacheAsync(ctx, immediate = true)
             val isCurrentActiveThread = (activeForegroundThreadId != null && activeForegroundThreadId == targetThreadId)
             if (!isCurrentActiveThread) {
                 postIncomingMessageNotification(
@@ -2970,7 +3026,7 @@ object SmsMmsRepository {
                 PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
 
-            val smsManager = if (subId > 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+            val smsManager = if (subId >= 0) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     context.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
                 } else {
@@ -2995,6 +3051,7 @@ object SmsMmsRepository {
 
             val configOverrides = android.os.Bundle().apply {
                 putInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, maxBytesLimit)
+                putBoolean(SmsManager.MMS_CONFIG_SUPPORT_MMS_CONTENT_DISPOSITION, true)
             }
 
             smsManager?.downloadMultimediaMessage(
@@ -3242,7 +3299,7 @@ object SmsMmsRepository {
             sortThreads(updated)
         }
 
-        saveDiskCacheInternal(context)
+        saveDiskCacheAsync(context, immediate = true)
         val isCurrentActiveThread = (activeForegroundThreadId != null && activeForegroundThreadId == targetThreadId)
         if (!isCurrentActiveThread) {
             postIncomingMessageNotification(
@@ -3328,7 +3385,7 @@ object SmsMmsRepository {
             sortThreads(updated)
         }
 
-        saveDiskCacheInternal(context)
+        saveDiskCacheAsync(context, immediate = true)
         val isCurrentActiveThread = (activeForegroundThreadId != null && activeForegroundThreadId == targetThreadId)
         if (!isCurrentActiveThread && existingMessageId == null) {
             postIncomingMessageNotification(
@@ -3504,6 +3561,7 @@ object SmsMmsRepository {
             data = "txtura://notification/$notificationId".toUri()
             putExtra(EXTRA_NOTIFICATION_THREAD_ID, threadId)
             putExtra(EXTRA_NOTIFICATION_ADDRESS, senderAddress)
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
         }
         val contentPendingIntent = PendingIntent.getActivity(
@@ -4084,17 +4142,23 @@ object SmsMmsRepository {
             currentTrash.filterNot { it.thread.id == threadId }
         }
 
-        // 2. Permanently delete from Android telephony database (SMS, MMS, conversation)
-        val systemThreadIds = (msgs.map { it.threadId }.filter { it > 0L } + setOf(threadId).filter { it > 0L }).toSet()
-        val isEntireThreadDeleted = _threads.value.none { it.id == threadId }
+        // 2. Check if this contact STILL has active messages or an active thread in the inbox
+        val entryAddress = entry?.thread?.address.orEmpty().trim()
+        val hasActiveConversation = _threads.value.any { activeThread ->
+            activeThread.id == threadId ||
+            (entryAddress.isNotBlank() && arePhoneNumbersEqual(activeThread.address, entryAddress))
+        }
+
+        // 3. Permanently delete from Android telephony database ONLY the specific trashed messages!
+        // We do NOT delete the thread or the contact's address if active messages remain in the inbox!
         deleteFromSystemProviderThoroughly(
             context = context,
-            threadIds = systemThreadIds,
+            threadIds = if (!hasActiveConversation && threadId > 0L) setOf(threadId) else emptySet(),
             messageIds = msgIdsToDelete,
-            address = if (isEntireThreadDeleted) entry?.thread?.address else null
+            address = if (!hasActiveConversation && entryAddress.isNotBlank()) entryAddress else null
         )
 
-        // 3. Immediately flush the updated messages and trash state to the offline encrypted disk cache
+        // 4. Immediately flush the updated messages and trash state to the offline encrypted disk cache
         saveDiskCacheAsync(context)
     }
 
@@ -4105,30 +4169,28 @@ object SmsMmsRepository {
     fun emptyTrash(context: Context) {
         val entriesToPurge = _deletedThreads.value
         val threadIdsToPurge = entriesToPurge.map { it.thread.id }.toSet()
-        val activeThreadIds = _threads.value.map { it.id }.toSet()
+        val activeThreads = _threads.value
 
         threadIdsToPurge.forEach { id ->
             deletedThreadTimestamps.remove(id)
         }
 
         val allMsgIds = mutableSetOf<Long>()
-        val allSystemThreadIds = mutableSetOf<Long>()
+        val safeSystemThreadIds = mutableSetOf<Long>()
         val addressesToClean = mutableSetOf<String>()
 
         entriesToPurge.forEach { entry ->
-            val isEntireThreadDeleted = entry.thread.id !in activeThreadIds
-            if (isEntireThreadDeleted && entry.thread.address.isNotBlank()) {
-                addressesToClean.add(entry.thread.address)
+            val entryAddr = entry.thread.address.trim()
+            val hasActive = activeThreads.any { act ->
+                act.id == entry.thread.id || (entryAddr.isNotBlank() && arePhoneNumbersEqual(act.address, entryAddr))
             }
-            if (entry.thread.id > 0L) {
-                allSystemThreadIds.add(entry.thread.id)
+            if (!hasActive) {
+                if (entryAddr.isNotBlank()) addressesToClean.add(entryAddr)
+                if (entry.thread.id > 0L) safeSystemThreadIds.add(entry.thread.id)
             }
             entry.thread.messages.forEach { msg ->
                 deletedMessageMeta.remove(msg.id)
                 allMsgIds.add(msg.id)
-                if (msg.threadId > 0L) {
-                    allSystemThreadIds.add(msg.threadId)
-                }
                 cleanupAttachmentFile(context, msg.attachment?.uri, msg.id)
             }
         }
@@ -4139,7 +4201,7 @@ object SmsMmsRepository {
 
         deleteFromSystemProviderThoroughly(
             context = context,
-            threadIds = allSystemThreadIds,
+            threadIds = safeSystemThreadIds,
             messageIds = allMsgIds,
             addresses = addressesToClean
         )
@@ -4152,6 +4214,13 @@ object SmsMmsRepository {
      * exceeded the configured [retentionDays] period (default 30 days).
      */
     fun purgeExpiredDeletedThreads(context: Context, retentionDays: Int) {
+        val appContext = context.applicationContext
+        ioScope.launch {
+            purgeExpiredDeletedThreadsInternal(appContext, retentionDays)
+        }
+    }
+
+    private fun purgeExpiredDeletedThreadsInternal(context: Context, retentionDays: Int) {
         val now = System.currentTimeMillis()
         val maxAgeMillis = retentionDays.coerceAtLeast(1) * 86_400_000L
         val activeThreadIds = _threads.value.map { it.id }.toSet()
@@ -4188,13 +4257,20 @@ object SmsMmsRepository {
         val allExpiredMsgIds = (expiredTrashEntries.flatMap { it.thread.messages }.map { it.id } +
             expiredMessageEntries.map { it.first }).toSet()
 
-        val allExpiredSysThreadIds = (expiredTrashEntries.flatMap { it.thread.messages }.map { it.threadId }.filter { it > 0L } +
-            expiredThreadIds.filter { it > 0L && it !in activeThreadIds }).toSet()
+        val safeExpiredSysThreadIds = expiredTrashEntries
+            .filter { entry ->
+                entry.thread.id > 0L &&
+                _threads.value.none { act -> act.id == entry.thread.id || arePhoneNumbersEqual(act.address, entry.thread.address) }
+            }
+            .map { it.thread.id }
+            .toSet()
 
         val expiredAddresses = expiredTrashEntries
-            .filter { it.thread.id !in activeThreadIds }
+            .filter { entry ->
+                entry.thread.address.isNotBlank() &&
+                _threads.value.none { act -> act.id == entry.thread.id || arePhoneNumbersEqual(act.address, entry.thread.address) }
+            }
             .map { it.thread.address }
-            .filter { it.isNotBlank() }
             .toSet()
 
         expiredTrashEntries.forEach { entry ->
@@ -4203,10 +4279,10 @@ object SmsMmsRepository {
             }
         }
 
-        if (allExpiredMsgIds.isNotEmpty() || allExpiredSysThreadIds.isNotEmpty()) {
+        if (allExpiredMsgIds.isNotEmpty() || safeExpiredSysThreadIds.isNotEmpty()) {
             deleteFromSystemProviderThoroughly(
                 context = context,
-                threadIds = allExpiredSysThreadIds,
+                threadIds = safeExpiredSysThreadIds,
                 messageIds = allExpiredMsgIds,
                 addresses = expiredAddresses
             )
@@ -4409,30 +4485,21 @@ object SmsMmsRepository {
                 }
             }
 
-            // 3. Delete conversation threads (Telephony conversations, SMS, MMS)
-            threadIds.filter { it > 0L }.forEach { tId ->
+            // 3. Delete conversation threads ONLY IF completely abandoned and not active in inbox
+            val activeThreads = _threads.value
+            val activeThreadIds = activeThreads.map { it.id }.toSet()
+            val safeThreadIds = threadIds.filter { tId ->
+                tId > 0L && tId !in activeThreadIds && activeThreads.none { act -> act.messages.any { it.threadId == tId } }
+            }
+            safeThreadIds.forEach { tId ->
                 try {
                     cr.delete(Uri.parse("content://mms-sms/conversations/$tId"), null, null)
                 } catch (e: Exception) {
                     Log.w(TAG, "Error deleting conversation uri for thread $tId", e)
                 }
-                try {
-                    cr.delete(
-                        Telephony.Sms.CONTENT_URI,
-                        "${Telephony.Sms.THREAD_ID} = ?",
-                        arrayOf(tId.toString())
-                    )
-                } catch (_: Exception) {}
-                try {
-                    cr.delete(
-                        Telephony.Mms.CONTENT_URI,
-                        "${Telephony.Mms.THREAD_ID} = ?",
-                        arrayOf(tId.toString())
-                    )
-                } catch (_: Exception) {}
             }
 
-            // 4. Delete by phone number address if entire conversation is gone and not in active inbox
+            // 4. Delete by phone number address ONLY IF absolutely NO active thread exists with this contact
             val targetAddresses = (addresses + listOfNotNull(address)).filter { it.isNotBlank() && it != "Unknown" }
             targetAddresses.forEach { addr ->
                 val hasActive = _threads.value.any { arePhoneNumbersEqual(it.address, addr) }
@@ -4479,7 +4546,7 @@ object SmsMmsRepository {
         return address in pinnedAddresses || normKey in pinnedAddresses
     }
 
-    private fun normalizeAddressKey(address: String): String {
+    fun normalizeAddressKey(address: String): String {
         val digitsOnly = address.filter { it.isDigit() }
         return if (digitsOnly.length >= 7) {
             digitsOnly.takeLast(8)

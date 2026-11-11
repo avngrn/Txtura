@@ -1,5 +1,18 @@
 # Txtura Changelog & Improvements
 
+## [v3.2] - 2026-11-11
+
+### Performance & Security (Performanse i bezbednost)
+- **Non-blocking startup (Start bez blokiranja):** Moved preference, cache, and emergency-alert initialization off the main thread. Startup waits asynchronously for the local message snapshot before syncing device messages.
+- **AES-256-GCM cache key management (Upravljanje ključem keša):** Local JSON snapshots now use a random 256-bit data key wrapped by Android Keystore and cached in memory for the process session. Existing v1 cache files migrate to v2 after successful decryption.
+- **Backup crypto off the UI thread (Kriptografija bekapa van UI niti):** Password-based PBKDF2 remains enabled for portable backups; backup reading, parsing, encryption, and decryption run on background dispatchers.
+- **Accurate encryption labels (Tačan opis enkripcije):** Security settings now clearly describe AES-256-GCM protection of the local JSON message cache.
+
+### Messaging, Gestures & Navigation (Poruke, pokreti i navigacija)
+- **Pin and unpin list motion (Animacija pinovanja i otpinovanja):** Conversation rows animate between their original position and the top of the list. Pin controls are hidden when either swipe direction is configured for pin/unpin.
+- **System back gestures (Sistemski pokret za nazad):** Android back gestures use the same screen navigation behavior as the in-app back controls.
+- **SMS/MMS delivery handling (Obrada slanja i prijema SMS/MMS poruka):** Sent and downloaded message callbacks are registered; incoming WAP Push payloads are validated and processed asynchronously by the MMS receiver.
+
 ## [v2.4] - 2026-11-09
 
 ### Audio & Notifications (Audio i obaveštenja)
@@ -65,9 +78,9 @@
 ## [v2.0] - 2026-11-08
 
 ### Privacy & Security (Privatnost i bezbednost)
-- **Local Database Encryption (Lokalna enkripcija baze podataka):**
-  - Authenticated AES-256-GCM / SQLCipher hardware-backed message cache encryption using Android Keystore.
-  - Seamless real-time data migration (`reencryptCache`) that instantly encrypts or decrypts local cache when toggled in settings.
+- **Local Message Cache Encryption (Šifrovanje lokalnog keša poruka):**
+  - Authenticated AES-256-GCM encryption of the local conversation snapshot with a random data key wrapped by Android Keystore.
+  - Cache format migration and asynchronous re-encryption when the setting changes.
 - **Biometric Protection & PIN/Passphrase (Biometrijska zaštita i PIN/Passphrase):**
   - Native biometric authentication (fingerprint and face unlock) and device PIN/passphrase protection via `KeyguardManager`.
   - Configurable lock timeout options: Immediate (Odmah), 1 minute, and 5 minutes.

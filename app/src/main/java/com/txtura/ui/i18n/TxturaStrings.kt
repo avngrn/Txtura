@@ -106,6 +106,7 @@ class AppStrings(val isSerbian: Boolean) {
     val next: String = s("Next", "Dalje")
     val enterNameOrPhoneNumber: String = s("Enter name or phone number", "Unesi ime ili broj telefona")
     val confirm: String = s("Confirm", "Potvrdi")
+    val save: String = s("Save", "Sačuvaj")
     val closeDialog: String = s("Close", "Zatvori")
     val toRecipientPrefix: String = s("To:", "Za:")
     val newSmsMmsDialogTitle: String = s("Choose Recipient", "Izaberi primaoca")
@@ -197,13 +198,13 @@ class AppStrings(val isSerbian: Boolean) {
     val settingsCategoryPrivacy: String = s("Privacy & Security", "Privatnost i bezbednost")
 
     // Privacy & Security Details
-    val dbEncryptionTitle: String = s("Local Database Encryption", "Lokalna enkripcija baze podataka")
+    val dbEncryptionTitle: String = s("Local Message Cache Encryption", "Šifrovanje lokalnog keša poruka")
     val dbEncryptionSub: String = s(
-        "Encrypted local database on device using SQLCipher",
-        "Šifrovanje lokalne baze podataka na uređaju pomoću SQLCipher-a",
+        "AES-256-GCM encryption for the local conversation snapshot, protected by an Android Keystore-wrapped key.",
+        "AES-256-GCM zaštita lokalnog keša razgovora ključem zaštićenim u Android Keystore-u.",
     )
-    val dbEncryptionBadge: String = s("SQLCipher 256-bit AES Active", "SQLCipher 256-bit AES Aktivan")
-    val dbEncryptionSwitchLabel: String = s("Enable Database Encryption", "Aktiviraj enkripciju baze")
+    val dbEncryptionBadge: String = s("AES-256-GCM Cache Encryption Active", "AES-256-GCM zaštita keša je aktivna")
+    val dbEncryptionSwitchLabel: String = s("Enable Cache Encryption", "Aktiviraj šifrovanje keša")
     val biometricLockTitle: String = s(
         "Biometric Protection & PIN/Passphrase",
         "Biometrijska zaštita i PIN/Passphrase",
@@ -254,12 +255,12 @@ class AppStrings(val isSerbian: Boolean) {
     val lockTimeout5Min: String = s("After 5 minutes", "Nakon 5 minuta")
     val lockAppNowButton: String = s("Lock App Now (Test)", "Zaključaj aplikaciju odmah (Test)")
     val dbEncryptionEnabledToast: String = s(
-        "Local database encrypted with SQLCipher 256-bit AES.",
-        "Lokalna baza podataka je šifrovana pomoću SQLCipher 256-bit AES-a.",
+        "Local message cache encrypted with AES-256-GCM.",
+        "Lokalni keš poruka je šifrovan AES-256-GCM algoritmom.",
     )
     val dbEncryptionDisabledToast: String = s(
-        "Local database encryption disabled.",
-        "Lokalna enkripcija baze podataka je isključena.",
+        "Local message cache encryption disabled.",
+        "Šifrovanje lokalnog keša poruka je isključeno.",
     )
     val appearanceSectionTitle: String = s("Appearance adjustments", "Prilagođavanje izgleda")
     val uiTransparencyTitle: String = s("UI Transparency", "Providnost interfejsa")
@@ -269,8 +270,8 @@ class AppStrings(val isSerbian: Boolean) {
     val permSmsTitle: String = s("SMS & MMS permissions", "SMS i MMS dozvole")
     val permMicrophoneTitle: String = s("Microphone permission", "Dozvola za mikrofon")
     val permMicrophoneSubGranted: String = s(
-        "Granted (enables recording voice messages via MMS)",
-        "Odobreno (omogućeno snimanje i slanje glasovnih poruka)"
+        "Granted for recording voice messages",
+        "Odobreno za govorne poruke"
     )
     val permMicrophoneSubNotGranted: String = s(
         "Not granted (tap to allow voice message recording)",
@@ -340,12 +341,12 @@ class AppStrings(val isSerbian: Boolean) {
         "Prijemnici su zaključani dozvolama uz parametrizovane upite i isključen nešifrovani bekap.",
     )
     val secItem6Title: String = s(
-        "Local Database Encryption (AES-256-GCM / SQLCipher)",
-        "Lokalna enkripcija baze podataka (AES-256-GCM / SQLCipher)",
+        "Local Message Cache Encryption (AES-256-GCM)",
+        "Šifrovanje lokalnog keša poruka (AES-256-GCM)",
     )
     val secItem6Sub: String = s(
-        "Real-time authenticated encryption of the entire local message cache using hardware-backed Android Keystore keys.",
-        "Autentifikovano šifrovanje celokupnog lokalnog keša poruka u realnom vremenu uz hardversku zaštitu Android Keystore ključeva.",
+        "When enabled, the local conversation snapshot uses AES-256-GCM with a random data key wrapped by Android Keystore.",
+        "Kada je uključeno, lokalni keš razgovora koristi AES-256-GCM i nasumični ključ zaštićen Android Keystore-om.",
     )
     val secItem7Title: String = s(
         "Biometric Protection & PIN/Passphrase App Lock",
@@ -528,7 +529,7 @@ class AppStrings(val isSerbian: Boolean) {
         "Download and send MMS messages even when mobile data is off",
         "Preuzmi i pošalji MMS poruke čak i kada su mobilni podaci isključeni",
     )
-    val mmsDataDisabledNotRoaming: String = s("Not during roaming", "Ne tokom rominga")
+    val mmsDataDisabledNotRoaming: String = s("Not roaming", "Kad nije u romingua")
     val mmsDataDisabledAlways: String = s("Always", "Uvek")
     val mmsDataDisabledNever: String = s("Never", "Nikada")
 
@@ -543,6 +544,32 @@ class AppStrings(val isSerbian: Boolean) {
     val mmsDownloadingAction: String = s("Downloading MMS...", "Preuzimanje MMS-a...")
     val mmsDownloadFailed: String = s("Download failed • Tap to retry", "Preuzimanje neuspešno • Dodirnite za ponovni pokušaj")
     val mmsPendingTitle: String = s("Incoming MMS", "Dolazna MMS poruka")
+
+    // MMS APN Settings
+    val mmsApnSettingsTitle: String = s("Carrier MMS APN Settings", "MMS APN podešavanja operatera")
+    val mmsApnSettingsSub: String = s(
+        "Configure MMSC URL, proxy, and port for sending and receiving MMS messages over cellular networks.",
+        "Podešavanje MMSC URL adrese, MMS proksija i porta za slanje i prijem MMS poruka preko mobilne mreže."
+    )
+    val mmsApnCarrierLabel: String = s("Carrier profile", "Profil operatera")
+    val mmsApnMmscLabel: String = s("MMSC URL", "MMSC URL adresa")
+    val mmsApnProxyLabel: String = s("MMS Proxy", "MMS Proksi")
+    val mmsApnPortLabel: String = s("MMS Port", "MMS Port")
+    val mmsApnPullFromCarrierButton: String = s("Pull from carrier", "Povuci od operatera")
+    val mmsApnPullFromSimOrPhoneButton: String = s("Pull from SIM / Phone", "Preuzmi sa SIM-a / telefona")
+    val mmsApnOpenPhoneSettingsButton: String = s("Open Phone APN Settings", "Podešavanja telefona (APN)")
+    val mmsApnSourceLabel: String = s("Source", "Izvor")
+    val mmsApnManualSetupButton: String = s("Manual MMS setup", "Ručno podesi MMS")
+    val mmsApnPullSuccess: String = s("MMS parameters pulled from carrier successfully", "MMS parametri su uspešno preuzeti od operatera")
+    val mmsApnPullFailure: String = s("Unable to pull APN automatically. Please configure manually.", "Nije moguće automatski preuzeti APN. Podesite parametre ručno.")
+    val mmsApnManualDialogTitle: String = s("Configure MMS APN", "Podešavanje MMS APN parametara")
+    val mmsApnResetToDefault: String = s("Reset to carrier default", "Vrati na fabrička podešavanja operatera")
+    val mmsApnSaveSuccess: String = s("MMS APN parameters saved", "MMS APN parametri su sačuvani")
+    val mmsApnNotConfigured: String = s("Not configured", "Nije podešeno")
+    val mmsApnDirectConnection: String = s("Direct connection (no proxy)", "Direktna veza (bez proksija)")
+    val mmsApnEnterMmscPlaceholder: String = s("http://mms.../servlets/mms", "http://mms.../servlets/mms")
+    val mmsApnEnterProxyPlaceholder: String = s("e.g. 172.17.88.198 or 10.28.0.60", "npr. 172.17.88.198 ili 10.28.0.60")
+    val mmsApnEnterPortPlaceholder: String = s("8080", "8080")
 
     // 7. Wireless Emergency Alerts
     val emergencyAlertsTitle: String = s("Wireless emergency alerts", "Upozorenja o hitnom slučaju")
@@ -800,6 +827,7 @@ class AppStrings(val isSerbian: Boolean) {
     val wpRoyalAmethyst: String = s("Royal Amethyst", "Kraljevski ametist")
     val wpStarlightGalaxy: String = s("Starlight Galaxy", "Zvezdana galaksija")
     val wpCrimsonVelvet: String = s("Crimson Velvet", "Grimizni somot")
+    val wpBurgundyAnita: String = s("Burgundy Anita", "Burgundi Anita")
     val wpArcticFrost: String = s("Arctic Frost", "Arktički led")
     val wpObsidianGold: String = s("Obsidian & Gold", "Obsidijan i zlato")
     val wpMonoSlate: String = s("With Titanium Accent", "Sa titanijumskim akcentom")
@@ -809,6 +837,7 @@ class AppStrings(val isSerbian: Boolean) {
     val wpMonoPlum: String = s("With Amethyst Accent", "Sa ametistnim akcentom")
     val wpMonoGraphite: String = s("With Silver Accent", "Sa srebrnim akcentom")
     val wpMonoRose: String = s("With Rose Accent", "Sa ružičastim akcentom")
+    val wpMonoBurgundy: String = s("With Burgundy Accent", "Sa burgundi akcentom")
     val wpMonoNavy: String = s("With Indigo Accent", "Sa indigo akcentom")
     val wpMonoSmoke: String = s("With Teal Accent", "Sa tirkiznim akcentom")
     val wpMonoEspresso: String = s("With Copper Accent", "Sa bakarnim akcentom")
@@ -851,6 +880,10 @@ class AppStrings(val isSerbian: Boolean) {
         "Deep ruby with emerald",
         "Duboki rubin i smaragd",
     )
+    val wpBurgundyAnitaDesc: String = s(
+        "Opulent burgundy wine & velvety rose",
+        "Raskošni burgundac boje vina i baršunasta ruža",
+    )
     val wpArcticFrostDesc: String = s(
         "Polar ice with soft rose",
         "Polarni led i nežna ružičasta",
@@ -886,6 +919,10 @@ class AppStrings(val isSerbian: Boolean) {
     val wpMonoRoseDesc: String = s(
         "Velvet rose & crimson tone",
         "Baršunasta ružičasta i grimiz",
+    )
+    val wpMonoBurgundyDesc: String = s(
+        "Deep burgundy wine & velvety crimson",
+        "Duboki burgundac boje vina i baršunasti rubin",
     )
     val wpMonoNavyDesc: String = s(
         "Deep royal indigo & navy",

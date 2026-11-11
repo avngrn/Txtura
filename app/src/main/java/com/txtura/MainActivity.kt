@@ -16,6 +16,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.app.NotificationManager
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.PersistableBundle
@@ -32,21 +33,13 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
+import com.txtura.ui.theme.TxturaMotion
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
@@ -232,6 +225,13 @@ class MainActivity : ComponentActivity() {
     private var rationaleBannerText by mutableStateOf<String?>(null)
     private var permissionRefreshTick by mutableIntStateOf(0)
     private var isAppLocked by mutableStateOf(false)
+    private var startupPreferencesReady by mutableStateOf(false)
+    private var startupInitializationFinished = false
+    private var pendingStartupIntent: Intent? = null
+    private var firstStartupDone = false
+    private var biometricLockEnabled = false
+    private var deviceLockConfigured = false
+    private var biometricLockTimeoutMinutes = 0
     private var isAuthenticating by mutableStateOf(false)
     private var lastPauseTimestamp by mutableLongStateOf(0L)
     private var lastUnlockTimestamp by mutableLongStateOf(0L)
@@ -432,7 +432,7 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
             if (uri != null) {
                 lifecycleScope.launch {
-                    val settings = buildAppSettingsSnapshot()
+                    val settings = withContext(Dispatchers.IO) { buildAppSettingsSnapshot() }
                     val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
                     val highlightedMsgs = SmsMmsRepository.getHighlightedMessageIdsSnapshot()
                     val blockedAddrs = SmsMmsRepository.getBlockedAddressesSnapshot()
@@ -440,20 +440,26 @@ class MainActivity : ComponentActivity() {
                     val currentThreads = SmsMmsRepository.threads.value
                     val currentDeleted = SmsMmsRepository.deletedThreads.value
 
-                    val json = BackupManager.generateBackupJson(
-                        settings = settings,
-                        threads = currentThreads,
-                        deletedThreads = currentDeleted,
-                        pinnedAddresses = pinnedAddrs,
-                        pinnedMessageIds = pinnedMsgs,
-                        highlightedMessageIds = highlightedMsgs,
-                        blockedAddresses = blockedAddrs,
-                        deletedThreadsMeta = deletedMeta,
-                    )
+                    val json = withContext(Dispatchers.IO) {
+                        BackupManager.generateBackupJson(
+                            settings = settings,
+                            threads = currentThreads,
+                            deletedThreads = currentDeleted,
+                            pinnedAddresses = pinnedAddrs,
+                            pinnedMessageIds = pinnedMsgs,
+                            highlightedMessageIds = highlightedMsgs,
+                            blockedAddresses = blockedAddrs,
+                            deletedThreadsMeta = deletedMeta,
+                        )
+                    }
                     val pwd = pendingBackupPassword
-                    val success = BackupManager.saveBackupToUri(this@MainActivity, uri, json, pwd)
+                    val success = withContext(Dispatchers.IO) {
+                        BackupManager.saveBackupToUri(this@MainActivity, uri, json, pwd)
+                    }
                     if (success) {
-                        BackupManager.createInternalBackupFile(this@MainActivity, json, pwd)
+                        withContext(Dispatchers.IO) {
+                            BackupManager.createInternalBackupFile(this@MainActivity, json, pwd)
+                        }
                         pendingBackupPassword = null
                         lastBackupTimestamp = System.currentTimeMillis()
                         val locStrings = TxturaStrings.forLocale()
@@ -475,14 +481,20 @@ class MainActivity : ComponentActivity() {
             if (uri != null) {
                 lifecycleScope.launch {
                     try {
-                        val rawContent = BackupManager.readBackupFromUri(this@MainActivity, uri)
-                        if (SecurityCryptoManager.isEncryptedBackup(rawContent) &&
-                            SecurityCryptoManager.isPasswordProtectedBackup(rawContent)
-                        ) {
+                        val (rawContent, needsPassword) = withContext(Dispatchers.IO) {
+                            val contents = BackupManager.readBackupFromUri(this@MainActivity, uri)
+                            contents to (
+                                SecurityCryptoManager.isEncryptedBackup(contents) &&
+                                    SecurityCryptoManager.isPasswordProtectedBackup(contents)
+                                )
+                        }
+                        if (needsPassword) {
                             pendingEncryptedBackupContent = rawContent
                             showRestorePasswordPrompt = true
                         } else {
-                            val payload = BackupManager.parseBackupJson(rawContent)
+                            val payload = withContext(Dispatchers.IO) {
+                                BackupManager.parseBackupJson(rawContent)
+                            }
                             pendingRestorePayload = payload
                         }
                     } catch (e: DeviceKeyMismatchException) {
@@ -506,27 +518,26 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private data class StartupSettings(
+        val appPreferences: Map<String, *>,
+        val legacyFlashAlertEnabled: Boolean,
+        val notificationSound: SmsNotificationSound,
+        val lastBackupTimestamp: Long,
+        val biometricLockEnabled: Boolean,
+        val deviceLockConfigured: Boolean,
+        val biometricLockTimeoutMinutes: Int
+    )
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        loadSavedAppPreferences()
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        if (AppSecurityManager.isBiometricLockEnabled(this)) {
-            if (AppSecurityManager.isDeviceLockConfigured(this)) {
-                isAppLocked = true
-            } else {
-                AppSecurityManager.setBiometricLockEnabled(this, false)
-                isAppLocked = false
-            }
-        }
-        SmsMmsRepository.initializePersistedState(this)
-        EmergencyAlertManager.initialize(this)
-        lastBackupTimestamp = BackupManager.getLastBackupTimestamp(this)
-        handleIncomingSmsIntentSafely(intent)
-        checkFirstStartupPermissionsAndRole()
 
         setContent {
-            val threads by SmsMmsRepository.threads.collectAsState()
+            if (!startupPreferencesReady) {
+                Box(modifier = Modifier.fillMaxSize())
+            } else {
+                val threads by SmsMmsRepository.threads.collectAsState()
             val deletedThreads by SmsMmsRepository.deletedThreads.collectAsState()
             val blockedSenders by SmsMmsRepository.blockedSenders.collectAsState()
             val scheduledMessages by SmsMmsRepository.scheduledMessages.collectAsState()
@@ -541,6 +552,7 @@ class MainActivity : ComponentActivity() {
             var availableContacts by remember { mutableStateOf<List<ContactPickerItem>>(emptyList()) }
 
             LaunchedEffect(hasSmsPerm, isDefaultSms, autoDeleteDays) {
+                SmsMmsRepository.awaitInitialization()
                 SmsMmsRepository.purgeExpiredDeletedThreads(this@MainActivity, autoDeleteDays)
                 if (hasSmsPerm || isDefaultSms) {
                     SmsMmsRepository.syncDeviceMessages(this@MainActivity, autoDeleteDays)
@@ -551,8 +563,8 @@ class MainActivity : ComponentActivity() {
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "3.1"
-                }.getOrDefault("3.1")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "3.2"
+                }.getOrDefault("3.2")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -616,6 +628,16 @@ class MainActivity : ComponentActivity() {
                         activeThreadAddress = selectedThread.address
                     }
                     SmsMmsRepository.markThreadRead(this@MainActivity, selectedThread.id)
+                }
+            }
+
+            LaunchedEffect(threads, activeThreadAddress) {
+                val targetAddr = activeThreadAddress
+                if (!targetAddr.isNullOrBlank()) {
+                    val realThread = SmsMmsRepository.findThreadByAddress(threads, targetAddr)
+                    if (realThread != null && activeThreadId != realThread.id) {
+                        activeThreadId = realThread.id
+                    }
                 }
             }
 
@@ -701,48 +723,15 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize(),
                         wallpaperConfig = currentWallpaper
                     ) {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxWidth()
-                            ) {
                                 AnimatedContent(
                                     targetState = currentScreen,
                                     modifier = Modifier.fillMaxSize(),
                                     transitionSpec = {
-                                        if (expressiveAnimationsEnabled) {
-                                            val forward = getScreenOrder(targetState, dockBarOrder) >= getScreenOrder(initialState, dockBarOrder)
-                                            if (forward) {
-                                                (slideInHorizontally(
-                                                    animationSpec = spring(
-                                                        dampingRatio = Spring.DampingRatioLowBouncy,
-                                                        stiffness = Spring.StiffnessMediumLow
-                                                    ),
-                                                    initialOffsetX = { it / 4 }
-                                                ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
-                                                    slideOutHorizontally(
-                                                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                                        targetOffsetX = { -it / 6 }
-                                                    ) + fadeOut()
-                                                )
-                                            } else {
-                                                (slideInHorizontally(
-                                                    animationSpec = spring(
-                                                        dampingRatio = Spring.DampingRatioLowBouncy,
-                                                        stiffness = Spring.StiffnessMediumLow
-                                                    ),
-                                                    initialOffsetX = { -it / 6 }
-                                                ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
-                                                    slideOutHorizontally(
-                                                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                                        targetOffsetX = { it / 4 }
-                                                    ) + fadeOut()
-                                                )
-                                            }
-                                        } else {
-                                            fadeIn(tween(140)).togetherWith(fadeOut(tween(100)))
-                                        }
+                                        val forward = getScreenOrder(targetState, dockBarOrder) >= getScreenOrder(initialState, dockBarOrder)
+                                        TxturaMotion.screenTransition(
+                                            forward = forward,
+                                            isExpressive = expressiveAnimationsEnabled
+                                        )
                                     },
                                     label = "mainScreenTransition"
                                 ) { screen ->
@@ -1115,7 +1104,7 @@ class MainActivity : ComponentActivity() {
                             onRequestDefaultSmsRole = ::requestDefaultSmsRoleSafely,
                             onOpenSystemAppSettings = ::openAppDetailsSettings,
                             onLockAppNow = {
-                                if (AppSecurityManager.isDeviceLockConfigured(this@MainActivity)) {
+                                if (deviceLockConfigured) {
                                     lastPauseTimestamp = 1L
                                     lastUnlockTimestamp = 0L
                                     isAppLocked = true
@@ -1385,83 +1374,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-            val isDockScreen = currentScreen == MainAppScreen.CONVERSATIONS_LIST ||
-                currentScreen == MainAppScreen.HIGHLIGHTED_MESSAGES ||
-                currentScreen == MainAppScreen.DELETED_MESSAGES
-
-            AnimatedVisibility(
-                visible = isDockScreen && !isConversationsSelectionMode,
-                enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) + expandVertically(expandFrom = Alignment.Bottom),
-                exit = fadeOut(spring(stiffness = Spring.StiffnessMediumLow)) + shrinkVertically(shrinkTowards = Alignment.Bottom)
-            ) {
-                val totalHighlightedCount = remember(threads) {
-                    SmsMmsRepository.getHighlightedMessageIdsSnapshot().size
-                }
-                val activeDockItem = when (currentScreen) {
-                    MainAppScreen.HIGHLIGHTED_MESSAGES -> DockBarItem.HIGHLIGHTED
-                    MainAppScreen.DELETED_MESSAGES -> DockBarItem.DELETED
-                    else -> null
-                }
-                val metrics = LocalAdaptiveMetrics.current
-                HomeBottomDockBar(
-                    deletedCount = deletedThreads.size,
-                    highlightedCount = totalHighlightedCount,
-                    strings = strings,
-                    dockBarOrder = dockBarOrder,
-                    onUpdateDockBarOrder = { newOrder ->
-                        dockBarOrder = newOrder
-                        saveDockBarOrder(newOrder)
-                    },
-                    onOpenDeletedMessages = {
-                        if (currentScreen == MainAppScreen.DELETED_MESSAGES) {
-                            showDeletedMessagesScreen = false
-                        } else {
-                            showHighlightedMessagesScreen = false
-                            showSettingsScreen = false
-                            showDeletedMessagesScreen = true
-                        }
-                    },
-                    onOpenHighlightedMessages = {
-                        if (currentScreen == MainAppScreen.HIGHLIGHTED_MESSAGES) {
-                            showHighlightedMessagesScreen = false
-                        } else {
-                            showDeletedMessagesScreen = false
-                            showSettingsScreen = false
-                            showHighlightedMessagesScreen = true
-                        }
-                    },
-                    onOpenNewMessage = {
-                        showDeletedMessagesScreen = false
-                        showHighlightedMessagesScreen = false
-                        showSettingsScreen = false
-                        prefilledRecipient = ""
-                        prefilledBody = ""
-                        showNewMessageDialog = true
-                    },
-                    onMarkAllRead = {
-                        SmsMmsRepository.markAllThreadsRead(this@MainActivity)
-                        val locStrings = TxturaStrings.forLocale()
-                        Toast.makeText(
-                            this@MainActivity,
-                            locStrings.allMessagesMarkedReadToast,
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    },
-                    onOpenSettings = {
-                        showDeletedMessagesScreen = false
-                        showHighlightedMessagesScreen = false
-                        showSettingsScreen = true
-                    },
-                    activeItem = activeDockItem,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = (12 * metrics.scaleFactor).dp)
-                        .padding(top = (4 * metrics.scaleFactor).dp, bottom = metrics.safeBottomClearance)
-                )
-            }
-        }
-    }
-
                 // Per-Contact Chat Wallpaper Picker Dialog
                 val wallpaperDialogThread = showChatWallpaperDialogForThread
                 if (wallpaperDialogThread != null) {
@@ -1648,10 +1560,23 @@ class MainActivity : ComponentActivity() {
                             val rawContent = pendingEncryptedBackupContent
                             if (rawContent != null) {
                                 try {
-                                    val payload = BackupManager.parseBackupJson(rawContent, pwd)
-                                    showRestorePasswordPrompt = false
-                                    pendingEncryptedBackupContent = null
-                                    pendingRestorePayload = payload
+                                    lifecycleScope.launch {
+                                        try {
+                                            val payload = withContext(Dispatchers.IO) {
+                                                BackupManager.parseBackupJson(rawContent, pwd)
+                                            }
+                                            showRestorePasswordPrompt = false
+                                            pendingEncryptedBackupContent = null
+                                            pendingRestorePayload = payload
+                                        } catch (_: Exception) {
+                                            val locStrings = TxturaStrings.forLocale()
+                                            Toast.makeText(
+                                                this@MainActivity,
+                                                locStrings.backupPasswordIncorrect,
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
                                 } catch (_: Exception) {
                                     val locStrings = TxturaStrings.forLocale()
                                     Toast.makeText(
@@ -1671,6 +1596,49 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        }
+        lifecycleScope.launch {
+            val startupSettings = withContext(Dispatchers.IO) {
+                val appPreferences = getSharedPreferences(APP_PREFS, MODE_PRIVATE).all.mapValues { (_, value) ->
+                    if (value is Set<*>) value.toSet() else value
+                }
+                StartupSettings(
+                    appPreferences = appPreferences,
+                    legacyFlashAlertEnabled = FlashNotificationManager.isFlashAlertEnabled(this@MainActivity),
+                    notificationSound = SmsMmsRepository.getSmsNotificationSound(this@MainActivity),
+                    lastBackupTimestamp = BackupManager.getLastBackupTimestamp(this@MainActivity),
+                    biometricLockEnabled = AppSecurityManager.isBiometricLockEnabled(this@MainActivity),
+                    deviceLockConfigured = AppSecurityManager.isDeviceLockConfigured(this@MainActivity),
+                    biometricLockTimeoutMinutes = AppSecurityManager.getBiometricLockTimeout(this@MainActivity)
+                )
+            }
+
+            applySavedAppPreferences(
+                values = startupSettings.appPreferences,
+                legacyFlashAlertEnabled = startupSettings.legacyFlashAlertEnabled,
+                notificationSound = startupSettings.notificationSound
+            )
+            firstStartupDone = startupSettings.appPreferences[KEY_FIRST_STARTUP_DONE] as? Boolean ?: false
+            lastBackupTimestamp = startupSettings.lastBackupTimestamp
+            biometricLockEnabled = startupSettings.biometricLockEnabled
+            deviceLockConfigured = startupSettings.deviceLockConfigured
+            biometricLockTimeoutMinutes = startupSettings.biometricLockTimeoutMinutes
+            if (biometricLockEnabled && !deviceLockConfigured) {
+                withContext(Dispatchers.IO) {
+                    AppSecurityManager.setBiometricLockEnabled(this@MainActivity, false)
+                }
+                biometricLockEnabled = false
+            }
+            isAppLocked = biometricLockEnabled && deviceLockConfigured
+            startupPreferencesReady = true
+
+            SmsMmsRepository.awaitInitialization()
+            startupInitializationFinished = true
+            val startupIntent = pendingStartupIntent ?: intent
+            pendingStartupIntent = null
+            handleIncomingSmsIntentSafely(startupIntent)
+            checkFirstStartupPermissionsAndRole()
+        }
     }
 
     /**
@@ -1682,27 +1650,36 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         permissionRefreshTick++
         SmsMmsRepository.purgeExpiredDeletedThreads(this, autoDeleteDays)
-        val prefs = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
-        val firstStartupDone = prefs.getBoolean(KEY_FIRST_STARTUP_DONE, false)
-        if (firstStartupDone && !SmsMmsRepository.isDefaultSmsApp(this)) {
+        if (startupPreferencesReady && firstStartupDone && !SmsMmsRepository.isDefaultSmsApp(this)) {
             showDefaultSmsRolePrompt = true
         }
     }
 
     override fun onResume() {
         super.onResume()
-        if (isAuthenticating) {
-            return
-        }
-        if (AppSecurityManager.isBiometricLockEnabled(this) && !isAppLocked) {
-            if (!AppSecurityManager.isDeviceLockConfigured(this)) {
-                AppSecurityManager.setBiometricLockEnabled(this, false)
-            } else {
-                val timeoutMinutes = AppSecurityManager.getBiometricLockTimeout(this)
-                val elapsed = System.currentTimeMillis() - lastPauseTimestamp
-                val gracePeriod = System.currentTimeMillis() - lastUnlockTimestamp
-                if (gracePeriod > 3000L && lastPauseTimestamp > 0L) {
-                    if (timeoutMinutes == 0 || elapsed >= timeoutMinutes * 60 * 1000L) {
+        if (!isAuthenticating && startupInitializationFinished) {
+            lifecycleScope.launch {
+                val lockSettings = withContext(Dispatchers.IO) {
+                    Triple(
+                        AppSecurityManager.isBiometricLockEnabled(this@MainActivity),
+                        AppSecurityManager.isDeviceLockConfigured(this@MainActivity),
+                        AppSecurityManager.getBiometricLockTimeout(this@MainActivity)
+                    )
+                }
+                biometricLockEnabled = lockSettings.first
+                deviceLockConfigured = lockSettings.second
+                biometricLockTimeoutMinutes = lockSettings.third
+                if (biometricLockEnabled && !deviceLockConfigured) {
+                    withContext(Dispatchers.IO) {
+                        AppSecurityManager.setBiometricLockEnabled(this@MainActivity, false)
+                    }
+                    biometricLockEnabled = false
+                } else if (biometricLockEnabled && !isAppLocked) {
+                    val elapsed = System.currentTimeMillis() - lastPauseTimestamp
+                    val gracePeriod = System.currentTimeMillis() - lastUnlockTimestamp
+                    if (gracePeriod > 3000L && lastPauseTimestamp > 0L &&
+                        (biometricLockTimeoutMinutes == 0 || elapsed >= biometricLockTimeoutMinutes * 60 * 1000L)
+                    ) {
                         isAppLocked = true
                     }
                 }
@@ -1715,8 +1692,8 @@ class MainActivity : ComponentActivity() {
     private fun triggerAppEntryUpdateCheck() {
         lifecycleScope.launch(Dispatchers.IO) {
             val currentAppVersionName = runCatching {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "3.1"
-            }.getOrDefault("3.1")
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "3.2"
+            }.getOrDefault("3.2")
             AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
         }
     }
@@ -1742,7 +1719,8 @@ class MainActivity : ComponentActivity() {
         val title = if (isSr) "Txtura Zaštita" else "Txtura Security"
         val desc = if (isSr) "Otključajte Txtura aplikaciju biometrijom ili PIN-om" else "Unlock Txtura with biometric or device PIN"
 
-        if (!AppSecurityManager.isDeviceLockConfigured(this)) {
+        if (!deviceLockConfigured) {
+            biometricLockEnabled = false
             AppSecurityManager.setBiometricLockEnabled(this, false)
             onAuthenticationSuccess()
             Toast.makeText(
@@ -1858,62 +1836,69 @@ class MainActivity : ComponentActivity() {
         onAuthenticationSuccess()
     }
 
-    private fun loadSavedAppPreferences() {
-        val prefs = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
-        val savedThemeName = prefs.getString(KEY_THEME_MODE, TxturaThemeMode.AMOLED.name)
-        themeMode = TxturaThemeMode.entries.find { it.name == savedThemeName }
-            ?: TxturaThemeMode.AMOLED
-        showContactPhotos = prefs.getBoolean(KEY_SHOW_CONTACT_PHOTOS, true)
-        val savedLayoutMode = prefs.getString(KEY_MAIN_LIST_LAYOUT_MODE, MainListLayoutMode.DEFAULT.name)
-        listLayoutMode = MainListLayoutMode.entries.find { it.name == savedLayoutMode }
-            ?: MainListLayoutMode.DEFAULT
-        bubbleZoomScale = prefs.getFloat(KEY_BUBBLE_ZOOM_SCALE, 1.0f).coerceIn(0.75f, 1.65f)
-        mainWallpaper = WallpaperConfig.deserialize(prefs.getString(KEY_MAIN_WALLPAPER, null))
+    private fun applySavedAppPreferences(
+        values: Map<String, *>,
+        legacyFlashAlertEnabled: Boolean,
+        notificationSound: SmsNotificationSound
+    ) {
+        fun string(key: String): String? = values[key] as? String
+        fun boolean(key: String, default: Boolean): Boolean = values[key] as? Boolean ?: default
+        fun float(key: String, default: Float): Float = values[key] as? Float ?: default
+        fun int(key: String, default: Int): Int = values[key] as? Int ?: default
 
-        val savedContactWpSet = prefs.getStringSet(KEY_CONTACT_WALLPAPERS, emptySet()).orEmpty()
+        themeMode = TxturaThemeMode.entries.find {
+            it.name == (string(KEY_THEME_MODE) ?: TxturaThemeMode.AMOLED.name)
+        } ?: TxturaThemeMode.AMOLED
+        showContactPhotos = boolean(KEY_SHOW_CONTACT_PHOTOS, true)
+        listLayoutMode = MainListLayoutMode.entries.find {
+            it.name == (string(KEY_MAIN_LIST_LAYOUT_MODE) ?: MainListLayoutMode.DEFAULT.name)
+        } ?: MainListLayoutMode.DEFAULT
+        bubbleZoomScale = float(KEY_BUBBLE_ZOOM_SCALE, 1.0f).coerceIn(0.75f, 1.65f)
+        mainWallpaper = WallpaperConfig.deserialize(string(KEY_MAIN_WALLPAPER))
+
+        val savedContactWpSet = (values[KEY_CONTACT_WALLPAPERS] as? Set<*>)
+            .orEmpty()
+            .mapNotNull { it as? String }
         val parsedMap = mutableMapOf<String, WallpaperConfig>()
         savedContactWpSet.forEach { entry ->
             val sepIdx = entry.indexOf('|')
             if (sepIdx > 0) {
-                val key = entry.substring(0, sepIdx)
-                val rawVal = entry.substring(sepIdx + 1)
-                parsedMap[key] = WallpaperConfig.deserialize(rawVal)
+                parsedMap[entry.substring(0, sepIdx)] =
+                    WallpaperConfig.deserialize(entry.substring(sepIdx + 1))
             }
         }
         contactWallpapers = parsedMap
 
-        val savedRight = prefs.getString(KEY_SWIPE_RIGHT_ACTION, SwipeAction.PIN.name)
-        swipeRightAction = SwipeAction.entries.find { it.name == savedRight } ?: SwipeAction.PIN
-
-        val savedLeft = prefs.getString(KEY_SWIPE_LEFT_ACTION, SwipeAction.DELETE.name)
-        swipeLeftAction = SwipeAction.entries.find { it.name == savedLeft } ?: SwipeAction.DELETE
-
-        autoDeleteDays = prefs.getInt(KEY_AUTO_DELETE_DAYS, 30).coerceIn(1, 365)
-
-        val savedGrouping = prefs.getString(KEY_DELETED_GROUPING_MODE, DeletedGroupingMode.BY_DATE.name)
-        deletedGroupingMode = DeletedGroupingMode.entries.find { it.name == savedGrouping }
-            ?: DeletedGroupingMode.BY_DATE
-
-        val savedColorMode = prefs.getString(KEY_UI_COLOR_MODE, UiColorMode.COLORFUL.name)
-        uiColorMode = UiColorMode.entries.find { it.name == savedColorMode } ?: UiColorMode.COLORFUL
-
-        uiOpacity = prefs.getFloat(KEY_UI_OPACITY, 0.50f).coerceIn(0.0f, 1.0f)
-        categoryOrder = ConversationFilter.deserializeOrder(prefs.getString(KEY_CATEGORY_ORDER, null))
-        dockBarOrder = DockBarItem.deserializeOrder(prefs.getString(KEY_DOCK_BAR_ORDER, null))
-        recallMessagesEnabled = prefs.getBoolean(KEY_RECALL_MESSAGES_ENABLED, true)
-        identifyMaliciousWebsites = prefs.getBoolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, true)
-        inAppSoundsEnabled = prefs.getBoolean(KEY_IN_APP_SOUNDS_ENABLED, true)
-        pinchToZoomEnabled = prefs.getBoolean(KEY_PINCH_TO_ZOOM_ENABLED, true)
-        expressiveAnimationsEnabled = prefs.getBoolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, true)
-        flashAlertEnabled = prefs.getBoolean(KEY_FLASH_ALERT_ENABLED, false) || FlashNotificationManager.isFlashAlertEnabled(this)
-        hapticsEnabled = prefs.getBoolean(KEY_HAPTICS_ENABLED, true)
+        swipeRightAction = SwipeAction.entries.find {
+            it.name == (string(KEY_SWIPE_RIGHT_ACTION) ?: SwipeAction.PIN.name)
+        } ?: SwipeAction.PIN
+        swipeLeftAction = SwipeAction.entries.find {
+            it.name == (string(KEY_SWIPE_LEFT_ACTION) ?: SwipeAction.DELETE.name)
+        } ?: SwipeAction.DELETE
+        autoDeleteDays = int(KEY_AUTO_DELETE_DAYS, 30).coerceIn(1, 365)
+        deletedGroupingMode = DeletedGroupingMode.entries.find {
+            it.name == (string(KEY_DELETED_GROUPING_MODE) ?: DeletedGroupingMode.BY_DATE.name)
+        } ?: DeletedGroupingMode.BY_DATE
+        uiColorMode = UiColorMode.entries.find {
+            it.name == (string(KEY_UI_COLOR_MODE) ?: UiColorMode.COLORFUL.name)
+        } ?: UiColorMode.COLORFUL
+        uiOpacity = float(KEY_UI_OPACITY, 0.50f).coerceIn(0.0f, 1.0f)
+        categoryOrder = ConversationFilter.deserializeOrder(string(KEY_CATEGORY_ORDER))
+        dockBarOrder = DockBarItem.deserializeOrder(string(KEY_DOCK_BAR_ORDER))
+        recallMessagesEnabled = boolean(KEY_RECALL_MESSAGES_ENABLED, true)
+        identifyMaliciousWebsites = boolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, true)
+        inAppSoundsEnabled = boolean(KEY_IN_APP_SOUNDS_ENABLED, true)
+        pinchToZoomEnabled = boolean(KEY_PINCH_TO_ZOOM_ENABLED, true)
+        expressiveAnimationsEnabled = boolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, true)
+        flashAlertEnabled = boolean(KEY_FLASH_ALERT_ENABLED, false) || legacyFlashAlertEnabled
+        hapticsEnabled = boolean(KEY_HAPTICS_ENABLED, true)
         TxturaHaptics.isEnabled = hapticsEnabled
-        bubblesEnabled = prefs.getBoolean(KEY_BUBBLES_ENABLED, true)
-        autoPreviewsShowAll = prefs.getBoolean(KEY_AUTO_PREVIEWS_SHOW_ALL, true)
-        autoPreviewsWebLinksOnly = prefs.getBoolean(KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY, false)
-        autoPreviewsWifiOnly = prefs.getBoolean(KEY_AUTO_PREVIEWS_WIFI_ONLY, false)
+        bubblesEnabled = boolean(KEY_BUBBLES_ENABLED, true)
+        autoPreviewsShowAll = boolean(KEY_AUTO_PREVIEWS_SHOW_ALL, true)
+        autoPreviewsWebLinksOnly = boolean(KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY, false)
+        autoPreviewsWifiOnly = boolean(KEY_AUTO_PREVIEWS_WIFI_ONLY, false)
         MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled = identifyMaliciousWebsites
-        smsNotificationSound = SmsMmsRepository.getSmsNotificationSound(this)
+        smsNotificationSound = notificationSound
     }
 
     private fun contactWallpaperKey(address: String): String {
@@ -2132,7 +2117,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleShareBackupFile() {
         lifecycleScope.launch {
-            val settings = buildAppSettingsSnapshot()
+            val settings = withContext(Dispatchers.IO) { buildAppSettingsSnapshot() }
             val (pinnedAddrs, pinnedMsgs) = SmsMmsRepository.getPinnedDataSnapshot()
             val highlightedMsgs = SmsMmsRepository.getHighlightedMessageIdsSnapshot()
             val blockedAddrs = SmsMmsRepository.getBlockedAddressesSnapshot()
@@ -2140,17 +2125,21 @@ class MainActivity : ComponentActivity() {
             val currentThreads = SmsMmsRepository.threads.value
             val currentDeleted = SmsMmsRepository.deletedThreads.value
 
-            val json = BackupManager.generateBackupJson(
-                settings = settings,
-                threads = currentThreads,
-                deletedThreads = currentDeleted,
-                pinnedAddresses = pinnedAddrs,
-                pinnedMessageIds = pinnedMsgs,
-                highlightedMessageIds = highlightedMsgs,
-                blockedAddresses = blockedAddrs,
-                deletedThreadsMeta = deletedMeta,
-            )
-            val file = BackupManager.createInternalBackupFile(this@MainActivity, json)
+            val json = withContext(Dispatchers.IO) {
+                BackupManager.generateBackupJson(
+                    settings = settings,
+                    threads = currentThreads,
+                    deletedThreads = currentDeleted,
+                    pinnedAddresses = pinnedAddrs,
+                    pinnedMessageIds = pinnedMsgs,
+                    highlightedMessageIds = highlightedMsgs,
+                    blockedAddresses = blockedAddrs,
+                    deletedThreadsMeta = deletedMeta,
+                )
+            }
+            val file = withContext(Dispatchers.IO) {
+                BackupManager.createInternalBackupFile(this@MainActivity, json)
+            }
             lastBackupTimestamp = System.currentTimeMillis()
 
             val chooser = Intent.createChooser(
@@ -2269,6 +2258,7 @@ class MainActivity : ComponentActivity() {
      * as well as prompting to set Txtura as the Default SMS & MMS application.
      */
     private fun checkFirstStartupPermissionsAndRole() {
+        firstStartupDone = true
         val prefs = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
         prefs.edit { putBoolean(KEY_FIRST_STARTUP_DONE, true) }
 
@@ -2289,7 +2279,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         this.intent = intent
-        handleIncomingSmsIntentSafely(intent)
+        if (startupInitializationFinished) {
+            handleIncomingSmsIntentSafely(intent)
+        } else {
+            pendingStartupIntent = intent
+        }
     }
 
     private fun handleIncomingSmsIntentSafely(incoming: Intent?) {
@@ -2315,36 +2309,56 @@ class MainActivity : ComponentActivity() {
 
         // 1. Handle tapping an incoming SMS/MMS notification created by Txtura itself
         if (incoming.action == SmsMmsRepository.ACTION_OPEN_THREAD_NOTIFICATION) {
-            val notifAddress = incoming.getStringExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ADDRESS).orEmpty()
+            val notifAddress = incoming.getStringExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ADDRESS).orEmpty().trim()
             val notifThreadId = incoming.getLongExtra(SmsMmsRepository.EXTRA_NOTIFICATION_THREAD_ID, -1L)
+            val notifId = incoming.getIntExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ID, -1)
+
+            // Dismiss the notification from status bar immediately
+            val nm = getSystemService(NotificationManager::class.java)
+            if (notifId > 0) {
+                nm?.cancel(notifId)
+            }
+            if (notifAddress.isNotBlank()) {
+                nm?.cancel((SmsMmsRepository.normalizeAddressKey(notifAddress).hashCode() and 0x7FFFFFFF).coerceAtLeast(1001))
+            }
+
+            // Reset all overlay states so we navigate straight into the conversation
             showSettingsScreen = false
             showDeletedMessagesScreen = false
+            showHighlightedMessagesScreen = false
             showNewMessageDialog = false
             showChatWallpaperDialogForThread = null
             threadPendingDeleteConfirmation = null
-            if (notifThreadId > 0L && SmsMmsRepository.threads.value.any { it.id == notifThreadId }) {
-                activeThreadId = notifThreadId
-                activeThreadAddress = SmsMmsRepository.threads.value.find { it.id == notifThreadId }?.address ?: notifAddress
-                SmsMmsRepository.markThreadRead(this, notifThreadId)
+
+            val currentThreads = SmsMmsRepository.threads.value
+            val matchedThread = (if (notifThreadId > 0L) currentThreads.find { it.id == notifThreadId } else null)
+                ?: (if (notifAddress.isNotBlank()) SmsMmsRepository.findThreadByAddress(currentThreads, notifAddress) else null)
+
+            if (matchedThread != null) {
+                activeThreadId = matchedThread.id
+                activeThreadAddress = matchedThread.address
+                SmsMmsRepository.markThreadRead(this, matchedThread.id)
             } else if (notifAddress.isNotBlank()) {
                 activeThreadAddress = notifAddress
                 val resolvedId = SmsMmsRepository.getOrCreateConversationWithRecipient(
                     context = this,
                     recipientAddress = notifAddress,
                 )
-                activeThreadId = resolvedId
-                SmsMmsRepository.markThreadRead(this, resolvedId)
+                activeThreadId = if (notifThreadId > 0L) notifThreadId else resolvedId
+                SmsMmsRepository.markThreadRead(this, activeThreadId!!)
             } else if (notifThreadId > 0L) {
                 activeThreadId = notifThreadId
-                activeThreadAddress = SmsMmsRepository.threads.value.find { (id) -> id == notifThreadId }?.address
+                activeThreadAddress = null
                 SmsMmsRepository.markThreadRead(this, notifThreadId)
             }
+
             lifecycleScope.launch(Dispatchers.IO) {
                 SmsMmsRepository.syncDeviceMessages(this@MainActivity, autoDeleteDays)
             }
             incoming.action = null
             incoming.removeExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ADDRESS)
             incoming.removeExtra(SmsMmsRepository.EXTRA_NOTIFICATION_THREAD_ID)
+            incoming.removeExtra(SmsMmsRepository.EXTRA_NOTIFICATION_ID)
             return
         }
 
@@ -2360,6 +2374,12 @@ class MainActivity : ComponentActivity() {
                 recipientAddress = prefilledRecipient,
             )
             activeThreadId = threadId
+            showSettingsScreen = false
+            showDeletedMessagesScreen = false
+            showHighlightedMessagesScreen = false
+            showNewMessageDialog = false
+            showChatWallpaperDialogForThread = null
+            threadPendingDeleteConfirmation = null
         } else {
             showNewMessageDialog = true
         }

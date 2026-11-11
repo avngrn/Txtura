@@ -240,6 +240,7 @@ import com.txtura.ui.theme.LocalAdaptiveMetrics
 import com.txtura.ui.theme.LocalExpressiveAnimations
 import com.txtura.ui.theme.LocalGlassPalette
 import com.txtura.ui.theme.TxturaHaptics
+import com.txtura.ui.theme.TxturaMotion
 import com.txtura.ui.theme.TxturaThemeMode
 import com.txtura.ui.theme.WallpaperHarmonyEngine
 import kotlinx.coroutines.Dispatchers
@@ -413,7 +414,7 @@ fun ConversationsListScreen(
     var showMarkAllReadConfirmation by remember { mutableStateOf(value = false) }
 
     val totalHighlightedCount = remember(threads) {
-        threads.sumOf { thread -> thread.messages.count { it.isHighlighted } }
+        SmsMmsRepository.getHighlightedMessageIdsSnapshot().size
     }
 
     // Multi-selection mode triggered by long-pressing any conversation card on the main screen
@@ -431,13 +432,13 @@ fun ConversationsListScreen(
     }
 
     val filteredThreads = remember(threads, searchQuery, selectedFilter) {
-        val deduplicated = if (threads.size <= 1) threads else SmsMmsRepository.deduplicateAndMergeThreads(threads)
         val isBlankSearch = searchQuery.isBlank()
-        val list = deduplicated.filter { (_, contactName, address, _, _, _, messages, unreadCount, _, isService) ->
+        val trimmedQuery = if (!isBlankSearch) searchQuery.trim() else ""
+        threads.filter { thread ->
             val matchesFilter = when (selectedFilter) {
-                ConversationFilter.PEOPLE -> !isService
-                ConversationFilter.SERVICES -> isService
-                ConversationFilter.UNREAD -> unreadCount > 0
+                ConversationFilter.PEOPLE -> !thread.isService
+                ConversationFilter.SERVICES -> thread.isService
+                ConversationFilter.UNREAD -> thread.unreadCount > 0
                 ConversationFilter.ALL -> true
             }
             if (!matchesFilter) return@filter false
@@ -445,15 +446,11 @@ fun ConversationsListScreen(
             if (isBlankSearch) {
                 true
             } else {
-                contactName.contains(searchQuery, ignoreCase = true) ||
-                    address.contains(searchQuery, ignoreCase = true) ||
-                    messages.any { it.body.contains(searchQuery, ignoreCase = true) }
+                thread.contactName.contains(trimmedQuery, ignoreCase = true) ||
+                    thread.address.contains(trimmedQuery, ignoreCase = true) ||
+                    thread.messages.any { it.body.contains(trimmedQuery, ignoreCase = true) }
             }
         }
-        list.sortedWith(
-            compareByDescending<ConversationThread> { it.isPinned }
-                .thenByDescending { it.lastMessage?.timestampMillis ?: 0L },
-        )
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -689,11 +686,9 @@ fun ConversationsListScreen(
                 val targetThread = filteredThreads.find { it.id == threadId } ?: threads.find { it.id == threadId }
                 val wasPinned = targetThread?.isPinned == true
                 onTogglePin(threadId)
-                coroutineScope.launch {
-                    kotlinx.coroutines.delay(60)
-                    if (wasPinned) {
-                        listState.scrollToItem(0)
-                    } else {
+                if (!wasPinned) {
+                    coroutineScope.launch {
+                        kotlinx.coroutines.delay(60)
                         listState.animateScrollToItem(0)
                     }
                 }
@@ -706,7 +701,7 @@ fun ConversationsListScreen(
                     verticalArrangement = Arrangement.spacedBy(
                         if (listLayoutMode == MainListLayoutMode.COMPACT) (6 * metrics.scaleFactor).dp else (10 * metrics.scaleFactor).dp
                     ),
-                    contentPadding = PaddingValues(bottom = (24 * metrics.scaleFactor).dp),
+                    contentPadding = PaddingValues(bottom = (8 * metrics.scaleFactor).dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(
@@ -737,11 +732,8 @@ fun ConversationsListScreen(
                                     if (isExpressive) {
                                         Modifier.animateItem(
                                             fadeInSpec = null,
-                                            fadeOutSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                            placementSpec = spring(
-                                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                                stiffness = Spring.StiffnessMediumLow
-                                            )
+                                            fadeOutSpec = TxturaMotion.listItemFadeOutSpec(),
+                                            placementSpec = TxturaMotion.listItemPlacementSpec()
                                         )
                                     } else {
                                         Modifier
@@ -782,6 +774,8 @@ fun ConversationsListScreen(
                                         showContactPhotos = showContactPhotos,
                                         listLayoutMode = listLayoutMode,
                                         isSelected = isSelectionMode && isChecked,
+                                        showPinAction = swipeRightAction != SwipeAction.PIN &&
+                                            swipeLeftAction != SwipeAction.PIN,
                                         strings = strings,
                                         onClick = {
                                             if (isSelectionMode) {
@@ -910,6 +904,29 @@ fun ConversationsListScreen(
                     }
                 }
             }
+
+            // Home Bottom Dock Bar (displayed at the bottom in regular mode)
+            AnimatedVisibility(
+                visible = !isSelectionMode,
+                enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
+                exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom)
+            ) {
+                HomeBottomDockBar(
+                    deletedCount = deletedCount,
+                    highlightedCount = totalHighlightedCount,
+                    strings = strings,
+                    dockBarOrder = dockBarOrder,
+                    onUpdateDockBarOrder = onUpdateDockBarOrder,
+                    onOpenDeletedMessages = onOpenDeletedMessages,
+                    onOpenHighlightedMessages = onOpenHighlightedMessages,
+                    onOpenNewMessage = onOpenNewMessage,
+                    onMarkAllRead = onMarkAllRead,
+                    onOpenSettings = onOpenSettings,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = (4 * metrics.scaleFactor).dp, bottom = metrics.safeBottomClearance)
+                )
+            }
         }
     }
 }
@@ -955,11 +972,12 @@ internal fun HomeBottomDockBar(
                 .fillMaxWidth()
                 .height(metrics.bottomDockHeight)
                 .clip(RoundedCornerShape(metrics.dockCornerRadius))
+                .background(palette.popupContainerColor)
                 .background(
                     Brush.linearGradient(
                         colors = listOf(
-                            palette.glassSurfaceElevated,
-                            palette.glassSurface
+                            palette.glassSurfaceElevated.copy(alpha = 0.96f),
+                            palette.glassSurface.copy(alpha = 0.96f)
                         )
                     )
                 )
@@ -1099,10 +1117,7 @@ internal fun HomeBottomDockBar(
                                     val isExpressiveDock = LocalExpressiveAnimations.current
                                     val newMsgScale by animateFloatAsState(
                                         targetValue = if (isNewMsgPressed && isExpressiveDock) 0.89f else 1f,
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        ),
+                                        animationSpec = TxturaMotion.pressSpec(isNewMsgPressed),
                                         label = "newMsgButtonScale"
                                     )
 
@@ -1237,6 +1252,7 @@ fun HighlightedMessagesScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .navigationBarsPadding()
                 .padding(horizontal = 16.dp)
         ) {
             Spacer(modifier = Modifier.height(10.dp))
@@ -1801,10 +1817,10 @@ fun SettingsScreen(
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val vName = pkgInfo.versionName ?: "3.1"
+            val vName = pkgInfo.versionName ?: "3.2"
             val vCode = pkgInfo.longVersionCode
             vName to vCode
-        }.getOrDefault("3.1" to 9L)
+        }.getOrDefault("3.2" to 10L)
     }
 
     val coroutineScope = rememberCoroutineScope()
@@ -1874,37 +1890,8 @@ fun SettingsScreen(
         AnimatedContent(
             targetState = activeCategoryWindow,
             transitionSpec = {
-                if (isExpressive) {
-                    if (targetState != null) {
-                        (slideInHorizontally(
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                stiffness = Spring.StiffnessMediumLow
-                            ),
-                            initialOffsetX = { it / 4 }
-                        ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
-                            slideOutHorizontally(
-                                animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                targetOffsetX = { -it / 6 }
-                            ) + fadeOut()
-                        )
-                    } else {
-                        (slideInHorizontally(
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                stiffness = Spring.StiffnessMediumLow
-                            ),
-                            initialOffsetX = { -it / 6 }
-                        ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))).togetherWith(
-                            slideOutHorizontally(
-                                animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                targetOffsetX = { it / 4 }
-                            ) + fadeOut()
-                        )
-                    }
-                } else {
-                    fadeIn(tween(140)).togetherWith(fadeOut(tween(100)))
-                }
+                val forward = targetState != null
+                TxturaMotion.screenTransition(forward = forward, isExpressive = isExpressive)
             },
             label = "SettingsWindowTransition",
             modifier = Modifier.fillMaxSize()
@@ -2397,7 +2384,11 @@ fun SettingsScreen(
                                 val themesExpanded = activeDropdown.value == "themes"
                                 val texturesExpanded = activeDropdown.value == "textures"
 
-                                val themesRotation by animateFloatAsState(targetValue = if (themesExpanded) 180f else 0f)
+                                val themesRotation by animateFloatAsState(
+                                    targetValue = if (themesExpanded) 180f else 0f,
+                                    animationSpec = TxturaMotion.rotateSpec(),
+                                    label = "themesRotation"
+                                )
                                 val currentPresetSubtitle = if (mainWallpaper.isCustomGalleryImage) {
                                     strings.customGalleryWallpaperActive
                                 } else {
@@ -2466,7 +2457,11 @@ fun SettingsScreen(
                                     }
                                 }
 
-                                val texturesRotation by animateFloatAsState(targetValue = if (texturesExpanded) 180f else 0f)
+                                val texturesRotation by animateFloatAsState(
+                                    targetValue = if (texturesExpanded) 180f else 0f,
+                                    animationSpec = TxturaMotion.rotateSpec(),
+                                    label = "texturesRotation"
+                                )
                                 val textureTitle = if (mainWallpaper.isCustomGalleryImage) {
                                     strings.customWallpaperAccentTitle
                                 } else {
@@ -4085,7 +4080,7 @@ private fun BubblesCollapsibleCard(
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = if (isExpressive) {
-            spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
+            TxturaMotion.rotateSpec()
         } else {
             tween(200)
         },
@@ -4164,23 +4159,8 @@ private fun BubblesCollapsibleCard(
 
             AnimatedVisibility(
                 visible = expanded,
-                enter = if (isExpressive) {
-                    expandVertically(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioLowBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))
-                } else {
-                    expandVertically() + fadeIn()
-                },
-                exit = if (isExpressive) {
-                    shrinkVertically(
-                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                    ) + fadeOut()
-                } else {
-                    shrinkVertically() + fadeOut()
-                }
+                enter = TxturaMotion.verticalExpandEnter(isExpressive = isExpressive),
+                exit = TxturaMotion.verticalCollapseExit(isExpressive = isExpressive)
             ) {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -4301,7 +4281,7 @@ private fun ExternalLinksCollapsibleCard(
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = if (isExpressive) {
-            spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
+            TxturaMotion.rotateSpec()
         } else {
             tween(200)
         },
@@ -4380,23 +4360,8 @@ private fun ExternalLinksCollapsibleCard(
 
             AnimatedVisibility(
                 visible = expanded,
-                enter = if (isExpressive) {
-                    expandVertically(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioLowBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))
-                } else {
-                    expandVertically() + fadeIn()
-                },
-                exit = if (isExpressive) {
-                    shrinkVertically(
-                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                    ) + fadeOut()
-                } else {
-                    shrinkVertically() + fadeOut()
-                }
+                enter = TxturaMotion.verticalExpandEnter(isExpressive = isExpressive),
+                exit = TxturaMotion.verticalCollapseExit(isExpressive = isExpressive)
             ) {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -5198,7 +5163,7 @@ private fun DeletedMessagesCollapsibleCard(
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = if (isExpressive) {
-            spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
+            TxturaMotion.rotateSpec()
         } else {
             tween(200)
         },
@@ -5283,23 +5248,8 @@ private fun DeletedMessagesCollapsibleCard(
 
             AnimatedVisibility(
                 visible = expanded,
-                enter = if (isExpressive) {
-                    expandVertically(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioLowBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow))
-                } else {
-                    expandVertically() + fadeIn()
-                },
-                exit = if (isExpressive) {
-                    shrinkVertically(
-                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                    ) + fadeOut()
-                } else {
-                    shrinkVertically() + fadeOut()
-                }
+                enter = TxturaMotion.verticalExpandEnter(isExpressive = isExpressive),
+                exit = TxturaMotion.verticalCollapseExit(isExpressive = isExpressive)
             ) {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -5877,9 +5827,34 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v3.1",
+                        versionName = "v3.2",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Performanse i bezbednost" else "Performance & Security",
+                                items = listOf(
+                                    if (strings.isSerbian) "Brže pokretanje: Učitavanje podešavanja, lokalnog keša i hitnih obaveštenja premešteno je van glavne niti; sinhronizacija poruka čeka asinhrono učitavanje keša" else "Faster startup: Preferences, local cache, and emergency-alert initialization run off the main thread; message sync waits asynchronously for cache loading",
+                                    if (strings.isSerbian) "AES-256-GCM ključ keša: Lokalni JSON snapshot koristi nasumični 256-bitni ključ zaštićen Android Keystore-om, uz migraciju starog formata keša" else "AES-256-GCM cache key: Local JSON snapshots use a random 256-bit key wrapped by Android Keystore, with migration from the previous cache format",
+                                    if (strings.isSerbian) "Bekapi bez blokiranja interfejsa: PBKDF2 zaštita lozinkom je zadržana, a čitanje, parsiranje i kriptografija bekapa izvršavaju se u pozadini" else "Non-blocking backups: Password-based PBKDF2 protection is retained while backup reading, parsing, and cryptography run in the background",
+                                    if (strings.isSerbian) "Jasan opis enkripcije: Podešavanja prikazuju AES-256-GCM zaštitu lokalnog JSON keša poruka" else "Clear encryption details: Settings describe AES-256-GCM protection of the local JSON message cache"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Poruke i navigacija" else "Messaging & Navigation",
+                                items = listOf(
+                                    if (strings.isSerbian) "Animacije pinovanja: Razgovori se animirano vraćaju na prethodno mesto pri otpinovanju, a pin ikonice se skrivaju kada je pinovanje dodeljeno prevlačenju" else "Pin motion: Conversations animate back to their prior position when unpinned, and pin icons are hidden when pinning is assigned to a swipe action",
+                                    if (strings.isSerbian) "Sistemski pokret za nazad: Gest navigacije poziva isto ponašanje kao strelica za nazad u menijima" else "System back gesture: Android navigation gestures trigger the same behavior as menu back buttons",
+                                    if (strings.isSerbian) "Slanje i prijem SMS/MMS poruka: Registrovane su povratne akcije slanja i preuzimanja, a WAP Push sadržaj se proverava i obrađuje asinhrono" else "SMS/MMS delivery: Sent and downloaded callbacks are registered; WAP Push content is validated and processed asynchronously"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v3.1",
+                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Upravljanje memorijom i dozvolama" else "Storage & Permissions Management",
@@ -5991,7 +5966,7 @@ private fun AppChangelogDialog(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Privatnost i bezbednost" else "Privacy & Security",
                                 items = listOf(
-                                    if (strings.isSerbian) "Lokalna enkripcija baze podataka: Šifrovanje lokalnog keša poruka u realnom vremenu (AES-256-GCM / SQLCipher kontejner sa Keystore zaštitom)" else "Local database encryption: Real-time AES-256-GCM / SQLCipher message cache encryption backed by Android Keystore",
+                                    if (strings.isSerbian) "Šifrovanje lokalnog keša poruka: AES-256-GCM enkripcija sa nasumičnim ključem zaštićenim Android Keystore-om" else "Local message cache encryption: AES-256-GCM with a random data key protected by Android Keystore",
                                     if (strings.isSerbian) "Biometrijska zaštita i PIN: Zaključavanje aplikacije otiskom prsta, prepoznavanjem lica ili uređajnim PIN-om uz podesiv tajmaut (Odmah, 1 min, 5 min) i namenski stakleni ekran zaključavanja" else "Biometric protection & PIN: Lock the entire app with fingerprint, face recognition or device PIN, with customizable lock timeout (Immediate, 1 min, 5 min) and dedicated glass lock screen",
                                     if (strings.isSerbian) "HTTPS i TLS/SSL Pinning: Striktna upotreba šifrovanih veza uz SPKI sertifikat pinning za sprečavanje Man-in-the-Middle napada i automatsko blokiranje nešifrovanog HTTP saobraćaja" else "HTTPS & TLS/SSL Pinning: Strict encrypted connections with SPKI certificate pinning to prevent Man-in-the-Middle attacks, blocking plaintext HTTP",
                                     if (strings.isSerbian) "Minimizacija metapodataka: Automatsko uklanjanje EXIF GPS koordinata i detalja sa MMS slika, FLAG_SECURE zaštita od snimanja ekrana i cenzurisana obaveštenja na zaključanom ekranu" else "Metadata minimization: Automated EXIF GPS/camera data stripping from MMS photos, FLAG_SECURE screenshot prevention, and redacted lock-screen notifications",
@@ -6286,6 +6261,7 @@ private fun ConversationThreadCard(
     showContactPhotos: Boolean,
     listLayoutMode: MainListLayoutMode = MainListLayoutMode.DEFAULT,
     isSelected: Boolean = false,
+    showPinAction: Boolean = true,
     strings: AppStrings,
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
@@ -6422,40 +6398,42 @@ private fun ConversationThreadCard(
                         Spacer(modifier = Modifier.width(6.dp))
                     }
 
-                    if (thread.isPinned) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(22.dp)
-                                .clip(CircleShape)
-                                .background(palette.accentPrimary.copy(alpha = 0.22f))
-                                .border(1.dp, palette.accentPrimary.copy(alpha = 0.70f), CircleShape)
-                                .clickable(onClick = onTogglePin)
-                        ) {
-                            Icon(
-                                imageVector = TxturaIcons.PinFilled,
-                                contentDescription = strings.unpinContactThread,
-                                tint = palette.accentPrimary,
-                                modifier = Modifier.size(13.dp)
-                            )
+                    if (showPinAction) {
+                        if (thread.isPinned) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .background(palette.accentPrimary.copy(alpha = 0.22f))
+                                    .border(1.dp, palette.accentPrimary.copy(alpha = 0.70f), CircleShape)
+                                    .clickable(onClick = onTogglePin)
+                            ) {
+                                Icon(
+                                    imageVector = TxturaIcons.PinFilled,
+                                    contentDescription = strings.unpinContactThread,
+                                    tint = palette.accentPrimary,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                        } else {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .clickable(onClick = onTogglePin)
+                            ) {
+                                Icon(
+                                    imageVector = TxturaIcons.PinOutline,
+                                    contentDescription = strings.pinContactThread,
+                                    tint = palette.textSecondary.copy(alpha = 0.38f),
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
                         }
-                    } else {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(22.dp)
-                                .clip(CircleShape)
-                                .clickable(onClick = onTogglePin)
-                        ) {
-                            Icon(
-                                imageVector = TxturaIcons.PinOutline,
-                                contentDescription = strings.pinContactThread,
-                                tint = palette.textSecondary.copy(alpha = 0.38f),
-                                modifier = Modifier.size(13.dp)
-                            )
-                        }
+                        Spacer(modifier = Modifier.width(6.dp))
                     }
-                    Spacer(modifier = Modifier.width(6.dp))
                     lastMsg?.timestampMillis?.let { formatThreadTimestamp(it) }?.let { (primaryTime, secondaryDate) ->
                         if (secondaryDate == null) {
                             Text(
@@ -8134,18 +8112,8 @@ fun ConversationDetailScreen(
             // In-Chat Search Bar located right above the writing box (toggleable via the lupa icon)
             AnimatedVisibility(
                 visible = isChatSearchVisible,
-                enter = if (expressiveAnimationsEnabled) {
-                    fadeIn(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) +
-                        expandVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy))
-                } else {
-                    fadeIn() + expandVertically()
-                },
-                exit = if (expressiveAnimationsEnabled) {
-                    fadeOut(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy)) +
-                        shrinkVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy))
-                } else {
-                    fadeOut() + shrinkVertically()
-                }
+                enter = TxturaMotion.verticalExpandEnter(isExpressive = expressiveAnimationsEnabled),
+                exit = TxturaMotion.verticalCollapseExit(isExpressive = expressiveAnimationsEnabled)
             ) {
                 GlassCard(
                     modifier = Modifier
@@ -8474,6 +8442,7 @@ fun ConversationDetailScreen(
                             // 2. Crveni 'X' cilj za poništavanje snimanja: postavljen DESNO od mikrofona
                             val cancelScale by animateFloatAsState(
                                 targetValue = if (isCancelTargetReached) 1.25f else 1.0f,
+                                animationSpec = TxturaMotion.pressSpec(isCancelTargetReached),
                                 label = "cancel_scale"
                             )
                             Box(
@@ -8520,9 +8489,9 @@ fun ConversationDetailScreen(
                             val plusRotation by animateFloatAsState(
                                 targetValue = if (showAttachmentActions) 45f else 0f,
                                 animationSpec = if (expressiveAnimationsEnabled) {
-                                    spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
+                                    TxturaMotion.rotateSpec()
                                 } else {
-                                    spring(dampingRatio = Spring.DampingRatioNoBouncy)
+                                    tween(150)
                                 },
                                 label = "plus_rotation"
                             )
@@ -8540,18 +8509,8 @@ fun ConversationDetailScreen(
                             // 2. Expandable attachment actions (Image & Contact)
                             AnimatedVisibility(
                                 visible = showAttachmentActions,
-                                enter = if (expressiveAnimationsEnabled) {
-                                    fadeIn(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) +
-                                        expandHorizontally(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy))
-                                } else {
-                                    fadeIn() + expandHorizontally()
-                                },
-                                exit = if (expressiveAnimationsEnabled) {
-                                    fadeOut(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy)) +
-                                        shrinkHorizontally(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy))
-                                } else {
-                                    fadeOut() + shrinkHorizontally()
-                                }
+                                enter = TxturaMotion.horizontalExpandEnter(isExpressive = expressiveAnimationsEnabled),
+                                exit = TxturaMotion.horizontalCollapseExit(isExpressive = expressiveAnimationsEnabled)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -9582,15 +9541,9 @@ private fun MessageBubbleItem(
     val animatedBubbleScale by animateFloatAsState(
         targetValue = targetScale,
         animationSpec = if (expressiveAnimationsEnabled) {
-            spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMediumLow
-            )
+            TxturaMotion.pressSpec(isBubblePressed)
         } else {
-            spring(
-                dampingRatio = Spring.DampingRatioNoBouncy,
-                stiffness = Spring.StiffnessHigh
-            )
+            tween(durationMillis = 80)
         },
         label = "message_bubble_scale"
     )
@@ -11390,6 +11343,7 @@ fun NewMessageDialog(
                                                         selectedRecipients.add(fc)
                                                     }
                                                 }
+                                                queryOrNumber = ""
                                             }
                                         }
                                         .padding(horizontal = 6.dp, vertical = 4.dp)
@@ -11509,6 +11463,7 @@ fun NewMessageDialog(
                                         selectedRecipients.removeAll { it.address == item.address }
                                     } else {
                                         selectedRecipients.add(item)
+                                        queryOrNumber = ""
                                     }
                                 }
 
@@ -12110,6 +12065,7 @@ fun MultiRecipientBroadcastDialog(
                                                 selectedRecipients.add(fc)
                                             }
                                         }
+                                        searchQuery = ""
                                     }
                                 }
                                 .padding(horizontal = 6.dp, vertical = 4.dp)
@@ -12151,6 +12107,7 @@ fun MultiRecipientBroadcastDialog(
                                     selectedRecipients.removeAll { it.address == contact.address }
                                 } else {
                                     selectedRecipients.add(contact)
+                                    searchQuery = ""
                                 }
                             }
                         ) {
@@ -12612,17 +12569,17 @@ private fun SwipeableConversationCard(
                         scope.launch {
                             offsetX.animateTo(
                                 targetValue = 0f,
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                    stiffness = Spring.StiffnessMedium
-                                )
+                                animationSpec = TxturaMotion.swipeSnapBackSpec()
                             )
                         }
                     },
                     onDragCancel = {
                         hasSnappedThreshold = false
                         scope.launch {
-                            offsetX.animateTo(0f)
+                            offsetX.animateTo(
+                                targetValue = 0f,
+                                animationSpec = TxturaMotion.swipeSnapBackSpec()
+                            )
                         }
                     }
                 )
@@ -13116,6 +13073,7 @@ fun DeletedMessagesScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .navigationBarsPadding()
                 .padding(horizontal = 16.dp)
         ) {
             Spacer(modifier = Modifier.height(10.dp))
@@ -14589,6 +14547,7 @@ private fun wallpaperPresetTitle(preset: WallpaperPreset, strings: AppStrings): 
         WallpaperPreset.ROYAL_AMETHYST -> strings.wpRoyalAmethyst
         WallpaperPreset.STARLIGHT_GALAXY -> strings.wpStarlightGalaxy
         WallpaperPreset.CRIMSON_VELVET -> strings.wpCrimsonVelvet
+        WallpaperPreset.BURGUNDY_ANITA -> strings.wpBurgundyAnita
         WallpaperPreset.ARCTIC_FROST -> strings.wpArcticFrost
         WallpaperPreset.OBSIDIAN_GOLD -> strings.wpObsidianGold
         WallpaperPreset.MONO_SLATE -> strings.wpMonoSlate
@@ -14598,6 +14557,7 @@ private fun wallpaperPresetTitle(preset: WallpaperPreset, strings: AppStrings): 
         WallpaperPreset.MONO_PLUM -> strings.wpMonoPlum
         WallpaperPreset.MONO_GRAPHITE -> strings.wpMonoGraphite
         WallpaperPreset.MONO_ROSE -> strings.wpMonoRose
+        WallpaperPreset.MONO_BURGUNDY -> strings.wpMonoBurgundy
         WallpaperPreset.MONO_NAVY -> strings.wpMonoNavy
         WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmoke
         WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspresso
@@ -14617,6 +14577,7 @@ private fun wallpaperPresetDescription(preset: WallpaperPreset, strings: AppStri
         WallpaperPreset.ROYAL_AMETHYST -> strings.wpRoyalAmethystDesc
         WallpaperPreset.STARLIGHT_GALAXY -> strings.wpStarlightGalaxyDesc
         WallpaperPreset.CRIMSON_VELVET -> strings.wpCrimsonVelvetDesc
+        WallpaperPreset.BURGUNDY_ANITA -> strings.wpBurgundyAnitaDesc
         WallpaperPreset.ARCTIC_FROST -> strings.wpArcticFrostDesc
         WallpaperPreset.OBSIDIAN_GOLD -> strings.wpObsidianGoldDesc
         WallpaperPreset.MONO_SLATE -> strings.wpMonoSlateDesc
@@ -14626,6 +14587,7 @@ private fun wallpaperPresetDescription(preset: WallpaperPreset, strings: AppStri
         WallpaperPreset.MONO_PLUM -> strings.wpMonoPlumDesc
         WallpaperPreset.MONO_GRAPHITE -> strings.wpMonoGraphiteDesc
         WallpaperPreset.MONO_ROSE -> strings.wpMonoRoseDesc
+        WallpaperPreset.MONO_BURGUNDY -> strings.wpMonoBurgundyDesc
         WallpaperPreset.MONO_NAVY -> strings.wpMonoNavyDesc
         WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmokeDesc
         WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspressoDesc

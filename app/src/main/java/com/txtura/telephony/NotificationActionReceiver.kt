@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.PersistableBundle
+import android.telephony.SmsManager
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
@@ -42,10 +43,26 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     SmsMmsRepository.onMessageDelivered(deliveredMsgId, appContext)
                 }
             }
-            SmsMmsRepository.ACTION_SMS_SENT,
+            SmsMmsRepository.ACTION_SMS_SENT -> {
+                val sentMsgId = intent.getLongExtra("message_id", -1L)
+                if (sentMsgId > 0L) {
+                    if (resultCode == android.app.Activity.RESULT_OK) {
+                        SmsMmsRepository.onMessageDelivered(sentMsgId, appContext)
+                    } else {
+                        SmsMmsRepository.onMessageFailed(sentMsgId, appContext)
+                    }
+                }
+            }
             SmsMmsRepository.ACTION_MMS_SENT -> {
                 val sentMsgId = intent.getLongExtra("message_id", -1L)
                 val pduPath = intent.getStringExtra("pdu_path")
+                val httpStatus = intent.getIntExtra(SmsManager.EXTRA_MMS_HTTP_STATUS, -1)
+                val mmsError = intent.getIntExtra("android.telephony.extra.MMS_ERROR_CODE", -1)
+                if (resultCode != android.app.Activity.RESULT_OK) {
+                    Log.w(TAG, "MMS send failed: resultCode=$resultCode, httpStatus=$httpStatus, mmsError=$mmsError, msgId=$sentMsgId")
+                } else {
+                    Log.d(TAG, "MMS send succeeded: msgId=$sentMsgId")
+                }
                 if (!pduPath.isNullOrBlank()) {
                     try { java.io.File(pduPath).delete() } catch (_: Exception) {}
                 }

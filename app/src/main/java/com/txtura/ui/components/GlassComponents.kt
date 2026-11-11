@@ -88,6 +88,7 @@ import com.txtura.data.WallpaperTexture
 import com.txtura.ui.theme.LocalExpressiveAnimations
 import com.txtura.ui.theme.LocalGlassPalette
 import com.txtura.ui.theme.TxturaHaptics
+import com.txtura.ui.theme.TxturaMotion
 import com.txtura.ui.theme.WallpaperHarmonyEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -1011,10 +1012,7 @@ fun GlassCard(
     val pressScale by animateFloatAsState(
         targetValue = if (isClickable && isPressed) 0.984f else 1.0f,
         animationSpec = if (isExpressive) {
-            spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMedium
-            )
+            TxturaMotion.pressSpec(isPressed)
         } else {
             tween(durationMillis = 80)
         },
@@ -1084,10 +1082,7 @@ fun GlassIconButton(
     val buttonScale by animateFloatAsState(
         targetValue = if (isPressed) 0.91f else 1.0f,
         animationSpec = if (isExpressive) {
-            spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMedium
-            )
+            TxturaMotion.pressSpec(isPressed)
         } else {
             tween(durationMillis = 80)
         },
@@ -1348,7 +1343,7 @@ fun GlassAlertDialog(
     val dialogScale by animateFloatAsState(
         targetValue = if (isDialogVisible) 1.0f else 0.93f,
         animationSpec = if (isExpressive) {
-            spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium)
+            TxturaMotion.dialogSpec()
         } else {
             tween(durationMillis = 100)
         },
@@ -1455,7 +1450,7 @@ fun GlassTooltipIconButton(
         val buttonScale by animateFloatAsState(
             targetValue = if (isPressed) 0.91f else 1.0f,
             animationSpec = if (isExpressive) {
-                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+                TxturaMotion.pressSpec(isPressed)
             } else {
                 tween(durationMillis = 80)
             },
