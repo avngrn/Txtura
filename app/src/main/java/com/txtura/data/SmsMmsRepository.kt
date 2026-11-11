@@ -49,6 +49,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -103,6 +104,11 @@ object SmsMmsRepository {
     const val KEY_MMS_DATA_DISABLED_MODE = "mms_data_disabled_mode"
     const val KEY_MMS_CREATION_MODE = "mms_creation_mode"
     const val KEY_SMSC_NUMBER = "smsc_number"
+    const val KEY_MMS_APN_CARRIER = "mms_apn_carrier"
+    const val KEY_MMS_APN_MMSC = "mms_apn_mmsc"
+    const val KEY_MMS_APN_PROXY = "mms_apn_proxy"
+    const val KEY_MMS_APN_PORT = "mms_apn_port"
+    const val KEY_MMS_APN_SOURCE = "mms_apn_source"
     private const val KEY_LAST_DEVICE_SYNC_AT = "last_device_message_sync_at"
     private const val DEVICE_SYNC_MAX_AGE_MILLIS = 24L * 60L * 60L * 1000L
 
@@ -221,6 +227,14 @@ object SmsMmsRepository {
                 }
                 ioScope.launch {
                     scanAllThreadsForMaliciousWebsitesOnline(appCtx)
+                }
+                ioScope.launch {
+                    detectAndSaveMmsApnFromSmsc(appCtx)
+                }
+                ioScope.launch {
+                    com.txtura.telephony.MmsSyncReceiver.scheduleNextSyncAlarm(appCtx)
+                    com.txtura.telephony.MmsSyncJobService.scheduleJob(appCtx)
+                    startPeriodicMmsSyncLoop(appCtx)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Background repository initialization failed", e)
@@ -1394,9 +1408,352 @@ object SmsMmsRepository {
     }
 
     fun setSmscAddress(context: Context, address: String) {
+        val clean = address.trim()
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
-            putString(KEY_SMSC_NUMBER, address.trim())
+            putString(KEY_SMSC_NUMBER, clean)
         }
+        ioScope.launch {
+            detectAndSaveMmsApnFromSmsc(context, clean)
+        }
+    }
+
+    fun getMmsApnSettings(context: Context): MmsApnSettings {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val carrier = prefs.getString(KEY_MMS_APN_CARRIER, null)
+        val mmsc = prefs.getString(KEY_MMS_APN_MMSC, null)
+        val proxy = prefs.getString(KEY_MMS_APN_PROXY, null)
+        val port = prefs.getInt(KEY_MMS_APN_PORT, 8080)
+        val source = prefs.getString(KEY_MMS_APN_SOURCE, null)
+
+        if (!carrier.isNullOrBlank() && mmsc != null) {
+            return MmsApnSettings(
+                carrierName = carrier,
+                mmscUrl = mmsc,
+                mmsProxy = proxy ?: "",
+                mmsPort = port,
+                source = source ?: "SMSC Auto-detect"
+            )
+        }
+        return detectAndSaveMmsApnFromSmsc(context)
+    }
+
+    fun setMmsApnSettings(context: Context, apn: MmsApnSettings) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putString(KEY_MMS_APN_CARRIER, apn.carrierName)
+            putString(KEY_MMS_APN_MMSC, apn.mmscUrl.trim())
+            putString(KEY_MMS_APN_PROXY, apn.mmsProxy.trim())
+            putInt(KEY_MMS_APN_PORT, apn.mmsPort)
+            putString(KEY_MMS_APN_SOURCE, apn.source)
+        }
+    }
+
+    fun detectAndSaveMmsApnFromSmsc(context: Context, customSmsc: String? = null): MmsApnSettings {
+        val smsc = customSmsc?.ifBlank { null } ?: getSmscAddress(context)
+        val cleanSmsc = smsc.filter { it.isDigit() || it == '+' }
+
+        val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        val simOperator = tm?.simOperator ?: ""
+        val simOperatorName = tm?.simOperatorName ?: ""
+
+        val detected = resolveMmsApnFromCarrierInfo(cleanSmsc, simOperator, simOperatorName)
+        setMmsApnSettings(context, detected)
+        return detected
+    }
+
+    private fun resolveMmsApnFromCarrierInfo(
+        smsc: String,
+        simOperator: String,
+        simOperatorName: String
+    ): MmsApnSettings {
+        val cleanSmsc = smsc.filter { it.isDigit() || it == '+' }
+
+        // 1. mts Srbija (Telekom Srbija)
+        if (cleanSmsc.startsWith("+38164") || cleanSmsc.startsWith("38164") || cleanSmsc.startsWith("064") ||
+            cleanSmsc.startsWith("+38165") || cleanSmsc.startsWith("38165") || cleanSmsc.startsWith("065") ||
+            simOperator == "22003" || simOperatorName.contains("mts", ignoreCase = true) || simOperatorName.contains("Telekom Srbija", ignoreCase = true)
+        ) {
+            return MmsApnSettings(
+                carrierName = "mts Srbija",
+                mmscUrl = "http://mms.mts.rs/servlets/mms",
+                mmsProxy = "172.17.88.198",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38164)"
+            )
+        }
+
+        // 2. Yettel Srbija (ex-Telenor)
+        if (cleanSmsc.startsWith("+38163") || cleanSmsc.startsWith("38163") || cleanSmsc.startsWith("063") ||
+            simOperator == "22001" || simOperatorName.contains("Yettel", ignoreCase = true) || simOperatorName.contains("Telenor", ignoreCase = true)
+        ) {
+            return MmsApnSettings(
+                carrierName = "Yettel Srbija",
+                mmscUrl = "http://mms.yettel.rs/servlets/mms",
+                mmsProxy = "10.28.0.60",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38163)"
+            )
+        }
+
+        // 3. A1 Srbija (ex-VIP Mobile)
+        if (cleanSmsc.startsWith("+38161") || cleanSmsc.startsWith("38161") || cleanSmsc.startsWith("061") ||
+            cleanSmsc.startsWith("+38160") || cleanSmsc.startsWith("38160") || cleanSmsc.startsWith("060") ||
+            simOperator == "22005" || simOperatorName.contains("A1", ignoreCase = true) || simOperatorName.contains("Vip", ignoreCase = true)
+        ) {
+            return MmsApnSettings(
+                carrierName = "A1 Srbija",
+                mmscUrl = "http://mms.a1.rs/servlets/mms",
+                mmsProxy = "10.245.2.42",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38161)"
+            )
+        }
+
+        // 4. Globaltel Srbija
+        if (cleanSmsc.startsWith("+381677") || cleanSmsc.startsWith("381677") || cleanSmsc.startsWith("0677") ||
+            simOperator == "22009" || simOperator == "22011" || simOperatorName.contains("Globaltel", ignoreCase = true)
+        ) {
+            return MmsApnSettings(
+                carrierName = "Globaltel Srbija",
+                mmscUrl = "http://mms.globaltel.rs/servlets/mms",
+                mmsProxy = "10.28.1.60",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +381677)"
+            )
+        }
+
+        // 5. HT Eronet (BiH)
+        if (cleanSmsc.startsWith("+38763") || cleanSmsc.startsWith("38763") ||
+            simOperator == "21803" || simOperatorName.contains("Eronet", ignoreCase = true)
+        ) {
+            return MmsApnSettings(
+                carrierName = "HT Eronet",
+                mmscUrl = "http://mms.eronet.ba/servlets/mms",
+                mmsProxy = "10.15.1.1",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38763)"
+            )
+        }
+
+        // 6. BH Telecom (BiH)
+        if (cleanSmsc.startsWith("+38761") || cleanSmsc.startsWith("38761") ||
+            cleanSmsc.startsWith("+38762") || cleanSmsc.startsWith("38762") ||
+            simOperator == "21890" || simOperatorName.contains("BH Telecom", ignoreCase = true)
+        ) {
+            return MmsApnSettings(
+                carrierName = "BH Telecom",
+                mmscUrl = "http://mms.bhtelecom.ba/servlets/mms",
+                mmsProxy = "10.6.2.20",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38761)"
+            )
+        }
+
+        // 7. m:tel BiH
+        if (cleanSmsc.startsWith("+38765") || cleanSmsc.startsWith("38765") ||
+            cleanSmsc.startsWith("+38766") || cleanSmsc.startsWith("38766") ||
+            simOperator == "21805" || simOperatorName.contains("mtel", ignoreCase = true)
+        ) {
+            return MmsApnSettings(
+                carrierName = "m:tel BiH",
+                mmscUrl = "http://mms.mtel.ba/servlets/mms",
+                mmsProxy = "10.28.0.60",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38765)"
+            )
+        }
+
+        // 8. Hrvatski Telekom
+        if (cleanSmsc.startsWith("+38598") || cleanSmsc.startsWith("38598") ||
+            cleanSmsc.startsWith("+38599") || cleanSmsc.startsWith("38599") ||
+            simOperator == "21901"
+        ) {
+            return MmsApnSettings(
+                carrierName = "Hrvatski Telekom",
+                mmscUrl = "http://mms.ht.hr/servlets/mms",
+                mmsProxy = "195.29.150.40",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38598)"
+            )
+        }
+
+        // 9. A1 Hrvatska
+        if (cleanSmsc.startsWith("+38591") || cleanSmsc.startsWith("38591") || simOperator == "21910") {
+            return MmsApnSettings(
+                carrierName = "A1 Hrvatska",
+                mmscUrl = "http://mms.a1.hr/servlets/mms",
+                mmsProxy = "212.92.194.18",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38591)"
+            )
+        }
+
+        // 10. Telemach Hrvatska
+        if (cleanSmsc.startsWith("+38595") || cleanSmsc.startsWith("38595") || simOperator == "21902") {
+            return MmsApnSettings(
+                carrierName = "Telemach Hrvatska",
+                mmscUrl = "http://mms.telemach.hr/servlets/mms",
+                mmsProxy = "193.12.180.3",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38595)"
+            )
+        }
+
+        // 11. Telekom Slovenije
+        if (cleanSmsc.startsWith("+38641") || cleanSmsc.startsWith("38641") ||
+            cleanSmsc.startsWith("+38631") || cleanSmsc.startsWith("38631") ||
+            simOperator == "29341"
+        ) {
+            return MmsApnSettings(
+                carrierName = "Telekom Slovenije",
+                mmscUrl = "http://mms.telekom.si/servlets/mms",
+                mmsProxy = "195.250.208.77",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38641)"
+            )
+        }
+
+        // 12. A1 Slovenija
+        if (cleanSmsc.startsWith("+38640") || cleanSmsc.startsWith("38640") || simOperator == "29340") {
+            return MmsApnSettings(
+                carrierName = "A1 Slovenija",
+                mmscUrl = "http://mms.a1.si/servlets/mms",
+                mmsProxy = "80.95.224.23",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38640)"
+            )
+        }
+
+        // 13. Telemach Slovenija
+        if (cleanSmsc.startsWith("+38670") || cleanSmsc.startsWith("38670") || simOperator == "29370") {
+            return MmsApnSettings(
+                carrierName = "Telemach Slovenija",
+                mmscUrl = "http://mms.telemach.si/servlets/mms",
+                mmsProxy = "213.143.65.41",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38670)"
+            )
+        }
+
+        // 14. One Crna Gora
+        if (cleanSmsc.startsWith("+38269") || cleanSmsc.startsWith("38269") || simOperator == "29701") {
+            return MmsApnSettings(
+                carrierName = "One Crna Gora",
+                mmscUrl = "http://mms.1.me/servlets/mms",
+                mmsProxy = "10.28.0.60",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38269)"
+            )
+        }
+
+        // 15. m:tel Crna Gora
+        if (cleanSmsc.startsWith("+38268") || cleanSmsc.startsWith("38268") || simOperator == "29703") {
+            return MmsApnSettings(
+                carrierName = "m:tel Crna Gora",
+                mmscUrl = "http://mms.mtel.me/servlets/mms",
+                mmsProxy = "10.28.0.60",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38268)"
+            )
+        }
+
+        // 16. Crnogorski Telekom
+        if (cleanSmsc.startsWith("+38267") || cleanSmsc.startsWith("38267") || simOperator == "29702") {
+            return MmsApnSettings(
+                carrierName = "Telekom Crna Gora",
+                mmscUrl = "http://mms.telekom.me/servlets/mms",
+                mmsProxy = "192.168.246.5",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +38267)"
+            )
+        }
+
+        // 17. T-Mobile US
+        if (cleanSmsc.startsWith("+1206") || simOperator in listOf("310260", "310160", "310200")) {
+            return MmsApnSettings(
+                carrierName = "T-Mobile US",
+                mmscUrl = "http://mms.msg.eng.t-mobile.com/mms/wapenc",
+                mmsProxy = "",
+                mmsPort = 80,
+                source = "Automatski (SMSC +1206)"
+            )
+        }
+
+        // 18. AT&T US
+        if (cleanSmsc.startsWith("+1312") || cleanSmsc.startsWith("+1404") || simOperator in listOf("310410", "310150", "310170")) {
+            return MmsApnSettings(
+                carrierName = "AT&T US",
+                mmscUrl = "http://mmsc.mobile.att.net",
+                mmsProxy = "proxy.mobile.att.net",
+                mmsPort = 80,
+                source = "Automatski (SMSC +1312)"
+            )
+        }
+
+        // 19. Verizon US
+        if (cleanSmsc.startsWith("+1903") || simOperator in listOf("311480", "310012")) {
+            return MmsApnSettings(
+                carrierName = "Verizon US",
+                mmscUrl = "http://mms.vtext.com/servlets/mms",
+                mmsProxy = "",
+                mmsPort = 80,
+                source = "Automatski (SMSC +1903)"
+            )
+        }
+
+        // 20. Vodafone UK
+        if (cleanSmsc.startsWith("+447802") || simOperator == "23415") {
+            return MmsApnSettings(
+                carrierName = "Vodafone UK",
+                mmscUrl = "http://mms.vodafone.co.uk/servlets/mms",
+                mmsProxy = "212.183.137.12",
+                mmsPort = 8799,
+                source = "Automatski (SMSC +447802)"
+            )
+        }
+
+        // 21. EE UK
+        if (cleanSmsc.startsWith("+447958") || simOperator == "23430") {
+            return MmsApnSettings(
+                carrierName = "EE UK",
+                mmscUrl = "http://mms/",
+                mmsProxy = "149.254.201.135",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +447958)"
+            )
+        }
+
+        // 22. Telekom DE
+        if (cleanSmsc.startsWith("+49171") || simOperator == "26201") {
+            return MmsApnSettings(
+                carrierName = "Telekom DE",
+                mmscUrl = "http://mms.t-mobile.de/servlets/mms",
+                mmsProxy = "172.28.23.131",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +49171)"
+            )
+        }
+
+        // 23. Vodafone DE
+        if (cleanSmsc.startsWith("+49172") || simOperator == "26202") {
+            return MmsApnSettings(
+                carrierName = "Vodafone DE",
+                mmscUrl = "http://139.7.24.1/servlets/mms",
+                mmsProxy = "139.7.29.1",
+                mmsPort = 8080,
+                source = "Automatski (SMSC +49172)"
+            )
+        }
+
+        val carrierName = simOperatorName.ifBlank {
+            if (cleanSmsc.isNotBlank()) "Mrežni operater ($cleanSmsc)" else "Podrazumevani operater"
+        }
+        return MmsApnSettings(
+            carrierName = carrierName,
+            mmscUrl = "",
+            mmsProxy = "",
+            mmsPort = 8080,
+            source = "Automatski (Sistem)"
+        )
     }
 
     // Carrier MMS is handled natively by Android's telephony service and carrier bundle
@@ -2837,13 +3194,17 @@ object SmsMmsRepository {
                         attachmentUri.let { MmsPduHelper.downscaleImageForMms(context, it, creationMode) }
                     } else null
 
-                    val audioBytes = if (isAudioAttachment) {
+                    val rawAudioBytes = if (isAudioAttachment) {
                         try {
                             context.contentResolver.openInputStream(attachmentUri)?.use { it.readBytes() }
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to read audio attachment bytes", e)
                             null
                         }
+                    } else null
+
+                    val audioBytes = if (rawAudioBytes != null) {
+                        com.txtura.telephony.AmrAudioConverter.ensureAmrFormat(context, attachmentUri, rawAudioBytes)
                     } else null
 
                     val otherBytes = if (isCalendarAttachment || isDocumentAttachment) {
@@ -2932,11 +3293,22 @@ object SmsMmsRepository {
                         MmsCreationMode.FREE -> 600 * 1024
                     }
 
+                    val mmsApn = getMmsApnSettings(context)
                     val configOverrides = android.os.Bundle().apply {
                         putBoolean(SmsManager.MMS_CONFIG_MMS_DELIVERY_REPORT_ENABLED, requestDeliveryReport)
                         putBoolean(SmsManager.MMS_CONFIG_MMS_READ_REPORT_ENABLED, requestReadReport)
                         putInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, maxBytesLimit)
                         putBoolean(SmsManager.MMS_CONFIG_SUPPORT_MMS_CONTENT_DISPOSITION, true)
+                        if (mmsApn.mmscUrl.isNotBlank()) {
+                            putString("mmscUrl", mmsApn.mmscUrl)
+                        }
+                        if (mmsApn.mmsProxy.isNotBlank()) {
+                            putString("mmsProxy", mmsApn.mmsProxy)
+                        }
+                        if (mmsApn.mmsPort > 0) {
+                            putString("mmsPort", mmsApn.mmsPort.toString())
+                            putInt("mmsPort", mmsApn.mmsPort)
+                        }
                     }
 
                     val activeSmsManager = smsManager
@@ -3312,6 +3684,92 @@ object SmsMmsRepository {
         }
     }
 
+    private fun startPeriodicMmsSyncLoop(context: Context) {
+        ioScope.launch {
+            while (isActive) {
+                delay(3 * 60 * 1000L)
+                try {
+                    performBackgroundMmsSync(context)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Periodic in-process MMS sync iteration failed", e)
+                }
+            }
+        }
+    }
+
+    /**
+     * Background MMS synchronization triggered periodically (every ~3 minutes) via AlarmManager,
+     * JobScheduler, and in-process timer loop.
+     * 1. Retries downloading any pending incoming MMS messages.
+     * 2. Retries sending any stuck outgoing MMS messages in SENDING, PENDING, or FAILED status.
+     * 3. Reconciles new MMS messages received by modem/system Telephony provider.
+     */
+    fun performBackgroundMmsSync(context: Context) {
+        initializePersistedState(context)
+        ioScope.launch {
+            try {
+                Log.i(TAG, "Executing background MMS sync & retry loop...")
+                val now = System.currentTimeMillis()
+
+                if (hasReadSmsPermission(context)) {
+                    syncDeviceMessages(context)
+                }
+
+                val activeThreads = _threads.value
+                for (thread in activeThreads) {
+                    for (msg in thread.messages) {
+                        if (msg.isIncoming && msg.type == MessageType.MMS) {
+                            val isPending = msg.status == DeliveryStatus.PENDING ||
+                                    msg.status == DeliveryStatus.FAILED ||
+                                    msg.status == DeliveryStatus.DOWNLOADING
+                            val locationUrl = msg.attachment?.uri?.toString()
+
+                            if (isPending && !locationUrl.isNullOrBlank() && locationUrl.startsWith("http", ignoreCase = true)) {
+                                Log.i(TAG, "Retrying pending incoming MMS download for msg ID ${msg.id} at $locationUrl")
+                                downloadMms(
+                                    context = context,
+                                    contentLocation = locationUrl,
+                                    senderAddress = msg.address,
+                                    subId = -1,
+                                    existingMessageId = msg.id
+                                )
+                            }
+                        }
+                    }
+                }
+
+                for (thread in activeThreads) {
+                    for (msg in thread.messages) {
+                        if (!msg.isIncoming && msg.type == MessageType.MMS) {
+                            val isStuck = msg.status == DeliveryStatus.SENDING ||
+                                    msg.status == DeliveryStatus.PENDING ||
+                                    msg.status == DeliveryStatus.FAILED
+                            val isRecent = (now - msg.timestampMillis) < 24 * 3600 * 1000L
+
+                            if (isStuck && isRecent && msg.attachment?.uri != null) {
+                                Log.i(TAG, "Retrying stuck outgoing MMS for msg ID ${msg.id}")
+                                resendStuckMms(context, msg)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Background MMS sync loop failed", e)
+            }
+        }
+    }
+
+    private fun resendStuckMms(context: Context, msg: ChatMessage) {
+        val attachmentUri = msg.attachment?.uri ?: return
+        updateMessageDeliveryStatus(msg.id, DeliveryStatus.SENDING, context)
+        sendMessage(
+            context = context,
+            recipientAddress = msg.address,
+            rawBody = msg.body,
+            attachmentUri = attachmentUri
+        )
+    }
+
     /**
      * Downloads an MMS message from the carrier's MMSC via [SmsManager.downloadMultimediaMessage].
      */
@@ -3387,9 +3845,20 @@ object SmsMmsRepository {
                 MmsCreationMode.FREE -> 600 * 1024
             }
 
+            val mmsApn = getMmsApnSettings(context)
             val configOverrides = android.os.Bundle().apply {
                 putInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, maxBytesLimit)
                 putBoolean(SmsManager.MMS_CONFIG_SUPPORT_MMS_CONTENT_DISPOSITION, true)
+                if (mmsApn.mmscUrl.isNotBlank()) {
+                    putString("mmscUrl", mmsApn.mmscUrl)
+                }
+                if (mmsApn.mmsProxy.isNotBlank()) {
+                    putString("mmsProxy", mmsApn.mmsProxy)
+                }
+                if (mmsApn.mmsPort > 0) {
+                    putString("mmsPort", mmsApn.mmsPort.toString())
+                    putInt("mmsPort", mmsApn.mmsPort)
+                }
             }
 
             smsManager?.downloadMultimediaMessage(

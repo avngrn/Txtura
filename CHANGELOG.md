@@ -1,5 +1,19 @@
 # Txtura Changelog & Improvements
 
+## [v3.5] - 2026-11-12
+
+### MMS Telephony & Background Sync (MMS telefonija i pozadinska sinhronizacija)
+- **Periodic background MMS retry engine (Automatska pozadinska MMS sinhronizacija):** Background process running every 3 minutes via `AlarmManager`, `JobScheduler`, and in-process timer to automatically retry stuck outgoing MMS messages and retrieve pending incoming MMS notifications from carrier MMSC.
+- **SMSC-based MMS APN auto-detection (Automatska detekcija MMS APN podešavanja):** Background detection and automatic setup of carrier MMS APN parameters (MMSC URL, Proxy, Port) based on SMSC center number and SIM operator (mts, Yettel, A1, Globaltel, HT Eronet, BH Telecom, m:tel, Hrvatski Telekom, Telekom Slovenije, T-Mobile, Vodafone, AT&T, Verizon, etc.).
+
+### Audio Encoders & Media Processing (Zvučni enkokderi i obrada medija)
+- **AMR-NB audio format converter (Konverzija i provera AMR-NB formata glasovnih poruka):** Integrated `AmrAudioConverter` to guarantee standard `#!AMR\n` header compliance and transcode non-AMR audio formats to valid AMR-NB before MMS transmission.
+
+### UI Layouts & Settings Refinements (Fino podešavanje interfejsa i podešavanja)
+- **Symmetrical APN card & single-line titles (Simetrična APN kartica i naslovi u jednom redu):** Redesigned MMS APN card with 50/50 symmetrical action buttons, clean proxy formatting, single-line text wrapping for settings cards, and static card layout for External Links.
+- **Composer countdown layout fix (Sprečavanje treperenja pri poništavanju slanja):** Isolated Send/Cancel countdown timer slot into a fixed-width container, eliminating horizontal layout shifts and text squeezing when touching 'X'.
+- **Initial install security defaults (Podrazumevana podešavanja zaštite pri instalaciji):** Security features set to disabled by default on first install (firewall, db encryption, SSL pinning, metadata minimization, root check), with malicious website detection enabled by default.
+
 ## [v3.4] - 2026-11-12
 
 ### App Updates & Installation (Ažuriranje i instalacija)

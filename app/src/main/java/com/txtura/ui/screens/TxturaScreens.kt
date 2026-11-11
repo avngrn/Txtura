@@ -202,6 +202,7 @@ import com.txtura.data.MessageType
 import com.txtura.data.MmsAttachment
 import com.txtura.data.MmsAutoRetrieveMode
 import com.txtura.data.MmsCreationMode
+import com.txtura.data.MmsApnSettings
 import com.txtura.data.MmsDataDisabledMode
 import com.txtura.data.ScheduledSmsMessage
 import com.txtura.data.SimCardMessage
@@ -1985,10 +1986,12 @@ fun SettingsScreen(
     var showChangelogDialog by remember { mutableStateOf(false) }
     var showSmscDialog by remember { mutableStateOf(false) }
     var showSimMessagesDialog by remember { mutableStateOf(false) }
+    var showMmsApnManualDialog by remember { mutableStateOf(false) }
     var showEmergencyAlertsDialog by remember { mutableStateOf(false) }
     var showAddBlockSenderDialog by remember { mutableStateOf(false) }
     var newBlockAddressText by remember { mutableStateOf("") }
     var smscAddress by remember { mutableStateOf(SmsMmsRepository.getSmscAddress(context)) }
+    var currentMmsApn by remember { mutableStateOf(SmsMmsRepository.getMmsApnSettings(context)) }
 
     LaunchedEffect(targetSecurityHighlight) {
         if (targetSecurityHighlight != null) {
@@ -2799,7 +2802,7 @@ fun SettingsScreen(
                                 )
 
                                 // 3D. Eksterni linkovi (External Links)
-                                ExternalLinksCollapsibleCard(
+                                ExternalLinksCard(
                                     identifyMaliciousWebsites = identifyMaliciousWebsites,
                                     onToggleIdentifyMaliciousWebsites = onToggleIdentifyMaliciousWebsites,
                                     autoPreviewsShowAll = autoPreviewsShowAll,
@@ -3019,6 +3022,143 @@ fun SettingsScreen(
                                             trailingLabel = smscAddress.ifBlank { null },
                                             onClick = { showSmscDialog = true }
                                         )
+
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(0.8.dp)
+                                                .background(palette.glassBorderTop.copy(alpha = 0.28f))
+                                        )
+
+                                        // Carrier MMS APN settings
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Text(
+                                                    text = strings.mmsApnSettingsTitle,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    color = palette.textPrimary,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = if (currentMmsApn.mmscUrl.isNotBlank()) {
+                                                        "${currentMmsApn.carrierName} • ${currentMmsApn.source}"
+                                                    } else {
+                                                        "${currentMmsApn.carrierName} • ${strings.mmsApnNotConfigured}"
+                                                    },
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = palette.textSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+
+                                            if (currentMmsApn.mmscUrl.isNotBlank()) {
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(12.dp))
+                                                        .background(palette.glassSurfaceElevated.copy(alpha = 0.6f))
+                                                        .border(0.8.dp, palette.glassBorderTop.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                                                        .padding(12.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        Text(
+                                                            text = "${strings.mmsApnMmscLabel}: ",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = palette.textSecondary,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                        Text(
+                                                            text = currentMmsApn.mmscUrl,
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = palette.textPrimary,
+                                                            fontWeight = FontWeight.Medium,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        Text(
+                                                            text = "${strings.mmsApnProxyLabel}: ",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = palette.textSecondary,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                        Text(
+                                                            text = if (currentMmsApn.mmsProxy.isNotBlank()) {
+                                                                "${currentMmsApn.mmsProxy}:${currentMmsApn.mmsPort}"
+                                                            } else {
+                                                                strings.mmsApnDirectConnection
+                                                            },
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = palette.textPrimary,
+                                                            fontWeight = FontWeight.Medium,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                GlassCard(
+                                                    modifier = Modifier.weight(1f),
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    contentPadding = PaddingValues(vertical = 10.dp, horizontal = 8.dp),
+                                                    onClick = {
+                                                        currentMmsApn = SmsMmsRepository.detectAndSaveMmsApnFromSmsc(context, smscAddress)
+                                                        Toast.makeText(context, strings.mmsApnPullSuccess, Toast.LENGTH_SHORT).show()
+                                                    }
+                                                ) {
+                                                    Text(
+                                                        text = strings.mmsApnPullFromSimOrPhoneButton,
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        color = palette.accentPrimary,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        textAlign = TextAlign.Center,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    )
+                                                }
+
+                                                GlassCard(
+                                                    modifier = Modifier.weight(1f),
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    contentPadding = PaddingValues(vertical = 10.dp, horizontal = 8.dp),
+                                                    onClick = { showMmsApnManualDialog = true }
+                                                ) {
+                                                    Text(
+                                                        text = strings.mmsApnManualSetupButton,
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        color = palette.textPrimary,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        textAlign = TextAlign.Center,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    )
+                                                }
+                                            }
+                                        }
 
                                         Box(
                                             modifier = Modifier
@@ -3520,7 +3660,10 @@ fun SettingsScreen(
                                                     text = strings.blockedSendersSectionTitle,
                                                     style = MaterialTheme.typography.titleMedium,
                                                     color = palette.textPrimary,
-                                                    fontWeight = FontWeight.Bold
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
                                             }
                                             GlassCard(
@@ -4207,9 +4350,23 @@ fun SettingsScreen(
                                 onSave = { newAddress ->
                                     smscAddress = newAddress
                                     SmsMmsRepository.setSmscAddress(context, newAddress)
+                                    currentMmsApn = SmsMmsRepository.getMmsApnSettings(context)
                                     Toast.makeText(context, strings.smscSavedToast, Toast.LENGTH_SHORT).show()
                                 },
                                 onDismiss = { showSmscDialog = false }
+                            )
+                        }
+
+                        if (showMmsApnManualDialog) {
+                            MmsApnEditorDialog(
+                                currentApn = currentMmsApn,
+                                strings = strings,
+                                onSave = { newApn ->
+                                    currentMmsApn = newApn
+                                    SmsMmsRepository.setMmsApnSettings(context, newApn)
+                                    Toast.makeText(context, strings.mmsApnSaveSuccess, Toast.LENGTH_SHORT).show()
+                                },
+                                onDismiss = { showMmsApnManualDialog = false }
                             )
                         }
 
@@ -4452,7 +4609,7 @@ private fun BubblesCollapsibleCard(
 }
 
 @Composable
-private fun ExternalLinksCollapsibleCard(
+private fun ExternalLinksCard(
     identifyMaliciousWebsites: Boolean,
     onToggleIdentifyMaliciousWebsites: (Boolean) -> Unit,
     autoPreviewsShowAll: Boolean,
@@ -4464,171 +4621,117 @@ private fun ExternalLinksCollapsibleCard(
     strings: AppStrings
 ) {
     val palette = LocalGlassPalette.current
-    val isExpressive = LocalExpressiveAnimations.current
-    val activeDropdown = LocalActiveDropdownId.current
-    val expanded = activeDropdown.value == "external_links"
-    val arrowRotation by animateFloatAsState(
-        targetValue = if (expanded) 180f else 0f,
-        animationSpec = if (isExpressive) {
-            TxturaMotion.rotateSpec()
-        } else {
-            tween(200)
-        },
-        label = "external_links_arrow_rotation"
-    )
 
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        elevated = expanded,
-        accentHighlight = if (expanded) palette.accentPrimary else null,
+        shape = RoundedCornerShape(18.dp),
         contentPadding = PaddingValues(14.dp)
     ) {
         Column(
             verticalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            // Header: Clickable to toggle dropdown
+            // Header: Classic static title
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable {
-                        activeDropdown.value = if (activeDropdown.value == "external_links") null else "external_links"
-                    }
-                    .padding(vertical = 4.dp)
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(palette.accentPrimary.copy(alpha = 0.14f))
-                            .border(1.dp, palette.accentPrimary.copy(alpha = 0.42f), CircleShape)
-                    ) {
-                        Icon(
-                            imageVector = TxturaIcons.Link,
-                            contentDescription = null,
-                            tint = palette.accentPrimary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(
-                        text = strings.externalLinksTitle,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(36.dp)
                         .clip(CircleShape)
-                        .background(palette.glassSurfaceElevated)
-                        .border(0.8.dp, palette.glassBorderTop.copy(alpha = 0.35f), CircleShape)
+                        .background(palette.accentPrimary.copy(alpha = 0.14f))
+                        .border(1.dp, palette.accentPrimary.copy(alpha = 0.42f), CircleShape)
                 ) {
                     Icon(
-                        imageVector = TxturaIcons.ArrowDown,
-                        contentDescription = strings.externalLinksTitle,
+                        imageVector = TxturaIcons.Link,
+                        contentDescription = null,
                         tint = palette.accentPrimary,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .rotate(arrowRotation)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = strings.externalLinksTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
-            AnimatedVisibility(
-                visible = expanded,
-                enter = TxturaMotion.verticalExpandEnter(isExpressive = isExpressive),
-                exit = TxturaMotion.verticalCollapseExit(isExpressive = isExpressive)
-            ) {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(0.8.dp)
-                            .background(palette.glassBorderTop.copy(alpha = 0.28f))
-                    )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(0.8.dp)
+                    .background(palette.glassBorderTop.copy(alpha = 0.28f))
+            )
 
-                    // 1. Identifikacija zlonamernih veb-sajtova u porukama
-                    ExternalLinkToggleRow(
-                        title = strings.maliciousWebsitesTitle,
-                        subtitle = strings.maliciousWebsitesSub,
-                        checked = identifyMaliciousWebsites,
-                        onCheckedChange = onToggleIdentifyMaliciousWebsites
-                    )
+            // 1. Identifikacija zlonamernih veb-sajtova u porukama
+            ExternalLinkToggleRow(
+                title = strings.maliciousWebsitesTitle,
+                subtitle = strings.maliciousWebsitesSub,
+                checked = identifyMaliciousWebsites,
+                onCheckedChange = onToggleIdentifyMaliciousWebsites
+            )
 
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(0.8.dp)
-                            .background(palette.glassBorderTop.copy(alpha = 0.2f))
-                    )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(0.8.dp)
+                    .background(palette.glassBorderTop.copy(alpha = 0.2f))
+            )
 
-                    // 2. Prikazuj sve preglede
-                    ExternalLinkToggleRow(
-                        title = strings.autoPreviewsShowAllTitle,
-                        subtitle = strings.autoPreviewsShowAllSub,
-                        checked = autoPreviewsShowAll,
-                        onCheckedChange = { checked ->
-                            onToggleAutoPreviewsShowAll(checked)
-                            if (checked && autoPreviewsWebLinksOnly) {
-                                onToggleAutoPreviewsWebLinksOnly(false)
-                            }
-                        }
-                    )
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(0.8.dp)
-                            .background(palette.glassBorderTop.copy(alpha = 0.2f))
-                    )
-
-                    // 3. Prikazuj samo preglede veb-linkova
-                    ExternalLinkToggleRow(
-                        title = strings.autoPreviewsWebLinksOnlyTitle,
-                        subtitle = strings.autoPreviewsWebLinksOnlySub,
-                        checked = autoPreviewsWebLinksOnly,
-                        onCheckedChange = { checked ->
-                            onToggleAutoPreviewsWebLinksOnly(checked)
-                            if (checked && !autoPreviewsShowAll) {
-                                onToggleAutoPreviewsShowAll(true)
-                            }
-                        }
-                    )
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(0.8.dp)
-                            .background(palette.glassBorderTop.copy(alpha = 0.2f))
-                    )
-
-                    // 4. Preuzimaj podatke samo preko WiFi-a
-                    ExternalLinkToggleRow(
-                        title = strings.autoPreviewsWifiOnlyTitle,
-                        subtitle = strings.autoPreviewsWifiOnlySub,
-                        checked = autoPreviewsWifiOnly,
-                        onCheckedChange = onToggleAutoPreviewsWifiOnly
-                    )
+            // 2. Prikazuj sve preglede
+            ExternalLinkToggleRow(
+                title = strings.autoPreviewsShowAllTitle,
+                subtitle = strings.autoPreviewsShowAllSub,
+                checked = autoPreviewsShowAll,
+                onCheckedChange = { checked ->
+                    onToggleAutoPreviewsShowAll(checked)
+                    if (checked && autoPreviewsWebLinksOnly) {
+                        onToggleAutoPreviewsWebLinksOnly(false)
+                    }
                 }
-            }
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(0.8.dp)
+                    .background(palette.glassBorderTop.copy(alpha = 0.2f))
+            )
+
+            // 3. Prikazuj samo preglede veb-linkova
+            ExternalLinkToggleRow(
+                title = strings.autoPreviewsWebLinksOnlyTitle,
+                subtitle = strings.autoPreviewsWebLinksOnlySub,
+                checked = autoPreviewsWebLinksOnly,
+                onCheckedChange = { checked ->
+                    onToggleAutoPreviewsWebLinksOnly(checked)
+                    if (checked && !autoPreviewsShowAll) {
+                        onToggleAutoPreviewsShowAll(true)
+                    }
+                }
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(0.8.dp)
+                    .background(palette.glassBorderTop.copy(alpha = 0.2f))
+            )
+
+            // 4. Preuzimaj podatke samo preko WiFi-a
+            ExternalLinkToggleRow(
+                title = strings.autoPreviewsWifiOnlyTitle,
+                subtitle = strings.autoPreviewsWifiOnlySub,
+                checked = autoPreviewsWifiOnly,
+                onCheckedChange = onToggleAutoPreviewsWifiOnly
+            )
         }
     }
 }
@@ -4655,7 +4758,10 @@ private fun ExternalLinkToggleRow(
                 text = title,
                 style = MaterialTheme.typography.bodyMedium,
                 color = palette.textPrimary,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
             )
             if (!subtitle.isNullOrBlank()) {
                 OverflowTooltipText(
@@ -4713,7 +4819,10 @@ private fun SettingsSwitchRow(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
                     color = if (enabled) palette.textPrimary else palette.textSecondary.copy(alpha = 0.7f),
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (!subtitle.isNullOrBlank()) {
                     OverflowTooltipText(
@@ -4774,7 +4883,10 @@ private fun <T> SettingsSelectorRow(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
                     color = palette.textPrimary,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (!subtitle.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(2.dp))
@@ -4883,7 +4995,10 @@ private fun SettingsActionRow(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
                     color = palette.textPrimary,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (!subtitle.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(2.dp))
@@ -5017,6 +5132,210 @@ private fun SmscEditorDialog(
                     style = MaterialTheme.typography.labelMedium,
                     color = palette.textSecondary,
                     fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    )
+}
+
+@Composable
+private fun MmsApnEditorDialog(
+    currentApn: MmsApnSettings,
+    strings: AppStrings,
+    onSave: (MmsApnSettings) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalGlassPalette.current
+    var mmscInput by remember { mutableStateOf(currentApn.mmscUrl) }
+    var proxyInput by remember { mutableStateOf(currentApn.mmsProxy) }
+    var portInput by remember { mutableStateOf(currentApn.mmsPort.toString()) }
+
+    GlassAlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = strings.mmsApnManualDialogTitle,
+                style = MaterialTheme.typography.titleMedium,
+                color = palette.textPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+            ) {
+                Text(
+                    text = strings.mmsApnSettingsSub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.textSecondary,
+                    lineHeight = 16.sp
+                )
+
+                Text(
+                    text = strings.mmsApnMmscLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                BasicTextField(
+                    value = mmscInput,
+                    onValueChange = { mmscInput = it },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    cursorBrush = SolidColor(palette.accentPrimary),
+                    decorationBox = { innerTextField ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(palette.glassSurfaceElevated)
+                                .border(
+                                    1.dp,
+                                    palette.accentPrimary.copy(alpha = 0.4f),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            if (mmscInput.isEmpty()) {
+                                Text(
+                                    text = strings.mmsApnEnterMmscPlaceholder,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = palette.textSecondary.copy(alpha = 0.5f)
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+
+                Text(
+                    text = strings.mmsApnProxyLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                BasicTextField(
+                    value = proxyInput,
+                    onValueChange = { proxyInput = it },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    cursorBrush = SolidColor(palette.accentPrimary),
+                    decorationBox = { innerTextField ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(palette.glassSurfaceElevated)
+                                .border(
+                                    1.dp,
+                                    palette.accentPrimary.copy(alpha = 0.4f),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            if (proxyInput.isEmpty()) {
+                                Text(
+                                    text = strings.mmsApnEnterProxyPlaceholder,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = palette.textSecondary.copy(alpha = 0.5f)
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+
+                Text(
+                    text = strings.mmsApnPortLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                BasicTextField(
+                    value = portInput,
+                    onValueChange = { portInput = it.filter { ch -> ch.isDigit() } },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    cursorBrush = SolidColor(palette.accentPrimary),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    decorationBox = { innerTextField ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(palette.glassSurfaceElevated)
+                                .border(
+                                    1.dp,
+                                    palette.accentPrimary.copy(alpha = 0.4f),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            if (portInput.isEmpty()) {
+                                Text(
+                                    text = strings.mmsApnEnterPortPlaceholder,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = palette.textSecondary.copy(alpha = 0.5f)
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            GlassCard(
+                shape = RoundedCornerShape(50),
+                elevated = true,
+                accentHighlight = palette.accentPrimary,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                onClick = {
+                    val port = portInput.toIntOrNull() ?: 8080
+                    onSave(
+                        MmsApnSettings(
+                            carrierName = currentApn.carrierName.ifBlank { "Korisnički APN" },
+                            mmscUrl = mmscInput.trim(),
+                            mmsProxy = proxyInput.trim(),
+                            mmsPort = port,
+                            source = "Ručno podešeno"
+                        )
+                    )
+                    onDismiss()
+                }
+            ) {
+                Text(
+                    text = strings.confirm,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = palette.accentPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            GlassCard(
+                shape = RoundedCornerShape(50),
+                elevated = false,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                onClick = onDismiss
+            ) {
+                Text(
+                    text = strings.cancel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = palette.textSecondary
                 )
             }
         }
@@ -5659,42 +5978,18 @@ private fun DeletedMessagesCollapsibleCard(
 @Composable
 private fun SecurityMeasuresDialog(
     onDismiss: () -> Unit,
-    identifyMaliciousWebsites: Boolean,
-    onNavigateToSetting: (SettingsCategoryWindow, String) -> Unit
+    identifyMaliciousWebsites: Boolean = true,
+    onNavigateToSetting: (SettingsCategoryWindow, String) -> Unit = { _, _ -> }
 ) {
-    val context = LocalContext.current
     val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
     val scrollState = rememberScrollState()
 
-    // These rows summarize app/platform configuration, not a live self-test.
     val isIntentSanitizerActive = true
     val isPhotoPickerActive = true
     val isSensitiveClipboardActive = true
     val isProtectedReceiversActive = true
-    val isDbEncryptionActive = remember(context) { AppSecurityManager.isDbEncryptionEnabled(context) }
-    val isBiometricLockActive = remember(context) { AppSecurityManager.isBiometricLockEnabled(context) }
-    val isSslPinningActive = remember(context) { AppSecurityManager.isSslPinningEnabled(context) }
-    val isMetadataMinimizationActive = remember(context) { AppSecurityManager.isMetadataMinimizationEnabled(context) }
-    val isRootMonitoringEnabled = remember(context) { AppSecurityManager.isRootDetectionEnabled(context) }
-    var rootStatus by remember(context, isRootMonitoringEnabled) {
-        mutableStateOf<AppSecurityManager.RootCheckResult?>(null)
-    }
-    LaunchedEffect(context, isRootMonitoringEnabled) {
-        rootStatus = withContext(Dispatchers.IO) {
-            AppSecurityManager.checkRootStatus(context)
-        }
-    }
-    val isRootSafe = isRootMonitoringEnabled && rootStatus?.isRooted == false
-    val rootStatusText = when {
-        !isRootMonitoringEnabled -> strings.securityStatusDisabled
-        rootStatus == null -> strings.rootScanInProgress
-        rootStatus?.isRooted == true -> strings.securityStatusCompromised
-        else -> strings.rootStateSafe
-    }
-    // BackupManager always encrypts exported backups with AES-256-GCM.
     val isBackupEncryptionActive = true
-    val isSpamFirewallActive = remember(context) { AppSecurityManager.isSpamFirewallEnabled(context) }
 
     GlassAlertDialog(
         onDismissRequest = onDismiss,
@@ -5729,15 +6024,6 @@ private fun SecurityMeasuresDialog(
                     modifier = Modifier.padding(bottom = 4.dp)
                 )
                 SecurityItemRow(
-                    title = strings.secItem1Title,
-                    subtitle = strings.secItem1Sub,
-                    isActive = identifyMaliciousWebsites,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.CHAT_AND_GESTURES, "identify_malicious_websites")
-                    }
-                )
-                SecurityItemRow(
                     title = strings.secItem2Title,
                     subtitle = strings.secItem2Sub,
                     isActive = isIntentSanitizerActive,
@@ -5766,66 +6052,11 @@ private fun SecurityMeasuresDialog(
                     onClick = {}
                 )
                 SecurityItemRow(
-                    title = strings.secItem6Title,
-                    subtitle = strings.secItem6Sub,
-                    isActive = isDbEncryptionActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "db_encryption")
-                    }
-                )
-                SecurityItemRow(
-                    title = strings.secItem7Title,
-                    subtitle = strings.secItem7Sub,
-                    isActive = isBiometricLockActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "biometric_lock")
-                    }
-                )
-                SecurityItemRow(
-                    title = strings.secItem8Title,
-                    subtitle = strings.secItem8Sub,
-                    isActive = isSslPinningActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "ssl_pinning")
-                    }
-                )
-                SecurityItemRow(
-                    title = strings.secItem9Title,
-                    subtitle = strings.secItem9Sub,
-                    isActive = isMetadataMinimizationActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "metadata_minimization")
-                    }
-                )
-                SecurityItemRow(
-                    title = strings.secItem10Title,
-                    subtitle = strings.secItem10Sub,
-                    isActive = isRootSafe,
-                    statusOverride = rootStatusText,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "root_detection")
-                    }
-                )
-                SecurityItemRow(
                     title = strings.secItem11Title,
                     subtitle = strings.secItem11Sub,
                     isActive = isBackupEncryptionActive,
                     isConfigurable = false,
                     onClick = {}
-                )
-                SecurityItemRow(
-                    title = strings.secItem12Title,
-                    subtitle = strings.secItem12Sub,
-                    isActive = isSpamFirewallActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "spam_firewall")
-                    }
                 )
             }
         },
@@ -6023,9 +6254,36 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v3.4",
+                        versionName = "v3.5",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "MMS telefonija i pozadinska sinhronizacija" else "MMS Telephony & Background Sync",
+                                items = listOf(
+                                    if (strings.isSerbian) "Automatska pozadinska MMS sinhronizacija: Pozadinski proces na svakih 3 minuta za automatsko ponovno slanje zaglavljenih odlaznih i preuzimanje pristiglih MMS poruka" else "Periodic background MMS retry engine: Background process running every 3 minutes via AlarmManager and JobScheduler to auto-retry stuck outgoing MMS and retrieve pending incoming MMS",
+                                    if (strings.isSerbian) "Automatska detekcija MMS APN podešavanja: Pozadinsko preuzimanje i podešavanje MMS parametara (MMSC URL, Proxy, Port) prema SMSC broju i SIM operateru" else "SMSC-based MMS APN auto-detection: Background setup of carrier MMS APN parameters based on SMSC center number and SIM operator"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Zvučni enkoderi i mediji" else "Audio Encoders & Media Processing",
+                                items = listOf(
+                                    if (strings.isSerbian) "Konverzija i provera AMR-NB formata: Obrada glasovnih poruka i zvučnih zapisa uz proveru i transkodovanje u važeći AMR-NB format pre slanja" else "AMR-NB audio format converter: Ensures standard #!AMR\\n header compliance and transcodes non-AMR audio formats to valid AMR-NB before MMS transmission"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Interfejs i podešavanja" else "UI Layouts & Settings Refinements",
+                                items = listOf(
+                                    if (strings.isSerbian) "Simetrična APN kartica i naslovi u jednom redu: Redizajnirana APN podešavanja sa podjednakom dugmadi (50/50), prikaz naslova kartica u 1 redu i fiksiran prostor pri poništavanju slanja" else "Symmetrical APN card & single-line titles: Redesigned MMS APN card with 50/50 symmetrical action buttons, single-line settings card titles, and isolated countdown timer slot to eliminate flicker"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v3.4",
+                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Ažuriranje i instalacija" else "App Updates & Installation",
@@ -8518,9 +8776,12 @@ fun ConversationDetailScreen(
                                 .size(20.dp)
                                 .clip(CircleShape)
                                 .clickable {
-                                    chatSearchQuery = ""
-                                    activeSearchMatchIndex = 0
                                     isChatSearchVisible = false
+                                    coroutineScope.launch {
+                                        delay(150.milliseconds)
+                                        chatSearchQuery = ""
+                                        activeSearchMatchIndex = 0
+                                    }
                                 }
                         )
                     }
@@ -8543,85 +8804,91 @@ fun ConversationDetailScreen(
                 contentPadding = PaddingValues((10 * metrics.scaleFactor).dp)
             ) {
                 Column {
-                    if (pendingAttachmentUri != null) {
-                        val uriStr = pendingAttachmentUri.toString()
-                        val isPendingCal = uriStr.contains("mms_cal") || uriStr.endsWith(".ics", ignoreCase = true) || uriStr.endsWith(".vcs", ignoreCase = true)
-                        val isPendingDoc = !isPendingCal && (uriStr.contains("mms_doc") ||
-                            (!uriStr.endsWith(".jpg", true) && !uriStr.endsWith(".jpeg", true) &&
-                             !uriStr.endsWith(".png", true) && !uriStr.endsWith(".webp", true)))
-                        val previewTitle = when {
-                            isPendingCal -> strings.calendarEventTitle
-                            isPendingDoc -> DocumentAttachmentHelper.getFileName(context, pendingAttachmentUri)
-                            else -> strings.mmsAttachedTitle
-                        }
-                        val previewSub = when {
-                            isPendingCal -> strings.calendarEventSub
-                            isPendingDoc -> strings.documentFileSub
-                            else -> strings.mmsAutoCompressedSub
-                        }
-                        GlassCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 10.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            accentHighlight = palette.accentSecondary,
-                            contentPadding = PaddingValues(10.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                modifier = Modifier.fillMaxWidth()
+                    AnimatedVisibility(
+                        visible = pendingAttachmentUri != null,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
+                    ) {
+                        if (pendingAttachmentUri != null) {
+                            val uriStr = pendingAttachmentUri.toString()
+                            val isPendingCal = uriStr.contains("mms_cal") || uriStr.endsWith(".ics", ignoreCase = true) || uriStr.endsWith(".vcs", ignoreCase = true)
+                            val isPendingDoc = !isPendingCal && (uriStr.contains("mms_doc") ||
+                                (!uriStr.endsWith(".jpg", true) && !uriStr.endsWith(".jpeg", true) &&
+                                 !uriStr.endsWith(".png", true) && !uriStr.endsWith(".webp", true)))
+                            val previewTitle = when {
+                                isPendingCal -> strings.calendarEventTitle
+                                isPendingDoc -> DocumentAttachmentHelper.getFileName(context, pendingAttachmentUri)
+                                else -> strings.mmsAttachedTitle
+                            }
+                            val previewSub = when {
+                                isPendingCal -> strings.calendarEventSub
+                                isPendingDoc -> strings.documentFileSub
+                                else -> strings.mmsAutoCompressedSub
+                            }
+                            GlassCard(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 10.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                accentHighlight = palette.accentSecondary,
+                                contentPadding = PaddingValues(10.dp)
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f, fill = false)) {
-                                    if (isPendingCal || isPendingDoc) {
-                                        Box(
-                                            contentAlignment = Alignment.Center,
-                                            modifier = Modifier
-                                                .size(44.dp)
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .background(palette.accentSecondary.copy(alpha = 0.15f))
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isPendingCal) TxturaIcons.CalendarEvent else TxturaIcons.DocumentFile,
-                                                contentDescription = previewTitle,
-                                                tint = palette.accentSecondary,
-                                                modifier = Modifier.size(24.dp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f, fill = false)) {
+                                        if (isPendingCal || isPendingDoc) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier
+                                                    .size(44.dp)
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(palette.accentSecondary.copy(alpha = 0.15f))
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isPendingCal) TxturaIcons.CalendarEvent else TxturaIcons.DocumentFile,
+                                                    contentDescription = previewTitle,
+                                                    tint = palette.accentSecondary,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                        } else {
+                                            MmsImageThumbnail(
+                                                uri = pendingAttachmentUri,
+                                                hdrLabel = strings.hdrMmsPhoto,
+                                                modifier = Modifier
+                                                    .size(44.dp)
+                                                    .clip(RoundedCornerShape(10.dp))
                                             )
                                         }
-                                    } else {
-                                        MmsImageThumbnail(
-                                            uri = pendingAttachmentUri,
-                                            hdrLabel = strings.hdrMmsPhoto,
-                                            modifier = Modifier
-                                                .size(44.dp)
-                                                .clip(RoundedCornerShape(10.dp))
-                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f, fill = false)) {
+                                            Text(
+                                                text = previewTitle,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = palette.accentSecondary,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = previewSub,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = palette.textSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column(modifier = Modifier.weight(1f, fill = false)) {
-                                        Text(
-                                            text = previewTitle,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = palette.accentSecondary,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = previewSub,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = palette.textSecondary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
+                                    GlassIconButton(
+                                        icon = TxturaIcons.Close,
+                                        contentDescription = strings.removeMmsAttachment,
+                                        onClick = onClearAttachment,
+                                        size = 30.dp
+                                    )
                                 }
-                                GlassIconButton(
-                                    icon = TxturaIcons.Close,
-                                    contentDescription = strings.removeMmsAttachment,
-                                    onClick = onClearAttachment,
-                                    size = 30.dp
-                                )
                             }
                         }
                     }
@@ -8933,27 +9200,27 @@ fun ConversationDetailScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                // 6-second countdown timer badge placed directly LEFT of the Send/Cancel button
-                                AnimatedVisibility(
-                                    visible = isCountingDown,
-                                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
-                                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End)
+                                // 6-second countdown timer badge placed in a fixed-size 42.dp slot directly LEFT of the Send/Cancel button
+                                Box(
+                                    modifier = Modifier.size(42.dp),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    val activeDelayed = pendingDelayedSend
-                                    val totalMs = activeDelayed?.durationMillis ?: 6_000L
-                                    val secondsLeft = ceil(delayedRemainingMillis / 1000.0).toInt().coerceIn(1, 6)
-                                    val fraction = (delayedRemainingMillis.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
+                                    androidx.compose.animation.AnimatedVisibility(
+                                        visible = isCountingDown,
+                                        enter = fadeIn(tween(150)),
+                                        exit = fadeOut(tween(150))
+                                    ) {
+                                        val activeDelayed = pendingDelayedSend
+                                        val totalMs = activeDelayed?.durationMillis ?: 6_000L
+                                        val secondsLeft = ceil(delayedRemainingMillis / 1000.0).toInt().coerceIn(1, 6)
+                                        val fraction = (delayedRemainingMillis.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
 
-                                    SendCountdownTimerBadge(
-                                        secondsLeft = secondsLeft,
-                                        progressFraction = fraction,
-                                        contentDescription = "${secondsLeft}s"
-                                    )
-                                }
-
-                                // Spacer placeholder for persistent Microphone button (42.dp)
-                                if (!isCountingDown) {
-                                    Spacer(modifier = Modifier.size(42.dp))
+                                        SendCountdownTimerBadge(
+                                            secondsLeft = secondsLeft,
+                                            progressFraction = fraction,
+                                            contentDescription = "${secondsLeft}s"
+                                        )
+                                    }
                                 }
 
                                 // Send button: replaced by Red "X" (Close) during countdown to cancel sending
@@ -9143,7 +9410,7 @@ fun ConversationDetailScreen(
                                                 TxturaHaptics.reject(view, context)
                                             } else {
                                                 val recDur = VoiceMessageManager.recordingDurationMillis.longValue
-                                                val recFile = VoiceMessageManager.stopRecording()
+                                                val recFile = VoiceMessageManager.stopRecording(context)
                                                 if (recFile != null && recFile.exists() && recFile.length() > 200L && recDur >= 500L) {
                                                     TxturaHaptics.confirm(view, context)
                                                     val audioUri = FileProvider.getUriForFile(
@@ -15004,24 +15271,22 @@ fun EmergencyAlertsDialog(
 
                 // 3. Action Button (Trigger Test Alert)
                 GlassCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                    shape = RoundedCornerShape(50),
                     accentHighlight = palette.accentSecondary,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     onClick = {
                         EmergencyAlertManager.triggerTestAlert(context)
                         Toast.makeText(context, strings.emergencyTestToast, Toast.LENGTH_SHORT).show()
                     }
                 ) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            text = strings.emergencyTestButton,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = palette.accentSecondary,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
-                        )
-                    }
+                    Text(
+                        text = strings.emergencyTestButton,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.accentSecondary,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
                 }
 
                 // 4. Alert History / Feed

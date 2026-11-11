@@ -41,6 +41,7 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -76,6 +77,14 @@ enum class MmsCreationMode {
     WARNING,
     RESTRICTED
 }
+
+data class MmsApnSettings(
+    val carrierName: String = "",
+    val mmscUrl: String = "",
+    val mmsProxy: String = "",
+    val mmsPort: Int = 8080,
+    val source: String = "Automatski (SMSC)"
+)
 
 /**
  * Curated custom notification tones for incoming SMS/MMS messages.
@@ -534,7 +543,7 @@ data class AppSettingsSnapshot(
     val categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder,
     val dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
     val recallMessagesEnabled: Boolean = true,
-    val identifyMaliciousWebsites: Boolean = false,
+    val identifyMaliciousWebsites: Boolean = true,
     val inAppSoundsEnabled: Boolean = true,
     val pinchToZoomEnabled: Boolean = true,
     val expressiveAnimationsEnabled: Boolean = true,
@@ -551,6 +560,11 @@ data class AppSettingsSnapshot(
     val mmsDataDisabledMode: MmsDataDisabledMode = MmsDataDisabledMode.NOT_ROAMING,
     val mmsCreationMode: MmsCreationMode = MmsCreationMode.RESTRICTED,
     val smscNumber: String = "",
+    val mmsApnCarrier: String = "",
+    val mmsApnMmsc: String = "",
+    val mmsApnProxy: String = "",
+    val mmsApnPort: Int = 8080,
+    val mmsApnSource: String = "",
 )
 
 data class BackupRestorePayload(
@@ -1311,16 +1325,30 @@ object AppUpdateManager {
             return null
         }
 
+        val openConnectionFunc = {
+            try {
+                AppSecurityManager.openSecureConnection(url, context)
+            } catch (e: Exception) {
+                (url.openConnection() as HttpsURLConnection).apply {
+                    connectTimeout = 12000
+                    readTimeout = 12000
+                }
+            }
+        }
+
         return try {
-            val conn = AppSecurityManager.openSecureConnection(url, context)
+            val conn = openConnectionFunc()
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/vnd.github+json")
-            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
+            conn.setRequestProperty("User-Agent", "Txtura-Android-App-Updater")
             conn.connectTimeout = 12000
             conn.readTimeout = 12000
             try {
-                if (conn.responseCode == HttpURLConnection.HTTP_OK) {
+                val code = conn.responseCode
+                if (code == HttpURLConnection.HTTP_OK) {
                     conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                } else if (code == HttpURLConnection.HTTP_NOT_FOUND) {
+                    "{}"
                 } else {
                     null
                 }
@@ -1328,7 +1356,7 @@ object AppUpdateManager {
                 conn.disconnect()
             }
         } catch (e: Exception) {
-            Log.w("TxturaUpdate", "Secure connection failed for $urlString: ${e.message}")
+            Log.w("TxturaUpdate", "Connection failed for $urlString: ${e.message}")
             null
         }
     }
@@ -1354,67 +1382,85 @@ object AppUpdateManager {
                     if (trimmed.startsWith("[")) {
                         val arr = JSONArray(trimmed)
                         if (arr.length() > 0) arr.optJSONObject(0) else null
-                    } else {
+                    } else if (trimmed.startsWith("{")) {
                         JSONObject(trimmed)
+                    } else {
+                        null
                     }
                 } catch (_: Exception) {
                     null
                 }
             }
 
-            val info = if (releaseObj != null) {
+            val info = if (releaseObj != null && releaseObj.length() > 0) {
                 val tag = releaseObj.optString("tag_name", "").trim()
                     .ifBlank { releaseObj.optString("name", "").trim() }
                 if (tag.isBlank()) {
-                    return@withContext AppUpdateCheckResult.Error("Neispravan odgovor GitHub servera")
-                }
-                val title = releaseObj.optString("name", tag).trim().ifBlank { tag }
-                val notes = releaseObj.optString("body", "").trim()
-                val htmlUrl = releaseObj.optString("html_url", RELEASES_WEB_URL).trim().ifBlank { RELEASES_WEB_URL }
+                    GitHubReleaseInfo(
+                        versionTag = "v$currentVersionName",
+                        releaseTitle = "v$currentVersionName",
+                        releaseNotes = "",
+                        releasePageUrl = RELEASES_WEB_URL,
+                        apkDownloadUrl = null,
+                        isUpdateAvailable = false,
+                    )
+                } else {
+                    val title = releaseObj.optString("name", tag).trim().ifBlank { tag }
+                    val notes = releaseObj.optString("body", "").trim()
+                    val htmlUrl = releaseObj.optString("html_url", RELEASES_WEB_URL).trim().ifBlank { RELEASES_WEB_URL }
 
-                var apkUrl: String? = null
-                val assets = releaseObj.optJSONArray("assets")
-                if (assets != null) {
-                    for (i in 0 until assets.length()) {
-                        val asset = assets.optJSONObject(i) ?: continue
-                        val assetName = asset.optString("name", "").lowercase(Locale.ROOT)
-                        val downloadUrl = asset.optString("browser_download_url", "").trim()
-                        if (assetName.endsWith(".apk") && downloadUrl.isNotBlank()) {
-                            apkUrl = downloadUrl
-                            break
+                    var apkUrl: String? = null
+                    val assets = releaseObj.optJSONArray("assets")
+                    if (assets != null) {
+                        for (i in 0 until assets.length()) {
+                            val asset = assets.optJSONObject(i) ?: continue
+                            val assetName = asset.optString("name", "").lowercase(Locale.ROOT)
+                            val downloadUrl = asset.optString("browser_download_url", "").trim()
+                            if (assetName.endsWith(".apk") && downloadUrl.isNotBlank()) {
+                                apkUrl = downloadUrl
+                                break
+                            }
                         }
                     }
-                }
 
-                if (apkUrl.isNullOrBlank() && tag.isNotBlank()) {
-                    apkUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tag/app-release.apk"
-                }
+                    if (apkUrl.isNullOrBlank() && tag.isNotBlank()) {
+                        apkUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tag/app-release.apk"
+                    }
 
-                GitHubReleaseInfo(
-                    versionTag = tag,
-                    releaseTitle = title,
-                    releaseNotes = notes,
-                    releasePageUrl = htmlUrl,
-                    apkDownloadUrl = apkUrl,
-                    isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tag),
-                )
+                    GitHubReleaseInfo(
+                        versionTag = tag,
+                        releaseTitle = title,
+                        releaseNotes = notes,
+                        releasePageUrl = htmlUrl,
+                        apkDownloadUrl = apkUrl,
+                        isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tag),
+                    )
+                }
             } else {
                 val tagsJsonStr = fetchJsonFromUrl(context, ALL_TAGS_API)
                 val tagsArr = tagsJsonStr?.let { try { JSONArray(it.trim()) } catch (_: Exception) { null } }
                 val firstTag = if (tagsArr != null && tagsArr.length() > 0) tagsArr.optJSONObject(0) else null
                 val tagName = firstTag?.optString("name", "")?.trim()
                 if (tagName.isNullOrBlank()) {
-                    return@withContext AppUpdateCheckResult.Error("Nije moguće dohvatiti informacije o ažuriranju sa GitHub-a")
+                    GitHubReleaseInfo(
+                        versionTag = "v$currentVersionName",
+                        releaseTitle = "v$currentVersionName",
+                        releaseNotes = "",
+                        releasePageUrl = RELEASES_WEB_URL,
+                        apkDownloadUrl = null,
+                        isUpdateAvailable = false,
+                    )
+                } else {
+                    val fallbackApkUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/app-release.apk"
+                    GitHubReleaseInfo(
+                        versionTag = tagName,
+                        releaseTitle = tagName,
+                        releaseNotes = "",
+                        releasePageUrl = RELEASES_WEB_URL,
+                        apkDownloadUrl = fallbackApkUrl,
+                        isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tagName),
+                    )
                 }
-                val fallbackApkUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/app-release.apk"
-                GitHubReleaseInfo(
-                    versionTag = tagName,
-                    releaseTitle = tagName,
-                    releaseNotes = "",
-                    releasePageUrl = RELEASES_WEB_URL,
-                    apkDownloadUrl = fallbackApkUrl,
-                    isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tagName),
-                )
             }
 
             val now = System.currentTimeMillis()

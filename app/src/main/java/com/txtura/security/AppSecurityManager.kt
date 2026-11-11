@@ -254,7 +254,7 @@ object AppSecurityManager {
     // =========================================================================
 
     fun isDbEncryptionEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_DB_ENCRYPTION, true)
+        return getPrefs(context).getBoolean(KEY_DB_ENCRYPTION, false)
     }
 
     fun setDbEncryptionEnabled(context: Context, enabled: Boolean) {
@@ -280,7 +280,7 @@ object AppSecurityManager {
 
 
     fun isSslPinningEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_SSL_PINNING, true)
+        return getPrefs(context).getBoolean(KEY_SSL_PINNING, false)
     }
 
     fun setSslPinningEnabled(context: Context, enabled: Boolean) {
@@ -288,7 +288,7 @@ object AppSecurityManager {
     }
 
     fun isMetadataMinimizationEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_METADATA_MINIMIZATION, true)
+        return getPrefs(context).getBoolean(KEY_METADATA_MINIMIZATION, false)
     }
 
     fun setMetadataMinimizationEnabled(context: Context, enabled: Boolean) {
@@ -296,7 +296,7 @@ object AppSecurityManager {
     }
 
     fun isRootDetectionEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_ROOT_DETECTION, true)
+        return getPrefs(context).getBoolean(KEY_ROOT_DETECTION, false)
     }
 
     fun setRootDetectionEnabled(context: Context, enabled: Boolean) {
@@ -304,7 +304,7 @@ object AppSecurityManager {
     }
 
     fun isSpamFirewallEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_SPAM_FIREWALL, true)
+        return getPrefs(context).getBoolean(KEY_SPAM_FIREWALL, false)
     }
 
     fun setSpamFirewallEnabled(context: Context, enabled: Boolean) {

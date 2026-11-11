@@ -178,7 +178,7 @@ class MainActivity : ComponentActivity() {
     private var autoDeleteDays by mutableIntStateOf(30)
     private var deletedGroupingMode by mutableStateOf(DeletedGroupingMode.BY_DATE)
     private var recallMessagesEnabled by mutableStateOf(value = true)
-    private var identifyMaliciousWebsites by mutableStateOf(value = false)
+    private var identifyMaliciousWebsites by mutableStateOf(value = true)
     private var inAppSoundsEnabled by mutableStateOf(value = true)
     private var smsNotificationSound by mutableStateOf(SmsNotificationSound.DUPLI_PULS)
     private var pinchToZoomEnabled by mutableStateOf(value = true)
@@ -1925,7 +1925,7 @@ class MainActivity : ComponentActivity() {
         categoryOrder = ConversationFilter.deserializeOrder(string(KEY_CATEGORY_ORDER))
         dockBarOrder = DockBarItem.deserializeOrder(string(KEY_DOCK_BAR_ORDER))
         recallMessagesEnabled = boolean(KEY_RECALL_MESSAGES_ENABLED, true)
-        identifyMaliciousWebsites = boolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, false)
+        identifyMaliciousWebsites = boolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, true)
         inAppSoundsEnabled = boolean(KEY_IN_APP_SOUNDS_ENABLED, true)
         pinchToZoomEnabled = boolean(KEY_PINCH_TO_ZOOM_ENABLED, true)
         expressiveAnimationsEnabled = boolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, true)
@@ -2110,6 +2110,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun buildAppSettingsSnapshot(): AppSettingsSnapshot {
+        val mmsApn = SmsMmsRepository.getMmsApnSettings(this)
         return AppSettingsSnapshot(
             themeMode = themeMode,
             showContactPhotos = showContactPhotos,
@@ -2142,7 +2143,12 @@ class MainActivity : ComponentActivity() {
             mmsAutoRetrieve = SmsMmsRepository.getMmsAutoRetrieveMode(this),
             mmsDataDisabledMode = SmsMmsRepository.getMmsDataDisabledMode(this),
             mmsCreationMode = SmsMmsRepository.getMmsCreationMode(this),
-            smscNumber = SmsMmsRepository.getSmscAddress(this)
+            smscNumber = SmsMmsRepository.getSmscAddress(this),
+            mmsApnCarrier = mmsApn.carrierName,
+            mmsApnMmsc = mmsApn.mmscUrl,
+            mmsApnProxy = mmsApn.mmsProxy,
+            mmsApnPort = mmsApn.mmsPort,
+            mmsApnSource = mmsApn.source
         )
     }
 
@@ -2280,6 +2286,18 @@ class MainActivity : ComponentActivity() {
         SmsMmsRepository.setMmsCreationMode(this, payload.settings.mmsCreationMode)
         if (payload.settings.smscNumber.isNotBlank()) {
             SmsMmsRepository.setSmscAddress(this, payload.settings.smscNumber)
+        }
+        if (payload.settings.mmsApnMmsc.isNotBlank()) {
+            SmsMmsRepository.setMmsApnSettings(
+                this,
+                com.txtura.data.MmsApnSettings(
+                    carrierName = payload.settings.mmsApnCarrier,
+                    mmscUrl = payload.settings.mmsApnMmsc,
+                    mmsProxy = payload.settings.mmsApnProxy,
+                    mmsPort = payload.settings.mmsApnPort,
+                    source = payload.settings.mmsApnSource.ifBlank { "Vraćeno iz rezervne kopije" }
+                )
+            )
         }
 
         lifecycleScope.launch {

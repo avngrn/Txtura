@@ -213,7 +213,7 @@ class AppStrings(val isSerbian: Boolean) {
     }
     val dbEncryptionSwitchLabel: String = s(
         "Add AES-256-GCM payload layer",
-        "Dodaj AES-256-GCM sloj za podatke",
+        "Dodaj AES-256-GCM sloj",
     )
     val biometricLockTitle: String = s(
         "Biometric Protection & PIN",
@@ -223,7 +223,7 @@ class AppStrings(val isSerbian: Boolean) {
         "Enabling app locking with fingerprint, PIN, or device password",
         "Omogućavanje zaključavanja same aplikacije otiskom prsta, PIN-om ili lozinkom uređaja",
     )
-    val biometricLockEnabledLabel: String = s("Lock App When Closed", "Zaključavanje aplikacije pri izlasku")
+    val biometricLockEnabledLabel: String = s("Lock App When Closed", "Zaključavanje pri izlasku")
     val sslPinningTitle: String = s(
         "HTTPS & TLS/SSL with Pinning",
         "HTTPS i TLS/SSL sa Pinning-om",
@@ -243,22 +243,22 @@ class AppStrings(val isSerbian: Boolean) {
     val metadataMinimizationSwitchLabel: String = s("Zero Metadata Policy", "Politika nultih metapodataka")
     val rootDetectionTitle: String = s("Root State Detection", "Detekcija \"Root\" stanja")
     val rootDetectionSub: String = s(
-        "Check for common signs of a modified operating system. This is a best-effort check, not a guarantee of device integrity.",
-        "Provera uobičajenih znakova izmenjenog operativnog sistema. Provera je informativna i ne garantuje integritet uređaja.",
+        "Check for common signs of a modified operating system.",
+        "Provera uobičajenih znakova izmenjenog operativnog sistema."
     )
     val rootDetectionSwitchLabel: String = s("Enable root checks", "Uključi proveru root stanja")
     val rootDetectionSwitchSub: String = s(
         "Scan when this settings page opens or when you tap re-scan.",
         "Skeniranje pri otvaranju ove stranice ili kada dodirnete ponovnu proveru.",
     )
-    val spamFirewallTitle: String = s("Blocked Sender Firewall", "Zaštitni zid blokiranih pošiljalaca")
+    val spamFirewallTitle: String = s("Blocked Sender Firewall", "Zaštitni zid blokiranih brojeva")
     val spamFirewallSub: String = s(
         "New SMS from blocked senders can be discarded before Txtura saves them; blocked MMS notifications are ignored and not downloaded. Turning this off does not recover discarded messages. The list is retained.",
         "Nove SMS poruke blokiranih pošiljalaca mogu biti odbačene pre nego što ih Txtura sačuva; MMS obaveštenja se ignorišu i sadržaj se ne preuzima. Isključivanje opcije ne vraća odbačene poruke. Lista ostaje sačuvana.",
     )
     val rootStateSafe: String = s(
-        "No common root indicators found (best-effort check; not proof of device integrity)",
-        "Nisu pronađeni uobičajeni root indikatori (orijentaciona provera; nije dokaz integriteta uređaja)",
+        "No common root indicators found",
+        "Nisu pronađeni uobičajeni root indikatori",
     )
     val rootStateCompromised: String = s("Warning: Common root indicators found", "Upozorenje: Pronađeni uobičajeni root indikatori")
     val rootCheckBinarySafe: String = s("SU binary: Not found in checked paths", "SU fajl: Nije pronađen na proverenim putanjama")
@@ -427,7 +427,7 @@ class AppStrings(val isSerbian: Boolean) {
     val securityStatusEnabled: String = s("Enabled in settings", "Uključeno u podešavanjima")
     val securityStatusDisabled: String = s("Disabled", "Isključeno")
     val securityStatusTapToConfigure: String = s("Tap to configure", "Dodirnite za podešavanje")
-    val securityStatusConfigured: String = s("Built in · not live-tested", "Ugrađeno · nije provereno uživo")
+    val securityStatusConfigured: String = s("Built in", "Ugrađeno")
     val securityStatusCompromised: String = s("Root indicators found", "Pronađeni root indikatori")
     val systemSecuritySectionTitle: String = s("System & IPC Security Guard", "Sistemska i IPC zaštita")
     val rootDetectionActiveTitle: String = s(
@@ -584,7 +584,7 @@ class AppStrings(val isSerbian: Boolean) {
     val mmsApnProxyLabel: String = s("MMS Proxy", "MMS Proksi")
     val mmsApnPortLabel: String = s("MMS Port", "MMS Port")
     val mmsApnPullFromCarrierButton: String = s("Pull from carrier", "Povuci od operatera")
-    val mmsApnPullFromSimOrPhoneButton: String = s("Pull from SIM / Phone", "Preuzmi sa SIM-a / telefona")
+    val mmsApnPullFromSimOrPhoneButton: String = s("Pull from SIM", "Preuzmi sa SIM-a")
     val mmsApnOpenPhoneSettingsButton: String = s("Open Phone APN Settings", "Podešavanja telefona (APN)")
     val mmsApnSourceLabel: String = s("Source", "Izvor")
     val mmsApnManualSetupButton: String = s("Manual MMS setup", "Ručno podesi MMS")
