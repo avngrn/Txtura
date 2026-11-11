@@ -13,6 +13,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -309,7 +311,7 @@ enum class WallpaperPreset(
  * together with its tactile surface texture ([texture]).
  */
 data class WallpaperConfig(
-    val preset: WallpaperPreset = WallpaperPreset.DEFAULT,
+    val preset: WallpaperPreset = WallpaperPreset.STARLIGHT_GALAXY,
     val customImageUri: String? = null,
     val texture: WallpaperTexture = WallpaperTexture.AUTO_THEME,
     val customAccentColorHex: Long? = null,
@@ -532,22 +534,22 @@ data class AppSettingsSnapshot(
     val categoryOrder: List<ConversationFilter> = ConversationFilter.defaultOrder,
     val dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
     val recallMessagesEnabled: Boolean = true,
-    val identifyMaliciousWebsites: Boolean = true,
+    val identifyMaliciousWebsites: Boolean = false,
     val inAppSoundsEnabled: Boolean = true,
     val pinchToZoomEnabled: Boolean = true,
     val expressiveAnimationsEnabled: Boolean = true,
-    val flashAlertEnabled: Boolean = false,
+    val flashAlertEnabled: Boolean = true,
     val hapticsEnabled: Boolean = true,
-    val bubblesEnabled: Boolean = true,
+    val bubblesEnabled: Boolean = false,
     val autoPreviewsShowAll: Boolean = true,
     val autoPreviewsWebLinksOnly: Boolean = false,
     val autoPreviewsWifiOnly: Boolean = false,
-    val deliveryReportsEnabled: Boolean = false,
+    val deliveryReportsEnabled: Boolean = true,
     val mmsRequestReadReports: Boolean = false,
     val mmsSendReadReports: Boolean = false,
     val mmsAutoRetrieve: MmsAutoRetrieveMode = MmsAutoRetrieveMode.NOT_ROAMING,
     val mmsDataDisabledMode: MmsDataDisabledMode = MmsDataDisabledMode.NOT_ROAMING,
-    val mmsCreationMode: MmsCreationMode = MmsCreationMode.FREE,
+    val mmsCreationMode: MmsCreationMode = MmsCreationMode.RESTRICTED,
     val smscNumber: String = "",
 )
 
@@ -1384,6 +1386,10 @@ object AppUpdateManager {
                     }
                 }
 
+                if (apkUrl.isNullOrBlank() && tag.isNotBlank()) {
+                    apkUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tag/app-release.apk"
+                }
+
                 GitHubReleaseInfo(
                     versionTag = tag,
                     releaseTitle = title,
@@ -1400,12 +1406,13 @@ object AppUpdateManager {
                 if (tagName.isNullOrBlank()) {
                     return@withContext AppUpdateCheckResult.Error("Nije moguće dohvatiti informacije o ažuriranju sa GitHub-a")
                 }
+                val fallbackApkUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/app-release.apk"
                 GitHubReleaseInfo(
                     versionTag = tagName,
                     releaseTitle = tagName,
                     releaseNotes = "",
                     releasePageUrl = RELEASES_WEB_URL,
-                    apkDownloadUrl = null,
+                    apkDownloadUrl = fallbackApkUrl,
                     isUpdateAvailable = isRemoteVersionNewer(currentVersionName, tagName),
                 )
             }
@@ -1427,111 +1434,139 @@ object AppUpdateManager {
     }
 
     /**
-     * Downloads the APK asset from GitHub Releases into cache and launches the Android package installer,
-     * following cross-domain CDN redirects up to 5 times.
-     * Falls back to opening the GitHub Release web page if no direct APK asset is attached.
+     * Downloads the APK asset directly from GitHub Releases into cache and launches the Android package installer,
+     * following cross-domain CDN redirects.
      */
     suspend fun downloadAndInstallUpdate(
         context: Context,
         releaseInfo: GitHubReleaseInfo,
         onProgress: (Int) -> Unit,
     ): Boolean = withContext(Dispatchers.IO) {
-        val apkUrl = releaseInfo.apkDownloadUrl
-        if (apkUrl.isNullOrBlank()) {
+        val safeTag = releaseInfo.versionTag.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val candidateUrls = buildList {
+            if (!releaseInfo.apkDownloadUrl.isNullOrBlank()) {
+                add(releaseInfo.apkDownloadUrl)
+            }
+            if (releaseInfo.versionTag.isNotBlank()) {
+                add("https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/${releaseInfo.versionTag}/app-release.apk")
+                add("https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/${releaseInfo.versionTag}/Txtura-$safeTag.apk")
+                add("https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/${releaseInfo.versionTag}/Txtura.apk")
+            }
+        }.distinct()
+
+        val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val targetApk = File(updatesDir, "Txtura-$safeTag.apk")
+
+        var downloadSuccess = false
+
+        for (candidateUrl in candidateUrls) {
+            try {
+                var currentUrl = candidateUrl
+                var redirects = 0
+                var finalConn: HttpURLConnection? = null
+
+                while (redirects < 6) {
+                    val u = URL(currentUrl)
+                    val candidate = AppSecurityManager.openSecureConnection(u, context)
+                    candidate.instanceFollowRedirects = false
+                    candidate.setRequestProperty("User-Agent", "Txtura-Android-Updater")
+                    candidate.connectTimeout = 15000
+                    candidate.readTimeout = 20000
+
+                    val code = candidate.responseCode
+                    if (code in listOf(HttpURLConnection.HTTP_MOVED_PERM, HttpURLConnection.HTTP_MOVED_TEMP, HttpURLConnection.HTTP_SEE_OTHER, 307, 308)) {
+                        val location = candidate.getHeaderField("Location")
+                        candidate.disconnect()
+                        if (location.isNullOrBlank()) {
+                            break
+                        }
+                        currentUrl = URL(u, location).toString()
+                        redirects++
+                        continue
+                    }
+                    finalConn = candidate
+                    break
+                }
+
+                val conn = finalConn ?: continue
+
+                try {
+                    if (conn.responseCode !in (200..299)) {
+                        continue
+                    }
+
+                    val totalBytes = conn.contentLengthLong
+                    conn.inputStream.use { input ->
+                        FileOutputStream(targetApk).use { output ->
+                            val buffer = ByteArray(8 * 1024)
+                            var downloaded = 0L
+                            var read: Int
+                            while (input.read(buffer).also { read = it } != -1) {
+                                output.write(buffer, 0, read)
+                                downloaded += read
+                                if (totalBytes > 0L) {
+                                    val pct = ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                                    onProgress(pct)
+                                }
+                            }
+                            output.flush()
+                        }
+                    }
+                    if (targetApk.exists() && targetApk.length() > 50_000L) {
+                        downloadSuccess = true
+                        break
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (_: Exception) {
+                // Try next candidate URL
+            }
+        }
+
+        if (!downloadSuccess || !targetApk.exists()) {
             withContext(Dispatchers.Main) {
                 openReleasePageInBrowser(context, releaseInfo.releasePageUrl)
             }
-            return@withContext true
+            return@withContext false
         }
 
-        try {
-            val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
-            val safeTag = releaseInfo.versionTag.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-            val targetApk = File(updatesDir, "Txtura-$safeTag.apk")
-
-            var currentUrl = apkUrl
-            var redirects = 0
-            var finalConn: HttpURLConnection? = null
-
-            while (redirects < 6) {
-                val u = URL(currentUrl)
-                val candidate = AppSecurityManager.openSecureConnection(u, context)
-                candidate.instanceFollowRedirects = false
-                candidate.setRequestProperty("User-Agent", "Txtura-Android-Updater")
-                candidate.connectTimeout = 15000
-                candidate.readTimeout = 20000
-
-                val code = candidate.responseCode
-                if (code in listOf(HttpURLConnection.HTTP_MOVED_PERM, HttpURLConnection.HTTP_MOVED_TEMP, HttpURLConnection.HTTP_SEE_OTHER, 307, 308)) {
-                    val location = candidate.getHeaderField("Location")
-                    candidate.disconnect()
-                    if (location.isNullOrBlank()) {
-                        break
-                    }
-                    currentUrl = URL(u, location).toString()
-                    redirects++
-                    continue
-                }
-                finalConn = candidate
-                break
-            }
-
-            val conn = finalConn ?: return@withContext run {
-                withContext(Dispatchers.Main) {
-                    openReleasePageInBrowser(context, releaseInfo.releasePageUrl)
-                }
-                false
-            }
-
+        withContext(Dispatchers.Main) {
             try {
-                if (conn.responseCode !in (200..299)) {
-                    withContext(Dispatchers.Main) {
-                        openReleasePageInBrowser(context, releaseInfo.releasePageUrl)
-                    }
-                    return@withContext false
-                }
-
-                val totalBytes = conn.contentLengthLong
-                conn.inputStream.use { input ->
-                    FileOutputStream(targetApk).use { output ->
-                        val buffer = ByteArray(8 * 1024)
-                        var downloaded = 0L
-                        var read: Int
-                        while (input.read(buffer).also { read = it } != -1) {
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            if (totalBytes > 0L) {
-                                val pct = ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
-                                onProgress(pct)
-                            }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    if (!context.packageManager.canRequestPackageInstalls()) {
+                        val manageIntent = Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            "package:${context.packageName}".toUri()
+                        ).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
-                        output.flush()
+                        context.startActivity(manageIntent)
+                        Toast.makeText(
+                            context,
+                            if (TxturaStrings.isSerbianLocale()) "Omogućite instalaciju iz ovog izvora za Txtura aplikaciju"
+                            else "Please allow installing apps from this source for Txtura",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
-            } finally {
-                conn.disconnect()
-            }
 
-            val apkUri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                targetApk,
-            )
-            withContext(Dispatchers.Main) {
+                val apkUri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    targetApk,
+                )
                 val installIntent = Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(apkUri, "application/vnd.android.package-archive")
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(installIntent)
-            }
-            true
-        } catch (_: Exception) {
-            withContext(Dispatchers.Main) {
+            } catch (_: Exception) {
                 openReleasePageInBrowser(context, releaseInfo.releasePageUrl)
             }
-            false
         }
+        true
     }
 
     fun openReleasePageInBrowser(context: Context, url: String = RELEASES_WEB_URL) {

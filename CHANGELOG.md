@@ -1,5 +1,16 @@
 # Txtura Changelog & Improvements
 
+## [v3.4] - 2026-11-12
+
+### App Updates & Installation (Ažuriranje i instalacija)
+- **Direct GitHub Release updater (Direktno preuzimanje i instalacija ažuriranja):** Download APK updates directly from GitHub Releases with live percentage progress, launching the native Android package installer without opening an external browser.
+
+### Messaging, Gestures & Animations (Poruke, pokreti i animacije)
+- **Pin and unpin spring motion (Animacija opruge pri pinovanju i otpinovanju):** Smooth spring placement animation when pinning/unpinning conversations, anchored to current scroll index without list jumps.
+
+### Settings & Defaults (Podešavanja i podrazumevane vrednosti)
+- **Updated default options (Osvežene podrazumevane opcije):** System theme as default, Starlight Galaxy wallpaper preset, and refined default notification sounds.
+
 ## [v3.3.1] - 2026-11-12
 
 ### Selective Trash Management & Storage (Upravljanje obrisanim porukama i skladište)
@@ -15,9 +26,15 @@
 - **Smooth scrolling without accidental selection (Glatko skrolovanje bez lažnog obeležavanja):** Optimized touch gesture pipeline so scrolling over message bubbles never triggers press scaling, selection, or message highlighting. Selection is strictly restricted to a 500ms stationary long-press.
 - **Fix false incoming alert sounds on thread open (Ispravka lažnog zvuka i blica pri ulasku u razgovor):** Opening a thread or loading historical messages no longer triggers incoming message sounds or flash alerts. Notifications are strictly reserved for real-time incoming messages.
 
-### Performance & Architecture (Performanse i arhitektura)
+## [v3.3] - 2026-11-11
+
+### Security & Database Architecture (Bezbednost i arhitektura baze)
+- **SQLCipher Room database storage (SQLCipher Room baza):** Encrypted database storage with Room KSP, SQLCipher database encryption, and granular lazy loading for per-conversation histories (`ConversationHistoryEntity`).
+- **Security & Package Visibility (Bezbednost i vidljivost):** Added explicit package visibility `<queries>` in `AndroidManifest.xml` for root management tools and refined HTTPS/TLS certificate pinning in `AppSecurityManager`.
+
+### Performance & Lifecycle (Performanse i životni ciklus)
 - **Streamlined application lifecycle (Optimizovani životni ciklus):** Migrated asynchronous repository and emergency alert initialization directly into `MainActivity.onCreate()`, eliminating `TxturaApp.kt` overhead for faster cold starts.
-- **Message deduplication (Deduplikacija poruka):** Automatic content and ID deduplication across database snapshots and real-time streams prevents duplicated messages in conversation threads.
+- **Message deduplication & sync throttling (Deduplikacija poruka i kontrola sinhronizacije):** Automatic content and ID deduplication across database snapshots and real-time streams prevents duplicated messages in conversation threads.
 
 ## [v3.2] - 2026-11-11
 
@@ -89,7 +106,7 @@
 ### Deduplication & Optimization (Deduplikacija i optimizacija)
 - **Advanced Thread Deduplication (Napredna deduplikacija konverzacija):**
   - Robust merging of fragmented threads from disparate telephony database IDs into unified conversation entries.
-  - Multi-factor contact matching based on normalized phone digits, shared message senders, and device phonebook names.
+  - Multifactor contact matching based on normalized phone digits, shared message senders, and device phonebook names.
   - Consistent and consolidated view across inbox and main conversation filters.
 
 

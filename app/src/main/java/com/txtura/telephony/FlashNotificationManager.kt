@@ -53,7 +53,7 @@ object FlashNotificationManager {
 
     fun isFlashAlertEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_FLASH_ALERT_ENABLED, false)
+        return prefs.getBoolean(KEY_FLASH_ALERT_ENABLED, true)
     }
 
     fun setFlashAlertEnabled(context: Context, enabled: Boolean) {

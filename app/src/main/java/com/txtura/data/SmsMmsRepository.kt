@@ -330,9 +330,13 @@ object SmsMmsRepository {
         return try {
             val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getString(KEY_SMS_NOTIFICATION_SOUND, null)
-            SmsNotificationSound.fromId(saved)
+            if (saved != null) {
+                SmsNotificationSound.fromId(saved)
+            } else {
+                SmsNotificationSound.DUPLI_PULS
+            }
         } catch (_: Exception) {
-            SmsNotificationSound.SYSTEM
+            SmsNotificationSound.DUPLI_PULS
         }
     }
 
@@ -1306,7 +1310,7 @@ object SmsMmsRepository {
 
     fun isDeliveryReportsEnabled(context: Context): Boolean {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(KEY_DELIVERY_REPORTS_ENABLED, false)
+            .getBoolean(KEY_DELIVERY_REPORTS_ENABLED, true)
     }
 
     fun setDeliveryReportsEnabled(context: Context, enabled: Boolean) {
@@ -1363,8 +1367,8 @@ object SmsMmsRepository {
 
     fun getMmsCreationMode(context: Context): MmsCreationMode {
         val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_MMS_CREATION_MODE, MmsCreationMode.FREE.name)
-        return MmsCreationMode.entries.find { it.name == raw } ?: MmsCreationMode.FREE
+            .getString(KEY_MMS_CREATION_MODE, MmsCreationMode.RESTRICTED.name)
+        return MmsCreationMode.entries.find { it.name == raw } ?: MmsCreationMode.RESTRICTED
     }
 
     fun setMmsCreationMode(context: Context, mode: MmsCreationMode) {

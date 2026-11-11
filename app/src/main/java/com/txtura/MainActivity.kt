@@ -163,29 +163,29 @@ class MainActivity : ComponentActivity() {
         private const val GALLERY_TARGET_MAIN = "__MAIN__"
     }
 
-    private var themeMode by mutableStateOf(TxturaThemeMode.AMOLED)
-    private var showContactPhotos by mutableStateOf(value = true)
+    private var themeMode by mutableStateOf(TxturaThemeMode.SYSTEM)
+    private var showContactPhotos by mutableStateOf(value = false)
     private var listLayoutMode by mutableStateOf(MainListLayoutMode.DEFAULT)
     private var bubbleZoomScale by mutableFloatStateOf(1.0f)
-    private var mainWallpaper by mutableStateOf(WallpaperConfig())
+    private var mainWallpaper by mutableStateOf(WallpaperConfig(preset = WallpaperPreset.STARLIGHT_GALAXY))
     private var contactWallpapers by mutableStateOf<Map<String, WallpaperConfig>>(emptyMap())
     private var uiColorMode by mutableStateOf(UiColorMode.COLORFUL)
     private var uiOpacity by mutableFloatStateOf(0.50f)
     private var categoryOrder by mutableStateOf(ConversationFilter.defaultOrder)
     private var dockBarOrder by mutableStateOf(DockBarItem.defaultOrder)
-    private var swipeRightAction by mutableStateOf(SwipeAction.PIN)
+    private var swipeRightAction by mutableStateOf(SwipeAction.MARK_READ)
     private var swipeLeftAction by mutableStateOf(SwipeAction.DELETE)
     private var autoDeleteDays by mutableIntStateOf(30)
     private var deletedGroupingMode by mutableStateOf(DeletedGroupingMode.BY_DATE)
     private var recallMessagesEnabled by mutableStateOf(value = true)
-    private var identifyMaliciousWebsites by mutableStateOf(value = true)
+    private var identifyMaliciousWebsites by mutableStateOf(value = false)
     private var inAppSoundsEnabled by mutableStateOf(value = true)
-    private var smsNotificationSound by mutableStateOf(SmsNotificationSound.SYSTEM)
+    private var smsNotificationSound by mutableStateOf(SmsNotificationSound.DUPLI_PULS)
     private var pinchToZoomEnabled by mutableStateOf(value = true)
     private var expressiveAnimationsEnabled by mutableStateOf(value = true)
-    private var flashAlertEnabled by mutableStateOf(value = false)
+    private var flashAlertEnabled by mutableStateOf(value = true)
     private var hapticsEnabled by mutableStateOf(value = true)
-    private var bubblesEnabled by mutableStateOf(value = true)
+    private var bubblesEnabled by mutableStateOf(value = false)
     private var autoPreviewsShowAll by mutableStateOf(value = true)
     private var autoPreviewsWebLinksOnly by mutableStateOf(value = false)
     private var autoPreviewsWifiOnly by mutableStateOf(value = false)
@@ -1886,9 +1886,9 @@ class MainActivity : ComponentActivity() {
         fun int(key: String, default: Int): Int = values[key] as? Int ?: default
 
         themeMode = TxturaThemeMode.entries.find {
-            it.name == (string(KEY_THEME_MODE) ?: TxturaThemeMode.AMOLED.name)
-        } ?: TxturaThemeMode.AMOLED
-        showContactPhotos = boolean(KEY_SHOW_CONTACT_PHOTOS, true)
+            it.name == (string(KEY_THEME_MODE) ?: TxturaThemeMode.SYSTEM.name)
+        } ?: TxturaThemeMode.SYSTEM
+        showContactPhotos = boolean(KEY_SHOW_CONTACT_PHOTOS, false)
         listLayoutMode = MainListLayoutMode.entries.find {
             it.name == (string(KEY_MAIN_LIST_LAYOUT_MODE) ?: MainListLayoutMode.DEFAULT.name)
         } ?: MainListLayoutMode.DEFAULT
@@ -1909,8 +1909,8 @@ class MainActivity : ComponentActivity() {
         contactWallpapers = parsedMap
 
         swipeRightAction = SwipeAction.entries.find {
-            it.name == (string(KEY_SWIPE_RIGHT_ACTION) ?: SwipeAction.PIN.name)
-        } ?: SwipeAction.PIN
+            it.name == (string(KEY_SWIPE_RIGHT_ACTION) ?: SwipeAction.MARK_READ.name)
+        } ?: SwipeAction.MARK_READ
         swipeLeftAction = SwipeAction.entries.find {
             it.name == (string(KEY_SWIPE_LEFT_ACTION) ?: SwipeAction.DELETE.name)
         } ?: SwipeAction.DELETE
@@ -1925,14 +1925,14 @@ class MainActivity : ComponentActivity() {
         categoryOrder = ConversationFilter.deserializeOrder(string(KEY_CATEGORY_ORDER))
         dockBarOrder = DockBarItem.deserializeOrder(string(KEY_DOCK_BAR_ORDER))
         recallMessagesEnabled = boolean(KEY_RECALL_MESSAGES_ENABLED, true)
-        identifyMaliciousWebsites = boolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, true)
+        identifyMaliciousWebsites = boolean(KEY_IDENTIFY_MALICIOUS_WEBSITES, false)
         inAppSoundsEnabled = boolean(KEY_IN_APP_SOUNDS_ENABLED, true)
         pinchToZoomEnabled = boolean(KEY_PINCH_TO_ZOOM_ENABLED, true)
         expressiveAnimationsEnabled = boolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, true)
-        flashAlertEnabled = boolean(KEY_FLASH_ALERT_ENABLED, false) || legacyFlashAlertEnabled
+        flashAlertEnabled = boolean(KEY_FLASH_ALERT_ENABLED, true) || legacyFlashAlertEnabled
         hapticsEnabled = boolean(KEY_HAPTICS_ENABLED, true)
         TxturaHaptics.isEnabled = hapticsEnabled
-        bubblesEnabled = boolean(KEY_BUBBLES_ENABLED, true)
+        bubblesEnabled = boolean(KEY_BUBBLES_ENABLED, false)
         autoPreviewsShowAll = boolean(KEY_AUTO_PREVIEWS_SHOW_ALL, true)
         autoPreviewsWebLinksOnly = boolean(KEY_AUTO_PREVIEWS_WEB_LINKS_ONLY, false)
         autoPreviewsWifiOnly = boolean(KEY_AUTO_PREVIEWS_WIFI_ONLY, false)

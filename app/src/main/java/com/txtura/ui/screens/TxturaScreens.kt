@@ -33,6 +33,9 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -122,6 +125,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -237,7 +242,9 @@ import com.txtura.ui.theme.TxturaHaptics
 import com.txtura.ui.theme.TxturaMotion
 import com.txtura.ui.theme.TxturaThemeMode
 import com.txtura.ui.theme.WallpaperHarmonyEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -365,6 +372,28 @@ private fun rememberTxturaLightLogoColorFilter(
         }
     }
 }
+
+/**
+ * A pin/unpin toggle that is waiting for the re-sorted conversation list to arrive.
+ * Not snapshot state on purpose: it is only read and cleared from [SideEffect].
+ */
+private class PendingPinScroll(val threadId: Long, val wasPinned: Boolean)
+
+private class PinScrollRequestHolder {
+    var pending: PendingPinScroll? = null
+    /** Clears the elevated zIndex of the travelling card once its move has settled. */
+    var settleJob: Job? = null
+}
+
+/** Time the travelling card keeps its raised zIndex (covers the low-stiffness spring settle). */
+private const val PIN_MOVE_SETTLE_MS = 750L
+
+/** Slightly bouncy, slow placement spring used only for the card being pinned/unpinned. */
+private val PinMovePlacementSpec = spring(
+    dampingRatio = Spring.DampingRatioLowBouncy,
+    stiffness = Spring.StiffnessLow,
+    visibilityThreshold = IntOffset.VisibilityThreshold
+)
 
 @Composable
 fun ConversationsListScreen(
@@ -710,15 +739,59 @@ fun ConversationsListScreen(
             val listState = rememberLazyListState()
             val coroutineScope = rememberCoroutineScope()
 
+            val pinScrollRequest = remember { PinScrollRequestHolder() }
+            // Card currently travelling after a pin/unpin: drawn above the others (zIndex) and
+            // animated with PinMovePlacementSpec so it visibly flies over the neighbouring cards.
+            var movingThreadId by remember { mutableStateOf<Long?>(null) }
+
             val handleTogglePin: (Long) -> Unit = { threadId ->
                 val targetThread = filteredThreads.find { it.id == threadId } ?: threads.find { it.id == threadId }
-                val wasPinned = targetThread?.isPinned == true
+                pinScrollRequest.settleJob?.cancel()
+                movingThreadId = threadId
+                pinScrollRequest.pending = PendingPinScroll(
+                    threadId = threadId,
+                    wasPinned = targetThread?.isPinned == true
+                )
                 onTogglePin(threadId)
-                if (!wasPinned) {
-                    coroutineScope.launch {
-                        delay(60.milliseconds)
-                        listState.animateScrollToItem(0)
+            }
+
+            // By default LazyColumn keeps its scroll position anchored to the KEY of the first
+            // visible item. When the toggled card is (or becomes) that first item, the whole list
+            // would jump along with it. Right before the re-sorted list is measured, we pin the
+            // viewport to its current INDEX instead, so only the toggled card animates (via
+            // animateItem placement) up to the top on pin, or down to its new slot on unpin.
+            // Requesting the same index/offset keeps placement animations alive.
+            SideEffect {
+                val pending = pinScrollRequest.pending ?: return@SideEffect
+                val target = filteredThreads.firstOrNull { it.id == pending.threadId }
+                if (target == null) {
+                    pinScrollRequest.pending = null
+                    movingThreadId = null
+                    return@SideEffect
+                }
+                // Re-sorted list has not arrived yet.
+                if (target.isPinned == pending.wasPinned) return@SideEffect
+                pinScrollRequest.pending = null
+
+                val anchorIndex = listState.firstVisibleItemIndex
+                val anchorOffset = listState.firstVisibleItemScrollOffset
+                listState.requestScrollToItem(index = anchorIndex, scrollOffset = anchorOffset)
+
+                pinScrollRequest.settleJob = coroutineScope.launch {
+                    // Let the index-anchored remeasure (and the card's lift-off) happen first.
+                    withFrameNanos { }
+                    if (!pending.wasPinned) {
+                        // PIN: follow the card as it climbs to the top of the list.
+                        // (No-op when the list is already at the top.)
+                        try {
+                            listState.animateScrollToItem(0)
+                        } catch (_: CancellationException) {
+                            // Interrupted by a user drag; still clear the zIndex below.
+                        }
                     }
+                    // UNPIN: no scroll at all, the list stays put and only the card slides down.
+                    delay(PIN_MOVE_SETTLE_MS)
+                    if (movingThreadId == pending.threadId) movingThreadId = null
                 }
             }
 
@@ -768,16 +841,23 @@ fun ConversationsListScreen(
                         }
 
                         val isExpressive = LocalExpressiveAnimations.current
+                        val isMovingAfterPinToggle = movingThreadId == thread.id
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
+                                // Travelling card flies over its neighbours instead of under them.
+                                .zIndex(if (isMovingAfterPinToggle) 10f else 0f)
                                 .fillMaxWidth()
                                 .then(
                                     if (isExpressive) {
                                         Modifier.animateItem(
                                             fadeInSpec = null,
                                             fadeOutSpec = TxturaMotion.listItemFadeOutSpec(),
-                                            placementSpec = TxturaMotion.listItemPlacementSpec()
+                                            placementSpec = if (isMovingAfterPinToggle) {
+                                                PinMovePlacementSpec
+                                            } else {
+                                                TxturaMotion.listItemPlacementSpec()
+                                            }
                                         )
                                     } else {
                                         Modifier
@@ -5943,14 +6023,55 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v3.3.1",
+                        versionName = "v3.4",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Optimizacija i stabilnost" else "Optimization & Stability",
+                                title = if (strings.isSerbian) "Ažuriranje i instalacija" else "App Updates & Installation",
                                 items = listOf(
-                                    if (strings.isSerbian) "Verzija 3.3.1 donosi poboljšanja performansi, stabilnosti i osvežen prikaz istorije izdanja" else "Version 3.3.1 brings performance and stability enhancements along with updated release history"
+                                    if (strings.isSerbian) "Direktno preuzimanje i instalacija ažuriranja sa GitHub-a uz prikaz napretka u realnom vremenu i automatsko pokretanje instalatera bez otvaranja pretraživača" else "Direct APK update download from GitHub Releases with live percentage progress and automatic package installer launch without external browser"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Poruke i animacije" else "Messaging & Animations",
+                                items = listOf(
+                                    if (strings.isSerbian) "Animacija opruge pri pinovanju i otpinovanju: Glatka animacija premeštanja razgovora na vrh ili novu poziciju uz zadržavanje pozicije skrolovanja" else "Pin and unpin spring motion: Smooth placement spring animation when pinning or unpinning conversations with index-anchored viewport scroll"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Podešavanja i teme" else "Settings & Defaults",
+                                items = listOf(
+                                    if (strings.isSerbian) "Osvežene podrazumevane opcije: Sistemska tema kao podrazumevani izbor, Starlight Galaxy pozadina i optimizovani tonovi obaveštenja" else "Updated default settings: System dark/light theme as default, Starlight Galaxy wallpaper preset, and refined notification sounds"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v3.3.1",
+                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        isCurrent = false,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Upravljanje obrisanim porukama" else "Selective Trash Management",
+                                items = listOf(
+                                    if (strings.isSerbian) "Selektivno vraćanje i trajno brisanje: Detaljan pregled obrisanih razgovora i izbor pojedinačnih poruka za vraćanje u inbox ili trajno uklanjanje iz memorije uređaja" else "Selective Trash recovery: Inspect deleted conversations and select individual messages to restore to inbox or permanently purge from device storage"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Interfejs, prilagođavanje i lokalizacija" else "UI, Customization & Localization",
+                                items = listOf(
+                                    if (strings.isSerbian) "Datumski zaglavci na srpskoj latinici: Datumski razdelnici u razgovoru primenjuju srpsku latinicu (npr. utorak, 19. maj)" else "Serbian Latin date headers: Conversation date dividers use Serbian Latin script (e.g., utorak, 19. maj) for consistent readability",
+                                    if (strings.isSerbian) "Brojač nepročitanih poruka: Kategorija Nepročitano prikazuje ukupan broj nepročitanih poruka desno od naziva (npr. Nepročitano (3))" else "Unread category count indicator: The Unread category chip displays the total number of currently unread messages in real-time (e.g., Unread (3))",
+                                    if (strings.isSerbian) "Tematska ikonica za Burgundi teme: Ikonica medveda u glavnom zaglavlju za teme Burgundi Anita i Monohrom sa burgundi akcentom uz automatsku prilagodljivost svetlom i tamnom režimu" else "Burgundy theme branding: Custom bear icon rendered in top header for Burgundy Anita & Monochrome Burgundy themes with light/dark asset switching"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Pokreti i obaveštenja" else "Gestures & Notifications",
+                                items = listOf(
+                                    if (strings.isSerbian) "Glatko skrolovanje bez slučajnog obeležavanja: Detektor pokreta osigurava da skrolovanje preko poruka nikada ne pokreće smanjenje ili lažno obeležavanje poruke" else "Smooth scrolling without accidental selection: Optimized touch gesture pipeline so scrolling over message bubbles never triggers press scaling or false long-press selection",
+                                    if (strings.isSerbian) "Otklonjeno lažno okidanje zvuka i blica: Ulazak u razgovor i učitavanje istorije poruka više ne aktivira zvučni i blic signal za dolazne poruke" else "Fix false incoming alert sounds on thread open: Opening a thread or loading historical messages no longer triggers incoming message sounds or flash alerts"
                                 )
                             )
                         )
@@ -5962,9 +6083,17 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Optimizacija i stabilnost" else "Optimization & Stability",
+                                title = if (strings.isSerbian) "Bezbednost i arhitektura baze" else "Security & Database Architecture",
                                 items = listOf(
-                                    if (strings.isSerbian) "Verzija 3.3 donosi poboljšanja performansi, stabilnosti i osvežen prikaz istorije izdanja" else "Version 3.3 brings performance and stability enhancements along with updated release history"
+                                    if (strings.isSerbian) "SQLCipher Room baza: Kriptovana baza podataka uz Room KSP, SQLCipher enkripciju i selektivno učitavanje istorije razgovora" else "SQLCipher Room database: Encrypted storage with Room KSP, SQLCipher database encryption, and granular lazy loading for conversation history",
+                                    if (strings.isSerbian) "Vidljivost aplikacija i sertifikati: Dodat eksplicitan unos u AndroidManifest.xml za root aplikacije i osveženo HTTPS/TLS povezivanje sertifikata" else "Package visibility & certificates: Explicit AndroidManifest.xml queries for root tools and refined HTTPS/TLS certificate pinning"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Performanse i životni ciklus" else "Performance & Lifecycle",
+                                items = listOf(
+                                    if (strings.isSerbian) "Brži životni ciklus: Inicijalizacija baze i hitnih obaveštenja direktno u MainActivity.onCreate() bez TxturaApp klase za brže hladno pokretanje" else "Streamlined lifecycle: Async repository and emergency alert initialization directly in MainActivity.onCreate() for faster cold starts",
+                                    if (strings.isSerbian) "Deduplikacija i smanjeno opterećenje: Automatsko uklanjanje duplikata poruka i kontrola učestalosti sinhronizacije sa uređajem" else "Deduplication & sync throttling: Automated message deduplication and throttled background telephony syncs"
                                 )
                             )
                         )
@@ -6543,7 +6672,12 @@ private fun ConversationThreadCard(
                     }
 
                     if (showPinAction) {
-                        if (thread.isPinned) {
+                        var isPinnedOptimistic by remember(thread.id, thread.isPinned) { mutableStateOf(thread.isPinned) }
+                        val handlePinToggle = {
+                            isPinnedOptimistic = !isPinnedOptimistic
+                            onTogglePin()
+                        }
+                        if (isPinnedOptimistic) {
                             Box(
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier
@@ -6551,7 +6685,7 @@ private fun ConversationThreadCard(
                                     .clip(CircleShape)
                                     .background(palette.accentPrimary.copy(alpha = 0.22f))
                                     .border(1.dp, palette.accentPrimary.copy(alpha = 0.70f), CircleShape)
-                                    .clickable(onClick = onTogglePin)
+                                    .clickable(onClick = handlePinToggle)
                             ) {
                                 Icon(
                                     imageVector = TxturaIcons.PinFilled,
@@ -6566,7 +6700,7 @@ private fun ConversationThreadCard(
                                 modifier = Modifier
                                     .size(22.dp)
                                     .clip(CircleShape)
-                                    .clickable(onClick = onTogglePin)
+                                    .clickable(onClick = handlePinToggle)
                             ) {
                                 Icon(
                                     imageVector = TxturaIcons.PinOutline,
@@ -14868,50 +15002,25 @@ fun EmergencyAlertsDialog(
                     }
                 }
 
-                // 3. Action Buttons (Trigger Test Alert & Open System Emergency Broadcast Settings)
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    GlassCard(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp),
-                        accentHighlight = palette.accentSecondary,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                        onClick = {
-                            EmergencyAlertManager.triggerTestAlert(context)
-                            Toast.makeText(context, strings.emergencyTestToast, Toast.LENGTH_SHORT).show()
-                        }
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                text = strings.emergencyTestButton,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.accentSecondary,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center
-                            )
-                        }
+                // 3. Action Button (Trigger Test Alert)
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    accentHighlight = palette.accentSecondary,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                    onClick = {
+                        EmergencyAlertManager.triggerTestAlert(context)
+                        Toast.makeText(context, strings.emergencyTestToast, Toast.LENGTH_SHORT).show()
                     }
-
-                    GlassCard(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp),
-                        accentHighlight = palette.accentPrimary,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                        onClick = {
-                            EmergencyAlertManager.openSystemEmergencyAlertSettings(context)
-                        }
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                text = strings.emergencySystemSettingsButton,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.accentPrimary,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center
-                            )
-                        }
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = strings.emergencyTestButton,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.accentSecondary,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 }
 
