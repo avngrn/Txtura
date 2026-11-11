@@ -20,10 +20,8 @@ import android.os.Build
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.provider.Telephony
-import android.telephony.CarrierConfigManager
 import android.telephony.PhoneNumberUtils
 import android.telephony.SmsManager
-import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.widget.Toast
@@ -36,6 +34,7 @@ import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.txtura.MainActivity
 import com.txtura.R
+import com.txtura.security.AppSecurityManager
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.security.SecurityAnalysisResult
 import com.txtura.security.SecurityCryptoManager
@@ -56,13 +55,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.milliseconds
-import org.json.JSONArray
-import org.json.JSONObject
 
 object SmsMmsRepository {
 
@@ -104,11 +103,15 @@ object SmsMmsRepository {
     const val KEY_MMS_DATA_DISABLED_MODE = "mms_data_disabled_mode"
     const val KEY_MMS_CREATION_MODE = "mms_creation_mode"
     const val KEY_SMSC_NUMBER = "smsc_number"
+    private const val KEY_LAST_DEVICE_SYNC_AT = "last_device_message_sync_at"
+    private const val DEVICE_SYNC_MAX_AGE_MILLIS = 24L * 60L * 60L * 1000L
 
     private const val THREADS_CACHE_ENC_FILE = "threads_cache.enc"
     private const val THREADS_CACHE_ENC_TMP_FILE = "threads_cache.enc.tmp"
     private const val LEGACY_THREADS_CACHE_FILE = "threads_cache.json"
     private val diskCacheLock = Any()
+    private val pendingHistoryLock = Any()
+    private val pendingHistoryThreadIds = mutableSetOf<Long>()
     private var diskCacheSaveJob: Job? = null
 
     private val DEMO_THREAD_IDS = setOf(901L, 902L, 903L, 904L)
@@ -212,8 +215,10 @@ object SmsMmsRepository {
             try {
                 ensureNotificationChannel(appCtx)
                 loadDiskCache(appCtx)
-                preloadInAppSounds(appCtx)
                 isInitialized = true
+                ioScope.launch {
+                    preloadInAppSounds(appCtx)
+                }
                 ioScope.launch {
                     scanAllThreadsForMaliciousWebsitesOnline(appCtx)
                 }
@@ -229,6 +234,24 @@ object SmsMmsRepository {
 
     suspend fun awaitInitialization() {
         initializationJob?.join()
+    }
+
+    /**
+     * Reconcile the local cache with Android's Telephony provider at most once per day.
+     * Incoming and sent messages still update the cache through their normal repository paths.
+     */
+    suspend fun syncDeviceMessagesIfStale(context: Context, retentionDays: Int = 30) {
+        val lastSyncAt = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getLong(KEY_LAST_DEVICE_SYNC_AT, 0L)
+        if (System.currentTimeMillis() - lastSyncAt >= DEVICE_SYNC_MAX_AGE_MILLIS) {
+            syncDeviceMessages(context, retentionDays)
+        }
+    }
+
+    private fun recordDeviceMessageSync(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putLong(KEY_LAST_DEVICE_SYNC_AT, System.currentTimeMillis())
+        }
     }
 
     /**
@@ -336,7 +359,7 @@ object SmsMmsRepository {
         return if (sound == SmsNotificationSound.SYSTEM) {
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         } else {
-            Uri.parse("android.resource://${context.packageName}/raw/${sound.rawResName}")
+            "android.resource://${context.packageName}/raw/${sound.rawResName}".toUri()
         }
     }
 
@@ -471,7 +494,10 @@ object SmsMmsRepository {
         }
     }
 
-    private fun savePersistedPins(context: Context) {
+    private fun savePersistedPins(
+        context: Context,
+        historyThreadIds: Set<Long> = emptySet(),
+    ) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val serializedDeleted = synchronized(deletedThreadTimestamps) {
             deletedThreadTimestamps.entries
@@ -495,165 +521,444 @@ object SmsMmsRepository {
             putStringSet(KEY_DELETED_THREADS, serializedDeleted)
             putStringSet(KEY_DELETED_MSGS, serializedDeletedMsgs)
         }
-        saveDiskCacheAsync(context)
+        saveDiskCacheAsync(context, historyThreadIds = historyThreadIds)
     }
 
-    /**
-     * Restores the local conversation snapshot. Callers run this from Dispatchers.IO:
-     * file reads, preference access, Keystore migration, and JSON decoding can be expensive.
-     */
     private fun loadDiskCache(context: Context) {
         if (_threads.value.isNotEmpty()) return
         synchronized(diskCacheLock) {
             if (_threads.value.isNotEmpty()) return
             try {
                 loadPersistedPins(context)
-                val encFile = File(context.filesDir, THREADS_CACHE_ENC_FILE)
+                val database = TxturaSecureDatabase.get(context)
+                val snapshotDao = database.repositorySnapshotDao()
+                val isEncryptedMode = AppSecurityManager.isDbEncryptionEnabled(context)
+                val summarySnapshot = snapshotDao.getThreadSummarySnapshot()
+
+                if (summarySnapshot != null) {
+                    val needsReencryption =
+                        SecurityCryptoManager.isEncryptedCache(summarySnapshot.payload) != isEncryptedMode
+                    val root = JSONObject(readCachePayload(context, summarySnapshot.payload))
+                    val summaries = ArrayList<ConversationThread>()
+                    val threadArray = root.optJSONArray("threads") ?: JSONArray()
+                    for (index in 0 until threadArray.length()) {
+                        val thread = threadArray.optJSONObject(index)?.let(::parseCachedThread) ?: continue
+                        if (!isSenderBlocked(thread.address) && thread.id !in deletedThreadTimestamps) {
+                            summaries.add(
+                                thread.copy(
+                                    messages = listOfNotNull(thread.lastMessage),
+                                    isHistoryLoaded = false,
+                                )
+                            )
+                        }
+                    }
+                    _threads.value = sortThreads(summaries)
+                    _deletedThreads.value = parseCachedDeletedThreads(root)
+                    if (needsReencryption) {
+                        reencryptStoredThreadHistories(context)
+                        saveDiskCacheInternal(context)
+                    }
+                    return
+                }
+
+                val storedSnapshot = snapshotDao.getSnapshot()
+                val encryptedFile = File(context.filesDir, THREADS_CACHE_ENC_FILE)
                 val legacyFile = File(context.filesDir, LEGACY_THREADS_CACHE_FILE)
-                val isEncryptedMode = com.txtura.security.AppSecurityManager.isDbEncryptionEnabled(context)
-                var needsV1Migration = false
-                val jsonContent: String = when {
-                    isEncryptedMode && encFile.exists() && encFile.length() > 0L -> {
-                        val encryptedBytes = encFile.readBytes()
-                        needsV1Migration = SecurityCryptoManager.isLegacyCacheFormat(encryptedBytes)
-                        val decryptedBytes = SecurityCryptoManager.decryptCache(context, encryptedBytes)
-                        String(decryptedBytes, Charsets.UTF_8)
+                val jsonContent = if (storedSnapshot != null) {
+                    readCachePayload(context, storedSnapshot.payload)
+                } else {
+                    val legacyPayload = when {
+                        isEncryptedMode && encryptedFile.exists() && encryptedFile.length() > 0L ->
+                            encryptedFile.readBytes()
+                        legacyFile.exists() && legacyFile.length() > 0L ->
+                            legacyFile.readBytes()
+                        encryptedFile.exists() && encryptedFile.length() > 0L ->
+                            encryptedFile.readBytes()
+                        else -> return
                     }
-                    legacyFile.exists() && legacyFile.length() > 0L -> {
-                        legacyFile.readText()
-                    }
-                    encFile.exists() && encFile.length() > 0L -> {
-                        val encryptedBytes = encFile.readBytes()
-                        val decryptedBytes = SecurityCryptoManager.decryptCache(context, encryptedBytes)
-                        String(decryptedBytes, Charsets.UTF_8)
-                    }
-                    else -> return
+                    readCachePayload(context, legacyPayload)
                 }
 
                 if (jsonContent.isBlank()) return
-
                 val root = JSONObject(jsonContent)
-                val threadsArray = root.optJSONArray("threads") ?: return
-
-                val cachedThreads = ArrayList<ConversationThread>(threadsArray.length())
-                for (i in 0 until threadsArray.length()) {
-                    val tObj = threadsArray.optJSONObject(i) ?: continue
-                    val thread = parseCachedThread(tObj) ?: continue
-                    if (isSenderBlocked(thread.address) || (thread.id in deletedThreadTimestamps)) {
-                        continue
-                    }
-                    cachedThreads.add(thread)
-                }
-
-                val cachedDeleted = ArrayList<DeletedConversationEntry>()
-                root.optJSONArray("deletedThreads")?.let { dArr ->
-                    for (i in 0 until dArr.length()) {
-                        val dObj = dArr.optJSONObject(i) ?: continue
-                        val deletedAt = dObj.optLong("deletedAtMillis", System.currentTimeMillis())
-                        val tObj = dObj.optJSONObject("thread") ?: continue
-                        val thread = parseCachedThread(tObj) ?: continue
-                        cachedDeleted.add(DeletedConversationEntry(thread = thread, deletedAtMillis = deletedAt))
+                val threadArray = root.optJSONArray("threads") ?: JSONArray()
+                val fullThreads = ArrayList<ConversationThread>(threadArray.length())
+                for (index in 0 until threadArray.length()) {
+                    val thread = threadArray.optJSONObject(index)?.let(::parseCachedThread) ?: continue
+                    if (!isSenderBlocked(thread.address) && thread.id !in deletedThreadTimestamps) {
+                        fullThreads.add(thread)
                     }
                 }
+                val deleted = parseCachedDeletedThreads(root)
+                val summaries = fullThreads.map(::toThreadSummary)
+                _threads.value = sortThreads(summaries)
+                _deletedThreads.value = deleted
 
-                if (cachedThreads.isNotEmpty()) {
-                    val deduplicated = if (cachedThreads.size <= 1) cachedThreads else deduplicateAndMergeThreads(cachedThreads)
-                    _threads.value = sortThreads(deduplicated)
-                }
-                if (cachedDeleted.isNotEmpty()) {
-                    _deletedThreads.value = cachedDeleted
-                }
-
-                // Migrate the old Keystore-encrypted snapshot after it has been safely decoded.
-                if (isEncryptedMode && needsV1Migration) {
-                    saveDiskCacheInternal(context)
-                } else if (isEncryptedMode && !encFile.exists() && legacyFile.exists()) {
-                    saveDiskCacheInternal(context)
-                } else if (!isEncryptedMode && encFile.exists() && !legacyFile.exists()) {
-                    saveDiskCacheInternal(context)
-                }
+                // One-time migration from the monolithic snapshot to per-conversation history rows.
+                saveDiskCacheInternal(context, fullHistoryThreads = fullThreads)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to load threads cache from disk", e)
             }
         }
     }
 
-    /**
-     * Persists the current conversation snapshot to internal storage.
-     * Call from a worker dispatcher; serialization and AES-GCM operate on the full snapshot.
-     */
-    private fun saveDiskCacheInternal(context: Context) {
+    private fun parseCachedDeletedThreads(root: JSONObject): List<DeletedConversationEntry> {
+        val deleted = ArrayList<DeletedConversationEntry>()
+        root.optJSONArray("deletedThreads")?.let { entries ->
+            for (index in 0 until entries.length()) {
+                val entry = entries.optJSONObject(index) ?: continue
+                val deletedAt = entry.optLong("deletedAtMillis", System.currentTimeMillis())
+                val thread = entry.optJSONObject("thread")?.let(::parseCachedThread) ?: continue
+                deleted.add(DeletedConversationEntry(thread = thread, deletedAtMillis = deletedAt))
+            }
+        }
+        return deleted
+    }
+
+    private fun toThreadSummary(thread: ConversationThread): ConversationThread =
+        thread.copy(
+            messages = listOfNotNull(thread.lastMessage),
+            isHistoryLoaded = false,
+        )
+
+    private fun readCachePayload(context: Context, payload: ByteArray): String {
+        val plaintext = if (SecurityCryptoManager.isEncryptedCache(payload)) {
+            SecurityCryptoManager.decryptCache(context, payload)
+        } else {
+            payload
+        }
+        return try {
+            String(plaintext, Charsets.UTF_8)
+        } finally {
+            plaintext.fill(0)
+            if (plaintext !== payload) payload.fill(0)
+        }
+    }
+
+    private fun encodeCachePayload(context: Context, plaintext: ByteArray): ByteArray =
+        if (AppSecurityManager.isDbEncryptionEnabled(context)) {
+            SecurityCryptoManager.encryptCache(context, plaintext)
+        } else {
+            plaintext.copyOf()
+        }
+
+    private fun reencryptStoredThreadHistories(context: Context) {
+        val targetEncrypted = AppSecurityManager.isDbEncryptionEnabled(context)
+        val dao = TxturaSecureDatabase.get(context).repositorySnapshotDao()
+        val replacements = ArrayList<ConversationHistoryEntity>()
+        try {
+            dao.getAllConversationHistories().forEach { row ->
+                try {
+                    if (SecurityCryptoManager.isEncryptedCache(row.payload) == targetEncrypted) return@forEach
+                    val plaintext = if (SecurityCryptoManager.isEncryptedCache(row.payload)) {
+                        SecurityCryptoManager.decryptCache(context, row.payload)
+                    } else {
+                        row.payload.copyOf()
+                    }
+                    try {
+                        replacements.add(
+                            ConversationHistoryEntity(
+                                threadId = row.threadId,
+                                payload = encodeCachePayload(context, plaintext),
+                                messageCount = row.messageCount,
+                                isComplete = row.isComplete,
+                            )
+                        )
+                    } finally {
+                        plaintext.fill(0)
+                    }
+                } finally {
+                    row.payload.fill(0)
+                }
+            }
+            if (replacements.isNotEmpty()) dao.saveConversationHistories(replacements)
+        } finally {
+            replacements.forEach { it.payload.fill(0) }
+        }
+    }
+
+    suspend fun loadCachedThreadHistory(context: Context, threadId: Long) = withContext(Dispatchers.IO) {
+        val activeThread = _threads.value.firstOrNull { it.id == threadId }
+        val deletedEntry = if (activeThread == null) {
+            _deletedThreads.value.firstOrNull { it.thread.id == threadId }
+        } else {
+            null
+        }
+        val currentThread = activeThread ?: deletedEntry?.thread ?: return@withContext
+        if (currentThread.isHistoryLoaded) return@withContext
+
+        val historyRow = TxturaSecureDatabase.get(context)
+            .repositorySnapshotDao()
+            .getConversationHistory(threadId) ?: return@withContext
+        val historyJson = readCachePayload(context, historyRow.payload)
+        val fullThread = runCatching { parseCachedThread(JSONObject(historyJson)) }.getOrNull()
+            ?: return@withContext
+        val mergedThread = mergeCachedThreadState(
+            fullThread = fullThread,
+            currentThread = currentThread,
+            isHistoryLoaded = historyRow.isComplete &&
+                fullThread.messages.size >= historyRow.messageCount,
+        )
+
+        if (activeThread != null) {
+            _threads.update { threads ->
+                threads.map { if (it.id == threadId && !it.isHistoryLoaded) mergedThread else it }
+            }
+        } else {
+            _deletedThreads.update { entries ->
+                entries.map { entry ->
+                    if (entry.thread.id == threadId && !entry.thread.isHistoryLoaded) {
+                        entry.copy(thread = mergedThread)
+                    } else {
+                        entry
+                    }
+                }
+            }
+        }
+        saveDiskCacheAsync(context)
+    }
+
+    private fun mergeCachedThreadState(
+        fullThread: ConversationThread,
+        currentThread: ConversationThread,
+        isHistoryLoaded: Boolean,
+    ): ConversationThread {
+        val mergedMessages = LinkedHashMap<Long, ChatMessage>()
+        fullThread.messages.forEach { mergedMessages[it.id] = it }
+        currentThread.messages.forEach { mergedMessages[it.id] = it }
+        return fullThread.copy(
+            contactName = currentThread.contactName,
+            address = currentThread.address,
+            avatarInitials = currentThread.avatarInitials,
+            avatarAccentColorHex = currentThread.avatarAccentColorHex,
+            contactPhotoUri = currentThread.contactPhotoUri ?: fullThread.contactPhotoUri,
+            messages = mergedMessages.values.sortedBy { it.timestampMillis },
+            unreadCount = currentThread.unreadCount,
+            isPinned = currentThread.isPinned,
+            isService = currentThread.isService,
+            draftText = currentThread.draftText ?: fullThread.draftText,
+            isHistoryLoaded = isHistoryLoaded,
+        )
+    }
+
+    suspend fun loadAllCachedThreadHistories(context: Context) {
+        val activeIds = _threads.value.filterNot { it.isHistoryLoaded }.map { it.id }
+        val activeIdSet = _threads.value.mapTo(mutableSetOf()) { it.id }
+        val deletedIds = _deletedThreads.value
+            .asSequence()
+            .filter { !it.thread.isHistoryLoaded && it.thread.id !in activeIdSet }
+            .map { it.thread.id }
+            .toList()
+        (activeIds + deletedIds).distinct().forEach { loadCachedThreadHistory(context, it) }
+    }
+
+    private fun saveDiskCacheInternal(
+        context: Context,
+        fullHistoryThreads: List<ConversationThread>? = null,
+    ): Boolean {
         synchronized(diskCacheLock) {
+            var claimedHistoryIds = emptySet<Long>()
             try {
+                claimedHistoryIds = synchronized(pendingHistoryLock) {
+                    pendingHistoryThreadIds.toSet().also { pendingHistoryThreadIds.clear() }
+                }
                 val currentThreads = _threads.value
                 val currentDeleted = _deletedThreads.value
-                if (currentThreads.isEmpty() && currentDeleted.isEmpty()) return
+                val dao = TxturaSecureDatabase.get(context).repositorySnapshotDao()
+                val existingHistoryIds = dao.getConversationHistoryIds().toSet()
+                val fullHistoryById = fullHistoryThreads
+                    .orEmpty()
+                    .filter { it.isHistoryLoaded }
+                    .associateBy { it.id }
+                val savedHistoryIds = mutableSetOf<Long>()
+                val historyRows = ArrayList<ConversationHistoryEntity>()
+
+                fun addHistoryIfMissing(
+                    thread: ConversationThread,
+                    source: ConversationThread?,
+                    isComplete: Boolean,
+                ) {
+                    if (!savedHistoryIds.add(thread.id)) return
+                    val historyThread = source ?: thread
+                    val historyJson = serializeCachedThread(
+                        historyThread.copy(isHistoryLoaded = isComplete),
+                        includeAllMessages = true,
+                    ).toString().toByteArray(Charsets.UTF_8)
+                    val payload = try {
+                        encodeCachePayload(context, historyJson)
+                    } finally {
+                        historyJson.fill(0)
+                    }
+                    historyRows.add(
+                        ConversationHistoryEntity(
+                            threadId = thread.id,
+                            payload = payload,
+                            messageCount = historyThread.messages.size,
+                            isComplete = isComplete,
+                        )
+                    )
+                }
+
+                currentThreads.forEach { thread ->
+                    val fullHistory = fullHistoryById[thread.id]
+                    when {
+                        fullHistory != null -> addHistoryIfMissing(thread, fullHistory, isComplete = true)
+                        thread.id !in existingHistoryIds && thread.messages.isNotEmpty() ->
+                            addHistoryIfMissing(thread, thread, isComplete = thread.isHistoryLoaded)
+                        thread.id in claimedHistoryIds && thread.isHistoryLoaded ->
+                            addHistoryIfMissing(thread, thread, isComplete = true)
+                        thread.id in claimedHistoryIds && !thread.isHistoryLoaded -> {
+                            val storedHistory = dao.getConversationHistory(thread.id)
+                            if (storedHistory != null) {
+                                val storedThread = runCatching {
+                                    parseCachedThread(
+                                        JSONObject(readCachePayload(context, storedHistory.payload))
+                                    )
+                                }.getOrNull()
+                                if (storedThread != null) {
+                                    val mergedHistory = mergeCachedThreadState(
+                                        fullThread = storedThread,
+                                        currentThread = thread,
+                                        isHistoryLoaded = storedHistory.isComplete,
+                                    )
+                                    addHistoryIfMissing(
+                                        thread,
+                                        mergedHistory,
+                                        isComplete = storedHistory.isComplete,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                val activeIds = currentThreads.mapTo(mutableSetOf()) { it.id }
+                currentDeleted.forEach { deleted ->
+                    val thread = deleted.thread
+                    if (thread.id in activeIds) return@forEach
+                    val fullHistory = fullHistoryById[thread.id]
+                    when {
+                        fullHistory != null -> addHistoryIfMissing(thread, fullHistory, isComplete = true)
+                        thread.id !in existingHistoryIds && thread.messages.isNotEmpty() ->
+                            addHistoryIfMissing(thread, thread, isComplete = thread.isHistoryLoaded)
+                        thread.id in claimedHistoryIds && thread.isHistoryLoaded ->
+                            addHistoryIfMissing(thread, thread, isComplete = true)
+                        thread.id in claimedHistoryIds -> {
+                            val storedHistory = dao.getConversationHistory(thread.id)
+                            if (storedHistory != null) {
+                                val storedThread = runCatching {
+                                    parseCachedThread(
+                                        JSONObject(readCachePayload(context, storedHistory.payload))
+                                    )
+                                }.getOrNull()
+                                if (storedThread != null) {
+                                    val mergedHistory = mergeCachedThreadState(
+                                        fullThread = storedThread,
+                                        currentThread = thread,
+                                        isHistoryLoaded = storedHistory.isComplete,
+                                    )
+                                    addHistoryIfMissing(
+                                        thread,
+                                        mergedHistory,
+                                        isComplete = storedHistory.isComplete,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (historyRows.isNotEmpty()) {
+                    try {
+                        dao.saveConversationHistories(historyRows)
+                    } finally {
+                        historyRows.forEach { it.payload.fill(0) }
+                    }
+                }
+
+                val retainedHistoryIds = (activeIds + currentDeleted.map { it.thread.id }).toSet()
+                existingHistoryIds
+                    .asSequence()
+                    .filterNot { it in retainedHistoryIds }
+                    .forEach(dao::deleteConversationHistory)
 
                 val root = JSONObject()
-                root.put("version", 1)
+                root.put("version", 2)
                 root.put("timestamp", System.currentTimeMillis())
 
-                val threadsArr = JSONArray()
-                for (th in currentThreads) {
-                    threadsArr.put(serializeCachedThread(th))
+                val summaries = JSONArray()
+                currentThreads.forEach { thread ->
+                    summaries.put(serializeCachedThread(toThreadSummary(thread)))
                 }
-                root.put("threads", threadsArr)
+                root.put("threads", summaries)
 
-                val deletedArr = JSONArray()
-                for (d in currentDeleted) {
-                    val dObj = JSONObject()
-                    dObj.put("deletedAtMillis", d.deletedAtMillis)
-                    dObj.put("thread", serializeCachedThread(d.thread))
-                    deletedArr.put(dObj)
+                val deleted = JSONArray()
+                currentDeleted.forEach { entry ->
+                    val deletedObject = JSONObject()
+                    deletedObject.put("deletedAtMillis", entry.deletedAtMillis)
+                    deletedObject.put("thread", serializeCachedThread(entry.thread))
+                    deleted.put(deletedObject)
                 }
-                root.put("deletedThreads", deletedArr)
+                root.put("deletedThreads", deleted)
 
                 val jsonBytes = root.toString().toByteArray(Charsets.UTF_8)
-                val isEncrypted = com.txtura.security.AppSecurityManager.isDbEncryptionEnabled(context)
+                val payload = try {
+                    encodeCachePayload(context, jsonBytes)
+                } finally {
+                    jsonBytes.fill(0)
+                }
+                try {
+                    dao.saveThreadSummarySnapshot(
+                        ThreadSummarySnapshotEntity(payload = payload)
+                    )
+                    dao.deleteSnapshot()
+                } finally {
+                    payload.fill(0)
+                }
 
-                val encFile = File(context.filesDir, THREADS_CACHE_ENC_FILE)
-                val legacyFile = File(context.filesDir, LEGACY_THREADS_CACHE_FILE)
+                File(context.filesDir, THREADS_CACHE_ENC_FILE).delete()
+                File(context.filesDir, THREADS_CACHE_ENC_TMP_FILE).delete()
+                File(context.filesDir, LEGACY_THREADS_CACHE_FILE).delete()
+                File(context.filesDir, "$LEGACY_THREADS_CACHE_FILE.tmp").delete()
 
-                if (isEncrypted) {
-                    val encryptedBytes = SecurityCryptoManager.encryptCache(context, jsonBytes)
-                    val tmpFile = File(context.filesDir, THREADS_CACHE_ENC_TMP_FILE)
-                    tmpFile.writeBytes(encryptedBytes)
-                    if (!tmpFile.renameTo(encFile)) {
-                        tmpFile.copyTo(encFile, overwrite = true)
-                        tmpFile.delete()
-                    }
-                    if (legacyFile.exists()) {
-                        legacyFile.delete()
-                    }
-                } else {
-                    val tmpPlain = File(context.filesDir, "$LEGACY_THREADS_CACHE_FILE.tmp")
-                    tmpPlain.writeBytes(jsonBytes)
-                    if (!tmpPlain.renameTo(legacyFile)) {
-                        tmpPlain.copyTo(legacyFile, overwrite = true)
-                        tmpPlain.delete()
-                    }
-                    if (encFile.exists()) {
-                        encFile.delete()
-                    }
+                if (!AppSecurityManager.isDbEncryptionEnabled(context)) {
                     SecurityCryptoManager.clearCacheSessionKey(context, deleteWrappedKey = true)
                 }
             } catch (e: Exception) {
+                synchronized(pendingHistoryLock) {
+                    pendingHistoryThreadIds.addAll(claimedHistoryIds)
+                }
                 Log.w(TAG, "Failed to persist threads cache", e)
+                return false
             }
         }
+        return true
     }
 
     /**
      * Re-encrypts or decrypts the local cache when user changes the encryption preference in settings.
      */
     fun reencryptCache(context: Context) {
-        saveDiskCacheAsync(context, immediate = true)
+        val appCtx = context.applicationContext
+        ioScope.launch {
+            initializationJob?.join()
+            synchronized(diskCacheLock) {
+                reencryptStoredThreadHistories(appCtx)
+                saveDiskCacheInternal(appCtx)
+            }
+        }
     }
 
     /**
      * Debounced or immediate asynchronous persistence to disk cache.
      */
-    fun saveDiskCacheAsync(context: Context, immediate: Boolean = false) {
+    fun saveDiskCacheAsync(
+        context: Context,
+        immediate: Boolean = false,
+        historyThreadIds: Set<Long> = emptySet(),
+    ) {
+        synchronized(pendingHistoryLock) {
+            pendingHistoryThreadIds.addAll(historyThreadIds)
+        }
         val appCtx = context.applicationContext
         if (immediate) {
             ioScope.launch {
@@ -678,7 +983,7 @@ object SmsMmsRepository {
         val initials = obj.optString("avatarInitials", "U")
         val colorHex = obj.optLong("avatarAccentColorHex", 0xFF6366F1)
         val photoUriStr = obj.optString("contactPhotoUri").takeIf { it.isNotBlank() }
-        val photoUri = photoUriStr?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        val photoUri = photoUriStr?.let { runCatching { it.toUri() }.getOrNull() }
         val unreadCount = obj.optInt("unreadCount", 0)
         val isPinned = isAddressPinned(address) || obj.optBoolean("isPinned", false)
         val draftText = obj.optString("draftText").takeIf { it.isNotBlank() }
@@ -756,11 +1061,15 @@ object SmsMmsRepository {
             unreadCount = unreadCount,
             isPinned = isPinned,
             isService = isService,
-            draftText = draftText
+            draftText = draftText,
+            isHistoryLoaded = obj.optBoolean("historyComplete", true)
         )
     }
 
-    private fun serializeCachedThread(thread: ConversationThread): JSONObject {
+    private fun serializeCachedThread(
+        thread: ConversationThread,
+        includeAllMessages: Boolean = false,
+    ): JSONObject {
         val obj = JSONObject()
         obj.put("id", thread.id)
         obj.put("contactName", thread.contactName)
@@ -772,12 +1081,13 @@ object SmsMmsRepository {
         obj.put("isPinned", thread.isPinned)
         obj.put("isService", thread.isService)
         thread.draftText?.let { obj.put("draftText", it) }
+        obj.put("historyComplete", thread.isHistoryLoaded)
 
         val msgsArr = JSONArray()
-        val messagesToCache = if (thread.messages.size > 100) {
-            thread.messages.takeLast(100)
-        } else {
+        val messagesToCache = if (includeAllMessages || thread.messages.size <= 100) {
             thread.messages
+        } else {
+            thread.messages.takeLast(100)
         }
         for (m in messagesToCache) {
             val mObj = JSONObject()
@@ -811,7 +1121,7 @@ object SmsMmsRepository {
      */
     fun isSenderBlocked(address: String): Boolean {
         appContext?.let {
-            if (!com.txtura.security.AppSecurityManager.isSpamFirewallEnabled(it)) {
+            if (!AppSecurityManager.isSpamFirewallEnabled(it)) {
                 return false
             }
         }
@@ -824,6 +1134,15 @@ object SmsMmsRepository {
                     (normalizeAddressKey(blocked) == normKey) ||
                     arePhoneNumbersEqual(blocked, clean)
             }
+        }
+    }
+
+    /** Rebuilds the visible inbox after the user changes the blocked-sender firewall. */
+    fun refreshSpamFirewallState(context: Context) {
+        val appCtx = context.applicationContext
+        if (!hasReadSmsPermission(appCtx)) return
+        ioScope.launch {
+            syncDeviceMessages(appCtx)
         }
     }
 
@@ -867,11 +1186,10 @@ object SmsMmsRepository {
         // 4. Short codes (typically 3 to 6 digits, without international '+' prefix)
         val isNotInternational = !clean.startsWith("+")
         val isShortCode = isNotInternational && cleanDigits.isNotEmpty() && (cleanDigits.length in 3..6)
-        if (isShortCode) return true
+        return isShortCode
 
         // 5. Standard phone numbers (7+ digits or with '+'):
         // Full phone numbers are people by default. OTP messages do not turn full phone numbers into services.
-        return false
     }
 
     /**
@@ -1097,7 +1415,10 @@ object SmsMmsRepository {
                 }
             }
         }
-        context?.let { saveDiskCacheAsync(it) }
+        context?.let { ctx ->
+            val threadId = _threads.value.firstOrNull { thread -> thread.messages.any { it.id == messageId } }?.id
+            saveDiskCacheAsync(ctx, historyThreadIds = setOfNotNull(threadId))
+        }
     }
 
     fun onMessageFailed(messageId: Long, context: Context? = null) {
@@ -1114,7 +1435,10 @@ object SmsMmsRepository {
                 }
             }
         }
-        context?.let { saveDiskCacheAsync(it) }
+        context?.let { ctx ->
+            val threadId = _threads.value.firstOrNull { thread -> thread.messages.any { it.id == messageId } }?.id
+            saveDiskCacheAsync(ctx, historyThreadIds = setOfNotNull(threadId))
+        }
     }
 
     fun openEmergencyAlerts(context: Context) {
@@ -1249,7 +1573,7 @@ object SmsMmsRepository {
     private var cancelSoundLoaded: Boolean = false
 
     private val actionSoundMap = java.util.concurrent.ConcurrentHashMap<Int, Int>()
-    private val loadedSoundIds = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Int, Boolean>())
+    private val loadedSoundIds = Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Int, Boolean>())
 
     @Volatile
     private var activeForegroundThreadId: Long? = null
@@ -1274,9 +1598,9 @@ object SmsMmsRepository {
             FlashNotificationManager.preloadRhythms(context.applicationContext)
             if (sentSoundPool != null) return
             val appContext = context.applicationContext
-            val audioAttributes = android.media.AudioAttributes.Builder()
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                 .build()
 
             val pool = android.media.SoundPool.Builder()
@@ -1343,9 +1667,9 @@ object SmsMmsRepository {
                 if (streamId != 0) return
             }
 
-            val audioAttributes = android.media.AudioAttributes.Builder()
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                 .build()
 
             val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, soundResId, audioAttributes, 0)
@@ -1395,9 +1719,9 @@ object SmsMmsRepository {
             }
 
             // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
-            val audioAttributes = android.media.AudioAttributes.Builder()
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                 .build()
 
             val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.odlazna, audioAttributes, 0)
@@ -1460,9 +1784,9 @@ object SmsMmsRepository {
             }
 
             // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
-            val audioAttributes = android.media.AudioAttributes.Builder()
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                 .build()
 
             val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.dolazna, audioAttributes, 0)
@@ -1517,9 +1841,9 @@ object SmsMmsRepository {
             }
 
             // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
-            val audioAttributes = android.media.AudioAttributes.Builder()
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                 .build()
 
             val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.cancel, audioAttributes, 0)
@@ -1724,8 +2048,6 @@ object SmsMmsRepository {
         // 2. Load existing MMS messages (received & sent multimedia messages)
         loadDeviceMmsMessages(context, loadedMessages, unreadCountByThread)
 
-        if (loadedMessages.isEmpty()) return@withContext
-
         // 3. Group by system THREAD_ID (or normalized phone number if threadId <= 0)
         val accentColors = listOf(0xFF00E5FF, 0xFF6366F1, 0xFFA855F7, 0xFF10B981, 0xFFF59E0B)
         val contactNameCache = mutableMapOf<String, String>()
@@ -1747,7 +2069,7 @@ object SmsMmsRepository {
             }
             .entries
             .mapIndexed { index, (_, msgs) ->
-                val sortedMsgs = msgs.sortedBy { it.timestampMillis }
+                val sortedMsgs = deduplicateMessageList(msgs).sortedBy { it.timestampMillis }
                 val primaryAddress = sortedMsgs.lastOrNull { it.address.isNotBlank() && it.address != "Unknown" }
                     ?.address ?: sortedMsgs.first().address
                 val resolvedName = contactNameCache.getOrPut(primaryAddress) {
@@ -1830,7 +2152,7 @@ object SmsMmsRepository {
                         }
                 }
                 if (missingMessages.isNotEmpty()) {
-                    val combinedMsgs = (deviceThread.messages + missingMessages.map { it.copy(threadId = deviceThread.id) })
+                    val combinedMsgs = deduplicateMessageList(deviceThread.messages + missingMessages.map { it.copy(threadId = deviceThread.id) })
                         .sortedBy { it.timestampMillis }
                     deviceThread.copy(messages = combinedMsgs)
                 } else {
@@ -1869,8 +2191,7 @@ object SmsMmsRepository {
             for (entry in existingTrash + trashedFromDevice) {
                 val prev = combinedMap[entry.thread.id]
                 if (prev != null) {
-                    val mergedMsgs = (prev.thread.messages + entry.thread.messages)
-                        .distinctBy { it.id }
+                    val mergedMsgs = deduplicateMessageList(prev.thread.messages + entry.thread.messages)
                         .sortedBy { it.timestampMillis }
                     combinedMap[entry.thread.id] = prev.copy(
                         thread = prev.thread.copy(messages = mergedMsgs),
@@ -1890,8 +2211,21 @@ object SmsMmsRepository {
                 .sortedByDescending { it.deletedAtMillis }
                 .toList()
         }
+        val appContext = context.applicationContext
+        ioScope.launch {
+            delay(1500.milliseconds)
+            val activeHistories = _threads.value.filter { it.isHistoryLoaded }
+            val activeIds = activeHistories.mapTo(mutableSetOf()) { it.id }
+            val deletedOnlyHistories = _deletedThreads.value
+                .asSequence()
+                .map { it.thread }
+                .filter { it.isHistoryLoaded && it.id !in activeIds }
+                .toList()
+            if (saveDiskCacheInternal(appContext, fullHistoryThreads = activeHistories + deletedOnlyHistories)) {
+                recordDeviceMessageSync(appContext)
+            }
+        }
         scanAllThreadsForMaliciousWebsitesOnline(context)
-        saveDiskCacheAsync(context)
     }
 
     /**
@@ -2050,7 +2384,7 @@ object SmsMmsRepository {
                             val specificPartUri = "content://mms/part/$partId".toUri()
                             attachment = MmsAttachment(
                                 uri = specificPartUri,
-                                mimeType = if (contentType.isNotBlank()) contentType else "text/calendar",
+                                mimeType = contentType.ifBlank { "text/calendar" },
                                 caption = contentLocation.ifBlank { if (TxturaStrings.isSerbianLocale()) "Kalendarski događaj" else "Calendar event" }
                             )
                         }
@@ -2723,7 +3057,7 @@ object SmsMmsRepository {
         }
 
         verifyMessageUrlsOnlineAsync(context, threadId, msgId, cleanBody)
-        saveDiskCacheAsync(context, immediate = true)
+        saveDiskCacheAsync(context, immediate = true, historyThreadIds = setOf(threadId))
 
         return threadId
     }
@@ -2882,7 +3216,7 @@ object SmsMmsRepository {
         }
 
         context?.let { ctx ->
-            saveDiskCacheAsync(ctx, immediate = true)
+            saveDiskCacheAsync(ctx, immediate = true, historyThreadIds = setOf(targetThreadId))
             val isCurrentActiveThread = (activeForegroundThreadId != null && activeForegroundThreadId == targetThreadId)
             if (!isCurrentActiveThread) {
                 postIncomingMessageNotification(
@@ -3240,7 +3574,7 @@ object SmsMmsRepository {
         val securityResult = MessageSecurityAnalyzer.analyzeMessage(bodyText)
 
         val pendingAttachment = MmsAttachment(
-            uri = Uri.parse(contentLocation),
+            uri = contentLocation.toUri(),
             mimeType = "application/vnd.wap.mms-message",
             caption = bodyText
         )
@@ -3299,7 +3633,7 @@ object SmsMmsRepository {
             sortThreads(updated)
         }
 
-        saveDiskCacheAsync(context, immediate = true)
+        saveDiskCacheAsync(context, immediate = true, historyThreadIds = setOf(targetThreadId))
         val isCurrentActiveThread = (activeForegroundThreadId != null && activeForegroundThreadId == targetThreadId)
         if (!isCurrentActiveThread) {
             postIncomingMessageNotification(
@@ -3385,7 +3719,7 @@ object SmsMmsRepository {
             sortThreads(updated)
         }
 
-        saveDiskCacheAsync(context, immediate = true)
+        saveDiskCacheAsync(context, immediate = true, historyThreadIds = setOf(targetThreadId))
         val isCurrentActiveThread = (activeForegroundThreadId != null && activeForegroundThreadId == targetThreadId)
         if (!isCurrentActiveThread && existingMessageId == null) {
             postIncomingMessageNotification(
@@ -3443,7 +3777,7 @@ object SmsMmsRepository {
                 put(Telephony.Mms.Addr.TYPE, if (isIncoming) 137 else 151)
                 put(Telephony.Mms.Addr.CHARSET, 106)
             }
-            resolver.insert(Uri.parse("content://mms/$mmsId/addr"), addrValues)
+            resolver.insert("content://mms/$mmsId/addr".toUri(), addrValues)
 
             if (bodyText.isNotBlank()) {
                 val textPartValues = ContentValues().apply {
@@ -3452,7 +3786,7 @@ object SmsMmsRepository {
                     put("text", bodyText)
                     put("chset", 106)
                 }
-                resolver.insert(Uri.parse("content://mms/$mmsId/part"), textPartValues)
+                resolver.insert("content://mms/$mmsId/part".toUri(), textPartValues)
             }
 
             if (imageBytes != null && imageBytes.isNotEmpty()) {
@@ -3461,7 +3795,7 @@ object SmsMmsRepository {
                     put("ct", imageMimeType)
                     put("cl", "image_01.jpg")
                 }
-                val partUri = resolver.insert(Uri.parse("content://mms/$mmsId/part"), imgPartValues)
+                val partUri = resolver.insert("content://mms/$mmsId/part".toUri(), imgPartValues)
                 if (partUri != null) {
                     resolver.openOutputStream(partUri)?.use { it.write(imageBytes) }
                 }
@@ -3473,7 +3807,7 @@ object SmsMmsRepository {
                     put("ct", audioMimeType)
                     put("cl", "voice_01.amr")
                 }
-                val partUri = resolver.insert(Uri.parse("content://mms/$mmsId/part"), audioPartValues)
+                val partUri = resolver.insert("content://mms/$mmsId/part".toUri(), audioPartValues)
                 if (partUri != null) {
                     resolver.openOutputStream(partUri)?.use { it.write(audioBytes) }
                 }
@@ -3485,7 +3819,7 @@ object SmsMmsRepository {
                     put("ct", otherMimeType ?: "application/octet-stream")
                     put("cl", otherFileName ?: "attachment.dat")
                 }
-                val partUri = resolver.insert(Uri.parse("content://mms/$mmsId/part"), otherPartValues)
+                val partUri = resolver.insert("content://mms/$mmsId/part".toUri(), otherPartValues)
                 if (partUri != null) {
                     resolver.openOutputStream(partUri)?.use { it.write(otherBytes) }
                 }
@@ -3511,7 +3845,10 @@ object SmsMmsRepository {
                 }
             }
         }
-        context?.let { saveDiskCacheAsync(it) }
+        context?.let { ctx ->
+            val threadId = _threads.value.firstOrNull { thread -> thread.messages.any { it.id == messageId } }?.id
+            saveDiskCacheAsync(ctx, historyThreadIds = setOfNotNull(threadId))
+        }
     }
 
     private fun postIncomingMessageNotification(
@@ -3642,7 +3979,7 @@ object SmsMmsRepository {
             .addAction(markReadAction)
 
         // Metadata Minimization: redact public lock-screen version so sender/content is never leaked
-        if (com.txtura.security.AppSecurityManager.isMetadataMinimizationEnabled(context)) {
+        if (AppSecurityManager.isMetadataMinimizationEnabled(context)) {
             val publicNotification = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(R.drawable.ic_stat_message)
                 .setContentTitle("Txtura")
@@ -3921,7 +4258,7 @@ object SmsMmsRepository {
             }
             updated
         }
-        savePersistedPins(context)
+        savePersistedPins(context, historyThreadIds = setOf(threadId))
     }
 
     /**
@@ -3952,7 +4289,7 @@ object SmsMmsRepository {
                 }
             }
         }
-        savePersistedPins(context)
+        savePersistedPins(context, historyThreadIds = setOf(threadId))
     }
 
     /**
@@ -3986,7 +4323,7 @@ object SmsMmsRepository {
             deletedMessageMeta[id] = Pair(threadId, now)
         }
         playDeleteSound(context)
-        savePersistedPins(context)
+        savePersistedPins(context, historyThreadIds = setOf(threadId))
 
         var trashedMessages = listOf<ChatMessage>()
         var baseThread: ConversationThread? = null
@@ -4160,6 +4497,108 @@ object SmsMmsRepository {
 
         // 4. Immediately flush the updated messages and trash state to the offline encrypted disk cache
         saveDiskCacheAsync(context)
+    }
+
+    /**
+     * Restores specific messages from a deleted conversation entry in Trash back to the active inbox.
+     */
+    fun restoreDeletedMessages(context: Context, threadId: Long, messageIds: Set<Long>): String? {
+        if (messageIds.isEmpty()) return null
+        val entry = _deletedThreads.value.find { it.thread.id == threadId } ?: return null
+        val messagesToRestore = entry.thread.messages.filter { it.id in messageIds }
+        if (messagesToRestore.isEmpty()) return null
+
+        messagesToRestore.forEach { msg ->
+            deletedMessageMeta.remove(msg.id)
+        }
+
+        val remainingTrashedMsgs = entry.thread.messages.filterNot { it.id in messageIds }
+        if (remainingTrashedMsgs.isEmpty()) {
+            deletedThreadTimestamps.remove(threadId)
+            _deletedThreads.update { currentTrash ->
+                currentTrash.filterNot { it.thread.id == threadId }
+            }
+        } else {
+            _deletedThreads.update { currentTrash ->
+                currentTrash.map {
+                    if (it.thread.id == threadId) {
+                        it.copy(thread = it.thread.copy(messages = remainingTrashedMsgs))
+                    } else {
+                        it
+                    }
+                }
+            }
+        }
+
+        _threads.update { currentActive ->
+            val existing = currentActive.find { it.id == threadId }
+            val merged = if (existing != null) {
+                val combinedMsgs = deduplicateMessageList(existing.messages + messagesToRestore)
+                    .sortedBy { it.timestampMillis }
+                currentActive.map { if (it.id == threadId) it.copy(messages = combinedMsgs) else it }
+            } else {
+                currentActive + entry.thread.copy(messages = messagesToRestore)
+            }
+            sortThreads(merged)
+        }
+
+        savePersistedPins(context, historyThreadIds = setOf(threadId))
+        return entry.thread.contactName
+    }
+
+    /**
+     * Permanently deletes specific messages from a deleted conversation entry in Trash,
+     * removing their attachments and records from device storage.
+     */
+    fun permanentlyDeleteMessages(context: Context, threadId: Long, messageIds: Set<Long>) {
+        if (messageIds.isEmpty()) return
+        val entry = _deletedThreads.value.find { it.thread.id == threadId } ?: return
+        val msgsToDelete = entry.thread.messages.filter { it.id in messageIds }
+        if (msgsToDelete.isEmpty()) return
+
+        val msgIdsSet = msgsToDelete.map { it.id }.toSet()
+        msgIdsSet.forEach { id -> deletedMessageMeta.remove(id) }
+        playPermanentDeleteSound(context)
+
+        // 1. Physically delete any cached media / attachments on device storage
+        msgsToDelete.forEach { msg ->
+            cleanupAttachmentFile(context, msg.attachment?.uri, msg.id)
+        }
+
+        val remainingTrashedMsgs = entry.thread.messages.filterNot { it.id in msgIdsSet }
+        if (remainingTrashedMsgs.isEmpty()) {
+            deletedThreadTimestamps.remove(threadId)
+            _deletedThreads.update { currentTrash ->
+                currentTrash.filterNot { it.thread.id == threadId }
+            }
+        } else {
+            _deletedThreads.update { currentTrash ->
+                currentTrash.map {
+                    if (it.thread.id == threadId) {
+                        it.copy(thread = it.thread.copy(messages = remainingTrashedMsgs))
+                    } else {
+                        it
+                    }
+                }
+            }
+        }
+
+        // 2. Check if this contact STILL has active messages or an active thread in the inbox
+        val entryAddress = entry.thread.address.trim()
+        val hasActiveConversation = _threads.value.any { activeThread ->
+            activeThread.id == threadId ||
+            (entryAddress.isNotBlank() && arePhoneNumbersEqual(activeThread.address, entryAddress))
+        }
+
+        // 3. Permanently delete from Android telephony database ONLY the specific trashed messages!
+        deleteFromSystemProviderThoroughly(
+            context = context,
+            threadIds = if (!hasActiveConversation && remainingTrashedMsgs.isEmpty() && threadId > 0L) setOf(threadId) else emptySet(),
+            messageIds = msgIdsSet,
+            address = if (!hasActiveConversation && remainingTrashedMsgs.isEmpty() && entryAddress.isNotBlank()) entryAddress else null
+        )
+
+        savePersistedPins(context)
     }
 
     /**
@@ -4384,7 +4823,10 @@ object SmsMmsRepository {
 
         _threads.value = sortThreads(payload.threads.filterNot { isSenderBlocked(it.address) })
         _deletedThreads.value = payload.deletedThreads
-        saveDiskCacheAsync(context)
+        val restoredHistoryIds = (payload.threads + payload.deletedThreads.map { it.thread })
+            .filter { it.isHistoryLoaded }
+            .mapTo(mutableSetOf()) { it.id }
+        saveDiskCacheAsync(context, historyThreadIds = restoredHistoryIds)
 
         val totalThreads = payload.threads.size + payload.deletedThreads.size
         val totalMsgs = payload.totalMessagesCount
@@ -4480,7 +4922,7 @@ object SmsMmsRepository {
                         cr.delete(ContentUris.withAppendedId(Telephony.Mms.CONTENT_URI, mmsId), null, null)
                     } catch (_: Exception) {}
                     try {
-                        cr.delete(Uri.parse("content://mms/$mmsId"), null, null)
+                        cr.delete("content://mms/$mmsId".toUri(), null, null)
                     } catch (_: Exception) {}
                 }
             }
@@ -4493,7 +4935,7 @@ object SmsMmsRepository {
             }
             safeThreadIds.forEach { tId ->
                 try {
-                    cr.delete(Uri.parse("content://mms-sms/conversations/$tId"), null, null)
+                    cr.delete("content://mms-sms/conversations/$tId".toUri(), null, null)
                 } catch (e: Exception) {
                     Log.w(TAG, "Error deleting conversation uri for thread $tId", e)
                 }
@@ -4620,8 +5062,8 @@ object SmsMmsRepository {
 
             // Fallback for tricky phone formats if not found in hash map
             if (targetIndex == null) {
-                for (i in 0 until merged.size) {
-                    if (areThreadsSameContact(merged[i], thread)) {
+                for ((i, element) in merged.withIndex()) {
+                    if (areThreadsSameContact(element, thread)) {
                         targetIndex = i
                         break
                     }
@@ -4668,7 +5110,8 @@ object SmsMmsRepository {
                     unreadCount = existing.unreadCount + thread.unreadCount,
                     isPinned = existing.isPinned || thread.isPinned,
                     isService = existing.isService && thread.isService,
-                    draftText = if (!existing.draftText.isNullOrBlank()) existing.draftText else thread.draftText
+                    draftText = if (!existing.draftText.isNullOrBlank()) existing.draftText else thread.draftText,
+                    isHistoryLoaded = existing.isHistoryLoaded && thread.isHistoryLoaded
                 )
                 merged[targetIndex] = mergedThread
                 for (k in keys) {

@@ -1,5 +1,24 @@
 # Txtura Changelog & Improvements
 
+## [v3.3.1] - 2026-11-12
+
+### Selective Trash Management & Storage (Upravljanje obrisanim porukama i skladište)
+- **Granular Trash inspection and recovery (Selektivno vraćanje i brisanje iz smeća):** Inspect deleted conversations in Trash and select individual messages to restore to the inbox or permanently purge from device memory, with bulk select/deselect controls.
+
+### UI, Customization & Localization (Interfejs, prilagođavanje i lokalizacija)
+- **Serbian Latin date headers (Datumski zaglavci na srpskoj latinici):** Conversation date dividers use Serbian Latin script (e.g., `utorak, 19. maj`) instead of Cyrillic for consistent readability.
+- **Unread category count indicator (Brojač nepročitanih poruka):** The "Nepročitano" / "Unread" category chip displays the total number of currently unread messages in real-time (e.g., `Nepročitano (3)`).
+- **Burgundy theme branding (Brendiranje za Burgundi teme):** Custom bear icon rendered in the main top header for Monochrome Burgundy Accent and Polychrome Burgundy Anita themes, with automatic light/dark mode asset switching and theme color filtering.
+- **Header & Footer refinements (Fino podešavanje zaglavlja i podnožja):** Single-line formatting for changelog dialog title and centered two-line layout for settings footer privacy badge.
+
+### Gestures, Touch & Notification Fixes (Pokreti, dodir i obaveštenja)
+- **Smooth scrolling without accidental selection (Glatko skrolovanje bez lažnog obeležavanja):** Optimized touch gesture pipeline so scrolling over message bubbles never triggers press scaling, selection, or message highlighting. Selection is strictly restricted to a 500ms stationary long-press.
+- **Fix false incoming alert sounds on thread open (Ispravka lažnog zvuka i blica pri ulasku u razgovor):** Opening a thread or loading historical messages no longer triggers incoming message sounds or flash alerts. Notifications are strictly reserved for real-time incoming messages.
+
+### Performance & Architecture (Performanse i arhitektura)
+- **Streamlined application lifecycle (Optimizovani životni ciklus):** Migrated asynchronous repository and emergency alert initialization directly into `MainActivity.onCreate()`, eliminating `TxturaApp.kt` overhead for faster cold starts.
+- **Message deduplication (Deduplikacija poruka):** Automatic content and ID deduplication across database snapshots and real-time streams prevents duplicated messages in conversation threads.
+
 ## [v3.2] - 2026-11-11
 
 ### Performance & Security (Performanse i bezbednost)
@@ -9,9 +28,33 @@
 - **Accurate encryption labels (Tačan opis enkripcije):** Security settings now clearly describe AES-256-GCM protection of the local JSON message cache.
 
 ### Messaging, Gestures & Navigation (Poruke, pokreti i navigacija)
-- **Pin and unpin list motion (Animacija pinovanja i otpinovanja):** Conversation rows animate between their original position and the top of the list. Pin controls are hidden when either swipe direction is configured for pin/unpin.
+- **Pin and unpin list motion (Animacija pinovanja i otpinovanja):** Conversation rows animate between their original position and the top of the list. Unpinning a message keeps the message list at the top instead of jumping to the message's chronological position. Pin controls are hidden when either swipe direction is configured for pin/unpin.
 - **System back gestures (Sistemski pokret za nazad):** Android back gestures use the same screen navigation behavior as the in-app back controls.
 - **SMS/MMS delivery handling (Obrada slanja i prijema SMS/MMS poruka):** Sent and downloaded message callbacks are registered; incoming WAP Push payloads are validated and processed asynchronously by the MMS receiver.
+
+## [v3.1] - 2026-11-10
+
+### Storage & Permissions (Memorija i dozvole)
+- **Permanent deletion (Trajno brisanje):** Emptying Trash now removes SMS/MMS records and cached media attachments from device storage, then saves the updated local cache.
+- **Calendar access (Pristup kalendaru):** Calendar permission is requested with the initial permissions so calendar events and ICS sharing can work.
+
+### UI, Navigation & Notifications (Interfejs, navigacija i obaveštenja)
+- **Customizable dock (Prilagodljivi dok):** Dock items can be reordered, and the dock remains available on Deleted and Highlighted screens.
+- **Smoother transitions (Glatkiji prelazi):** Spring transitions between the main screen, Settings, Deleted, and Highlighted screens reduce lag and flicker.
+- **Keyboard GIFs (GIF animacije sa tastature):** Send keyboard GIFs up to 299.9 kB and play them in message bubbles.
+- **Flash and audio feedback (Blic i zvučni odziv):** Flash alerts synchronize with incoming SMS sounds, with expanded sound and action feedback options.
+
+## [v3.0] - 2026-11-10
+
+### Messaging & Media (Poruke i multimedija)
+- **Incoming MMS downloads (Preuzimanje dolaznih MMS poruka):** Added asynchronous MMS download handling and validated WAP Push processing.
+- **Voice messages (Glasovne poruke):** Added in-chat voice recording, playback, and cancellation controls.
+- **Attachments and compression (Prilozi i kompresija):** Added document attachments and image compression for MMS.
+
+### Permissions & Notifications (Dozvole i obaveštenja)
+- **Granular permissions (Pojedinačne dozvole):** Permissions are requested as needed for app features.
+- **Calendar events (Događaji u kalendaru):** Added calendar event selection and ICS generation and sharing.
+- **Flash notifications (Obaveštenja blicem):** Added configurable camera-flash alerts for incoming messages.
 
 ## [v2.4] - 2026-11-09
 
@@ -49,19 +92,6 @@
   - Multi-factor contact matching based on normalized phone digits, shared message senders, and device phonebook names.
   - Consistent and consolidated view across inbox and main conversation filters.
 
-### Messaging & Broadcast (Poruke i višestruko slanje)
-- **Simultaneous Multi-Recipient Broadcast (Slanje jedne poruke na više brojeva istovremeno):**
-  - Reimplemented new message flow allowing selection of multiple contacts and typed numbers at once.
-  - Direct individual SMS transmission without group MMS conversion.
-  - Live character count and SMS segment calculator (`N karaktera • M SMS`), Select All / Deselect All suggestions toggle, and contextual "Pošalji svima (N)" button.
-  - Dedicated "Pošalji na više brojeva" action directly in conversation details menu.
-
-### Security & Biometrics (Bezbednost i biometrija)
-- **Biometric & Lock Screen Reliability (Otključavanje i pouzdanost biometrije):**
-  - Added native `android.permission.USE_BIOMETRIC` permission.
-  - Native Android BiometricPrompt (API 29–37) with strong/weak biometrics and device credential support, with seamless KeyguardManager fallback.
-  - Complete protection against lockout loops on devices without lock screen PIN or biometrics: auto-unlock, safe disable, clear guidance, and shortcut to system lock screen settings.
-  - Fixed activity lifecycle re-lock issues on resume.
 
 ### Contacts & Categories (Kontakti i pametne kategorije)
 - **Smart Service Identification (Ispravka kategorije Usluge):**
@@ -74,6 +104,12 @@
 - **Serbian UI & Layout Polish (Lokalizacija na srpskom jeziku):**
   - Fixed category tab weights and auto-sizing so "Nepročitano" is never truncated.
   - Shortened Serbian labels in 2-column cards, trash buttons ("Isprazni sve"), and lock screen buttons with ellipsis protection.
+
+## [v2.1] - 2026-11-09
+
+### Multi-Recipient Messaging (Slanje na više primalaca)
+- **Broadcast SMS (Grupno slanje SMS-a):** Send one message to selected contacts and entered numbers as separate 1-to-1 SMS messages, with recipient selection, Select All/Deselect All, live character and segment counts, and a shortcut in conversation details.
+- **Biometric reliability (Pouzdanija biometrija):** Added native BiometricPrompt and device credential support, safe fallback when no screen lock is configured, and fixes for relocking after returning from system authentication.
 
 ## [v2.0] - 2026-11-08
 
@@ -98,6 +134,12 @@
   - Real-time status badge with on-demand "Ponovo skeniraj" re-scan capability.
 - **Blocked Senders (Blokirani kontakti):**
   - Fully integrated into Category 7 with fast blocking, unblocking, and inbound filtering.
+
+### Hardware, Backups & Adaptive UI (Hardver, bekapi i prilagodljiv interfejs)
+- **Hardware-backed security (Hardverska bezbednost):** Added security helpers for protected local data and secure network access.
+- **Encrypted portable backups (Šifrovani prenosivi bekapi):** Added password-protected backup and restore using cryptographic key derivation.
+- **Emergency alerts (Hitna upozorenja):** Added wireless emergency alert management and an app shortcut to system safety alerts.
+- **Adaptive layouts (Prilagodljivi rasporedi):** Added window-aware sizing and layouts for different screen sizes.
 
 ### Settings Redesign & Floating Menus
 - **Complete Reorganization into 7 Categories:**
@@ -145,6 +187,7 @@
 - **UI Enhancements:**
   - Full-width bottom dock navigation and multi-selection bars.
   - Larger touch targets and refined haptic responses.
+  - Consolidated Bubbles and External Links settings into collapsible cards.
 
 ---
 
@@ -163,8 +206,24 @@
   - Cloudflare DoH malicious website inspection.
   - SIM card messages management and carrier SMSC configuration.
   - AMOLED pure black and clean white theme presets.
+  - Delayed sending with an undo window before messages are transmitted.
+  - Manual People/Services category selection for a sender.
+- **Interaction & Media:**
+  - In-chat sound effects, pinch-to-zoom bubble sizing, expressive bubble animations, and Android notification bubbles.
+  - Configurable automatic link and media previews, including Wi-Fi-only and web-link-only options.
 
 ---
 
 ## [v1.0] - 2026-11-08
-- Initial release with complete SMS/MMS telephony stack, Material 3 Glassmorphism theme, delivery reports, read receipts, custom chat wallpapers, and zero-permission media attachments.
+- Initial release with the SMS/MMS telephony stack, dual-SIM support, delivery reports and read receipts, scheduled messages, system ringtone selection, custom chat wallpapers, Material 3 Glassmorphism themes, and local-only message handling.
+
+---
+
+## [v0.9 Beta] - 2026-11-05
+- Added automatic People, Services, and Unread categories.
+- Added configurable swipe actions and spam sender blocking.
+
+---
+
+## [v0.8 Alpha] - 2026-10-28
+- Established dual-SIM SMS/MMS sending and receiving, secure offline JSON backup and restore, and the original Glassmorphism interface with seven themes and custom wallpapers.

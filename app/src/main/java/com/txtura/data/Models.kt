@@ -39,7 +39,6 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
-import javax.net.ssl.HttpsURLConnection
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -436,6 +435,27 @@ data class ChatMessage(
     )
 )
 
+fun deduplicateMessageList(messages: List<ChatMessage>): List<ChatMessage> {
+    if (messages.size <= 1) return messages
+    val result = ArrayList<ChatMessage>(messages.size)
+    val seenIds = HashSet<Long>()
+    for (msg in messages) {
+        if (msg.id > 0L && !seenIds.add(msg.id)) {
+            continue
+        }
+        val isDuplicate = result.any { existing ->
+            existing.id == msg.id ||
+                (existing.isIncoming == msg.isIncoming &&
+                    existing.body == msg.body &&
+                    kotlin.math.abs(existing.timestampMillis - msg.timestampMillis) < 3000L)
+        }
+        if (!isDuplicate) {
+            result.add(msg)
+        }
+    }
+    return result
+}
+
 data class ConversationThread(
     val id: Long,
     val contactName: String,
@@ -447,7 +467,8 @@ data class ConversationThread(
     val unreadCount: Int = 0,
     val isPinned: Boolean = false,
     val isService: Boolean = false,
-    val draftText: String? = null
+    val draftText: String? = null,
+    val isHistoryLoaded: Boolean = true
 ) {
     val lastMessage: ChatMessage? = messages.maxByOrNull(ChatMessage::timestampMillis)
 
@@ -1278,9 +1299,8 @@ object AppUpdateManager {
     }
 
     /**
-     * Safely fetches text from a URL using AppSecurityManager (with SSL Pinning when active),
-     * and seamlessly falls back to standard Android system TLS CA validation if GitHub rotated
-     * intermediate certificates or CDN endpoints.
+     * Fetches updater metadata only through the HTTPS connection policy. Any pin or TLS failure
+     * is surfaced as a failed fetch; it is never retried through a separate connection path.
      */
     private fun fetchJsonFromUrl(context: Context, urlString: String): String? {
         val url = try {
@@ -1289,8 +1309,7 @@ object AppUpdateManager {
             return null
         }
 
-        // 1. First attempt: connection with AppSecurityManager (applies SSL pinning if enabled)
-        try {
+        return try {
             val conn = AppSecurityManager.openSecureConnection(url, context)
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/vnd.github+json")
@@ -1298,26 +1317,7 @@ object AppUpdateManager {
             conn.connectTimeout = 12000
             conn.readTimeout = 12000
             try {
-                if (conn.responseCode == 200) {
-                    return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                }
-            } finally {
-                conn.disconnect()
-            }
-        } catch (e: Exception) {
-            Log.w("TxturaUpdate", "Secure connection failed for $urlString: ${e.message}, trying system TLS fallback")
-        }
-
-        // 2. Fallback: standard system TLS with Android trusted CA verification
-        return try {
-            val conn = url.openConnection() as? HttpsURLConnection ?: return null
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("Accept", "application/vnd.github+json")
-            conn.setRequestProperty("User-Agent", "Txtura-Android-Updater")
-            conn.connectTimeout = 12000
-            conn.readTimeout = 12000
-            try {
-                if (conn.responseCode == 200) {
+                if (conn.responseCode == HttpURLConnection.HTTP_OK) {
                     conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                 } else {
                     null
@@ -1326,7 +1326,7 @@ object AppUpdateManager {
                 conn.disconnect()
             }
         } catch (e: Exception) {
-            Log.e("TxturaUpdate", "System TLS fallback failed for $urlString: ${e.message}")
+            Log.w("TxturaUpdate", "Secure connection failed for $urlString: ${e.message}")
             null
         }
     }
@@ -1455,11 +1455,7 @@ object AppUpdateManager {
 
             while (redirects < 6) {
                 val u = URL(currentUrl)
-                val candidate = try {
-                    AppSecurityManager.openSecureConnection(u, context)
-                } catch (_: Exception) {
-                    u.openConnection() as HttpURLConnection
-                }
+                val candidate = AppSecurityManager.openSecureConnection(u, context)
                 candidate.instanceFollowRedirects = false
                 candidate.setRequestProperty("User-Agent", "Txtura-Android-Updater")
                 candidate.connectTimeout = 15000

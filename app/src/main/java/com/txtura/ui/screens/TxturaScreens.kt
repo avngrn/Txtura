@@ -3,6 +3,7 @@
 package com.txtura.ui.screens
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -11,41 +12,26 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
-import android.net.Uri
-import android.provider.ContactsContract
-import android.os.Build
-import java.io.File
-import android.view.WindowManager
-import android.widget.Toast
-import androidx.compose.ui.draw.alpha
-import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
-import androidx.core.view.ViewCompat
 import android.graphics.ImageDecoder
 import android.graphics.drawable.AnimatedImageDrawable
+import android.net.Uri
+import android.os.Build
+import android.provider.ContactsContract
+import android.view.WindowManager
 import android.widget.ImageView
-import androidx.compose.ui.viewinterop.AndroidView
-import com.txtura.data.DockBarItem
-import com.txtura.security.DynamicPermissionManager
-import com.txtura.telephony.CalendarEventManager
-import com.txtura.telephony.DocumentAttachmentHelper
-import com.txtura.telephony.MmsImageCompressor
-import com.txtura.telephony.VoiceMessageManager
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.net.toUri
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
@@ -53,8 +39,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -90,10 +74,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -127,9 +111,9 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -140,12 +124,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -160,8 +146,6 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -176,7 +160,6 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -190,7 +173,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.core.net.toUri
+import androidx.core.view.ViewCompat
 import com.txtura.R
 import com.txtura.data.AppUpdateCheckResult
 import com.txtura.data.AppUpdateManager
@@ -202,6 +190,7 @@ import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedConversationEntry
 import com.txtura.data.DeletedGroupingMode
 import com.txtura.data.DeliveryStatus
+import com.txtura.data.DockBarItem
 import com.txtura.data.GitHubReleaseInfo
 import com.txtura.data.MainListLayoutMode
 import com.txtura.data.MessageType
@@ -214,16 +203,21 @@ import com.txtura.data.SimCardMessage
 import com.txtura.data.SmsMmsRepository
 import com.txtura.data.SmsNotificationSound
 import com.txtura.data.SwipeAction
-import com.txtura.telephony.EmergencyAlert
-import com.txtura.telephony.EmergencyAlertManager
-import com.txtura.telephony.EmergencySeverity
 import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
 import com.txtura.data.WallpaperTexture
+import com.txtura.data.deduplicateMessageList
 import com.txtura.security.AppSecurityManager
+import com.txtura.security.DynamicPermissionManager
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.security.SecurityRiskLevel
+import com.txtura.telephony.CalendarEventManager
+import com.txtura.telephony.DocumentAttachmentHelper
+import com.txtura.telephony.EmergencyAlertManager
+import com.txtura.telephony.EmergencySeverity
+import com.txtura.telephony.MmsImageCompressor
+import com.txtura.telephony.VoiceMessageManager
 import com.txtura.ui.components.GlassAlertDialog
 import com.txtura.ui.components.GlassBackground
 import com.txtura.ui.components.GlassCard
@@ -247,7 +241,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -375,6 +369,7 @@ private fun rememberTxturaLightLogoColorFilter(
 @Composable
 fun ConversationsListScreen(
     threads: List<ConversationThread>,
+    isInitialLoading: Boolean = false,
     deletedCount: Int = 0,
     autoDeleteDays: Int = 30,
     showContactPhotos: Boolean = true,
@@ -407,6 +402,14 @@ fun ConversationsListScreen(
     val metrics = LocalAdaptiveMetrics.current
     val view = LocalView.current
     var searchQuery by remember { mutableStateOf(value = "") }
+    var fullHistoryLoadedForSearch by remember { mutableStateOf(false) }
+    LaunchedEffect(searchQuery.isNotBlank()) {
+        if (searchQuery.isNotBlank() && !fullHistoryLoadedForSearch) {
+            SmsMmsRepository.awaitInitialization()
+            SmsMmsRepository.loadAllCachedThreadHistories(context)
+            fullHistoryLoadedForSearch = true
+        }
+    }
     val activeCategories = remember(categoryOrder) {
         categoryOrder.ifEmpty { ConversationFilter.defaultOrder }
     }
@@ -584,7 +587,7 @@ fun ConversationsListScreen(
         ) {
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Top Header: Centered "Txtura" branding
+            // Top Header: Centered "Txtura" branding (with bear icon for Burgundy Anita & Mono Burgundy themes)
             val isWhiteBackground = !palette.isDark ||
                 (!mainWallpaper.isCustomGalleryImage && (mainWallpaper.preset == WallpaperPreset.ALL_WHITE))
             val logoColorFilter = rememberTxturaLightLogoColorFilter(
@@ -592,23 +595,45 @@ fun ConversationsListScreen(
                 wallpaperConfig = mainWallpaper,
                 isWhiteBackground = isWhiteBackground
             )
+            val isBurgundyTheme = !mainWallpaper.isCustomGalleryImage &&
+                (mainWallpaper.preset == WallpaperPreset.MONO_BURGUNDY || mainWallpaper.preset == WallpaperPreset.BURGUNDY_ANITA)
+            val bearResId = if (palette.isDark) R.drawable.bear_w else R.drawable.bear_b
+
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(44.dp)
             ) {
-                Image(
-                    painter = painterResource(
-                        id = if (isWhiteBackground) R.drawable.txtw else R.drawable.txt
-                    ),
-                    contentDescription = "Txtura",
-                    contentScale = ContentScale.Fit,
-                    colorFilter = logoColorFilter,
-                    modifier = Modifier
-                        .height(34.dp)
-                        .offset(y = (-3).dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Image(
+                        painter = painterResource(
+                            id = if (isWhiteBackground) R.drawable.txtw else R.drawable.txt
+                        ),
+                        contentDescription = "Txtura",
+                        contentScale = ContentScale.Fit,
+                        colorFilter = logoColorFilter,
+                        modifier = Modifier
+                            .height(34.dp)
+                            .offset(y = (-3).dp)
+                    )
+
+                    if (isBurgundyTheme) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Image(
+                            painter = painterResource(id = bearResId),
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            colorFilter = logoColorFilter,
+                            modifier = Modifier
+                                .height(32.dp)
+                                .offset(y = (-3).dp)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -664,12 +689,15 @@ fun ConversationsListScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            val totalUnreadCount = remember(threads) { threads.sumOf { it.unreadCount } }
+
             // Single-line swipeable horizontal category bar.
             // Holding a category chip and dragging it left or right reorders categories live!
             DraggableCategoryBar(
                 categories = activeCategories,
                 selectedFilter = selectedFilter,
                 strings = strings,
+                totalUnreadCount = totalUnreadCount,
                 onSelectFilter = { selectedFilter = it },
                 onUpdateCategoryOrder = onUpdateCategoryOrder
             )
@@ -688,7 +716,7 @@ fun ConversationsListScreen(
                 onTogglePin(threadId)
                 if (!wasPinned) {
                     coroutineScope.launch {
-                        kotlinx.coroutines.delay(60)
+                        delay(60.milliseconds)
                         listState.animateScrollToItem(0)
                     }
                 }
@@ -704,6 +732,22 @@ fun ConversationsListScreen(
                     contentPadding = PaddingValues(bottom = (8 * metrics.scaleFactor).dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
+                    if (filteredThreads.isEmpty() && isInitialLoading) {
+                        item(key = "initial_message_loading", contentType = "initial_message_loading") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(144.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(28.dp),
+                                    color = palette.accentPrimary,
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                        }
+                    }
                     items(
                         items = filteredThreads,
                         key = { it.id },
@@ -944,7 +988,7 @@ internal fun HomeBottomDockBar(
     onMarkAllRead: () -> Unit,
     onOpenSettings: () -> Unit,
     activeItem: DockBarItem? = null,
-    modifier: Modifier = Modifier
+    @SuppressLint("ModifierParameter") modifier: Modifier = Modifier
 ) {
     val palette = LocalGlassPalette.current
     val metrics = LocalAdaptiveMetrics.current
@@ -1562,6 +1606,7 @@ private fun DraggableCategoryBar(
     categories: List<ConversationFilter>,
     selectedFilter: ConversationFilter,
     strings: AppStrings,
+    totalUnreadCount: Int = 0,
     onSelectFilter: (ConversationFilter) -> Unit,
     onUpdateCategoryOrder: (List<ConversationFilter>) -> Unit
 ) {
@@ -1591,10 +1636,10 @@ private fun DraggableCategoryBar(
             key(filter) {
                 val selected = filter == selectedFilter
                 val isDragged = filter == draggedFilter
-                val label = filterLabel(filter, strings)
+                val label = filterLabel(filter, strings, totalUnreadCount)
 
                 val itemWeight = when (filter) {
-                    ConversationFilter.UNREAD -> 1.32f
+                    ConversationFilter.UNREAD -> if (totalUnreadCount > 0) 1.55f else 1.32f
                     ConversationFilter.ALL -> 0.68f
                     else -> 1.0f
                 }
@@ -1685,7 +1730,7 @@ private fun DraggableCategoryBar(
                         Text(
                             text = label,
                             style = MaterialTheme.typography.labelMedium.copy(
-                                fontSize = if (label.length >= 10) 11.sp else 12.sp
+                                fontSize = if (label.length >= 13) 10.5.sp else if (label.length >= 10) 11.sp else 12.sp
                             ),
                             color = when {
                                 isDragged -> palette.safeColor
@@ -1706,11 +1751,17 @@ private fun DraggableCategoryBar(
     }
 }
 
-fun filterLabel(filter: ConversationFilter, strings: AppStrings): String {
+fun filterLabel(filter: ConversationFilter, strings: AppStrings, unreadCount: Int = 0): String {
     return when (filter) {
         ConversationFilter.PEOPLE -> strings.filterPeople
         ConversationFilter.SERVICES -> strings.filterServices
-        ConversationFilter.UNREAD -> strings.filterUnread
+        ConversationFilter.UNREAD -> {
+            if (unreadCount > 0) {
+                "${strings.filterUnread} ($unreadCount)"
+            } else {
+                strings.filterUnread
+            }
+        }
         ConversationFilter.ALL -> strings.filterAll
     }
 }
@@ -1817,10 +1868,10 @@ fun SettingsScreen(
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
             val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val vName = pkgInfo.versionName ?: "3.2"
+            val vName = pkgInfo.versionName ?: "3.3.1"
             val vCode = pkgInfo.longVersionCode
             vName to vCode
-        }.getOrDefault("3.2" to 10L)
+        }.getOrDefault("3.3.1" to 12L)
     }
 
     val coroutineScope = rememberCoroutineScope()
@@ -1861,7 +1912,7 @@ fun SettingsScreen(
 
     LaunchedEffect(targetSecurityHighlight) {
         if (targetSecurityHighlight != null) {
-            delay(4000)
+            delay(4000.milliseconds)
             targetSecurityHighlight = null
         }
     }
@@ -2095,7 +2146,9 @@ fun SettingsScreen(
                             fontSize = 10.sp,
                             color = palette.textSecondary,
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp),
                         )
 
                         Text(
@@ -2103,7 +2156,8 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 10.sp,
                             color = palette.textSecondary.copy(alpha = 0.72f),
-                            textAlign = TextAlign.Center
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 } else {
@@ -3035,7 +3089,7 @@ fun SettingsScreen(
                                 LaunchedEffect(focusUpdateSection) {
                                     if (focusUpdateSection) {
                                         cachedReleaseInfo = AppUpdateManager.getCachedReleaseInfo(context, appVersionName)
-                                        delay(180)
+                                        delay(180.milliseconds)
                                         windowScrollState.animateScrollTo(windowScrollState.maxValue)
                                         onUpdateSectionFocused()
                                     }
@@ -3319,12 +3373,42 @@ fun SettingsScreen(
                                 var metadataMinimizationEnabled by remember {
                                     mutableStateOf(AppSecurityManager.isMetadataMinimizationEnabled(context))
                                 }
-                                var rootStatus by remember {
-                                    mutableStateOf(AppSecurityManager.checkRootStatus(context))
+                                var spamFirewallEnabled by remember {
+                                    mutableStateOf(AppSecurityManager.isSpamFirewallEnabled(context))
                                 }
-                                var isScanningRoot by remember { mutableStateOf(false) }
+                                var rootDetectionEnabled by remember {
+                                    mutableStateOf(AppSecurityManager.isRootDetectionEnabled(context))
+                                }
+                                var rootStatus by remember {
+                                    mutableStateOf(AppSecurityManager.RootCheckResult(false, false, false, false))
+                                }
+                                var isScanningRoot by remember { mutableStateOf(rootDetectionEnabled) }
                                 val coroutineScope = rememberCoroutineScope()
                                 val isDeviceSecure = remember(context) { AppSecurityManager.isDeviceLockConfigured(context) }
+
+                                LaunchedEffect(context, rootDetectionEnabled) {
+                                    if (rootDetectionEnabled) {
+                                        isScanningRoot = true
+                                        rootStatus = withContext(Dispatchers.IO) {
+                                            AppSecurityManager.checkRootStatus(context)
+                                        }
+                                        isScanningRoot = false
+                                    } else {
+                                        rootStatus = AppSecurityManager.RootCheckResult(false, false, false, false)
+                                        isScanningRoot = false
+                                    }
+                                }
+                                val rootStatusColor = when {
+                                    !rootDetectionEnabled || isScanningRoot -> palette.textSecondary
+                                    rootStatus.isRooted -> palette.cautionColor
+                                    else -> palette.safeColor
+                                }
+                                val rootStatusLabel = when {
+                                    !rootDetectionEnabled -> strings.securityStatusDisabled
+                                    isScanningRoot -> strings.rootScanInProgress
+                                    rootStatus.isRooted -> strings.rootStateCompromised
+                                    else -> strings.rootStateSafe
+                                }
 
                                 // 1. Blokirani pošiljaoci (Blocked Senders)
                                 GlassCard(
@@ -3377,6 +3461,16 @@ fun SettingsScreen(
                                             }
                                         }
 
+                                        SettingsSwitchRow(
+                                            title = strings.spamFirewallTitle,
+                                            subtitle = strings.spamFirewallSub,
+                                            checked = spamFirewallEnabled,
+                                            onCheckedChange = { enabled ->
+                                                spamFirewallEnabled = enabled
+                                                AppSecurityManager.setSpamFirewallEnabled(context, enabled)
+                                            }
+                                        )
+
                                         if (blockedSenders.isEmpty()) {
                                             Text(
                                                 text = strings.blockedSendersEmpty,
@@ -3425,7 +3519,7 @@ fun SettingsScreen(
                                     }
                                 }
 
-                                // 2. Biometrijska zaštita i PIN/Passphrase (Biometric Protection & PIN/Passphrase)
+                                // 2. Biometrijska zaštita i PIN (Biometric Protection & PIN)
                                 GlassCard(
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(18.dp),
@@ -3572,10 +3666,10 @@ fun SettingsScreen(
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(50))
-                                                .background(if (dbEncryptionEnabled) palette.safeColor.copy(alpha = 0.15f) else palette.textSecondary.copy(alpha = 0.15f))
+                                                .background(palette.safeColor.copy(alpha = 0.15f))
                                                 .border(
                                                     0.8.dp,
-                                                    if (dbEncryptionEnabled) palette.safeColor.copy(alpha = 0.45f) else palette.textSecondary.copy(alpha = 0.35f),
+                                                    palette.safeColor.copy(alpha = 0.45f),
                                                     RoundedCornerShape(50)
                                                 )
                                                 .padding(horizontal = 10.dp, vertical = 4.dp)
@@ -3588,12 +3682,12 @@ fun SettingsScreen(
                                                     modifier = Modifier
                                                         .size(6.dp)
                                                         .clip(CircleShape)
-                                                        .background(if (dbEncryptionEnabled) palette.safeColor else palette.textSecondary)
+                                                        .background(palette.safeColor)
                                                 )
                                                 Text(
-                                                    text = strings.dbEncryptionBadge,
+                                                    text = strings.dbEncryptionBadge(dbEncryptionEnabled),
                                                     style = MaterialTheme.typography.labelSmall,
-                                                    color = if (dbEncryptionEnabled) palette.safeColor else palette.textSecondary,
+                                                    color = palette.safeColor,
                                                     fontWeight = FontWeight.SemiBold
                                                 )
                                             }
@@ -3787,9 +3881,9 @@ fun SettingsScreen(
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Icon(
-                                                imageVector = if (!rootStatus.isRooted) TxturaIcons.ShieldCheck else TxturaIcons.Warning,
+                                                imageVector = if (rootDetectionEnabled && rootStatus.isRooted) TxturaIcons.Warning else TxturaIcons.ShieldCheck,
                                                 contentDescription = null,
-                                                tint = if (!rootStatus.isRooted) palette.safeColor else palette.cautionColor,
+                                                tint = rootStatusColor,
                                                 modifier = Modifier.size(20.dp)
                                             )
                                             Spacer(modifier = Modifier.width(10.dp))
@@ -3805,10 +3899,10 @@ fun SettingsScreen(
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(50))
-                                                .background(if (!rootStatus.isRooted) palette.safeColor.copy(alpha = 0.15f) else palette.cautionColor.copy(alpha = 0.15f))
+                                                .background(rootStatusColor.copy(alpha = 0.15f))
                                                 .border(
                                                     0.8.dp,
-                                                    if (!rootStatus.isRooted) palette.safeColor.copy(alpha = 0.45f) else palette.cautionColor.copy(alpha = 0.45f),
+                                                    rootStatusColor.copy(alpha = 0.45f),
                                                     RoundedCornerShape(50)
                                                 )
                                                 .padding(horizontal = 10.dp, vertical = 4.dp)
@@ -3821,12 +3915,12 @@ fun SettingsScreen(
                                                     modifier = Modifier
                                                         .size(6.dp)
                                                         .clip(CircleShape)
-                                                        .background(if (!rootStatus.isRooted) palette.safeColor else palette.cautionColor)
+                                                        .background(rootStatusColor)
                                                 )
                                                 Text(
-                                                    text = if (!rootStatus.isRooted) strings.rootStateSafe else strings.rootStateCompromised,
+                                                    text = rootStatusLabel,
                                                     style = MaterialTheme.typography.labelSmall,
-                                                    color = if (!rootStatus.isRooted) palette.safeColor else palette.cautionColor,
+                                                    color = rootStatusColor,
                                                     fontWeight = FontWeight.SemiBold
                                                 )
                                             }
@@ -3838,6 +3932,18 @@ fun SettingsScreen(
                                             color = palette.textSecondary
                                         )
 
+                                        SettingsSwitchRow(
+                                            title = strings.rootDetectionSwitchLabel,
+                                            subtitle = strings.rootDetectionSwitchSub,
+                                            checked = rootDetectionEnabled,
+                                            onCheckedChange = { enabled ->
+                                                rootDetectionEnabled = enabled
+                                                isScanningRoot = enabled
+                                                AppSecurityManager.setRootDetectionEnabled(context, enabled)
+                                            }
+                                        )
+
+                                        if (rootDetectionEnabled) {
                                         Column(
                                             verticalArrangement = Arrangement.spacedBy(6.dp),
                                             modifier = Modifier
@@ -3899,8 +4005,10 @@ fun SettingsScreen(
                                                 if (!isScanningRoot) {
                                                     isScanningRoot = true
                                                     coroutineScope.launch {
-                                                        delay(350)
-                                                        rootStatus = AppSecurityManager.checkRootStatus(context)
+                                                        delay(350.milliseconds)
+                                                        rootStatus = withContext(Dispatchers.IO) {
+                                                            AppSecurityManager.checkRootStatus(context)
+                                                        }
                                                         isScanningRoot = false
                                                     }
                                                 }
@@ -3925,6 +4033,7 @@ fun SettingsScreen(
                                                     fontWeight = FontWeight.Bold
                                                 )
                                             }
+                                        }
                                         }
                                     }
                                 }
@@ -5478,24 +5587,33 @@ private fun SecurityMeasuresDialog(
     val strings = TxturaStrings.current()
     val scrollState = rememberScrollState()
 
-    val isPhishingActive = identifyMaliciousWebsites
-    val isIntentSanitizerActive = remember(context) { AppSecurityManager.isIntentSanitizerEnabled(context) }
-    val isPhotoPickerActive = remember(context) { AppSecurityManager.isZeroPermPhotoPickerEnabled(context) }
-    val isSensitiveClipboardActive = remember(context) { AppSecurityManager.isSensitiveClipboardCopyEnabled(context) }
-    val isProtectedReceiversActive = remember(context) { AppSecurityManager.isProtectedReceiversEnabled(context) }
+    // These rows summarize app/platform configuration, not a live self-test.
+    val isIntentSanitizerActive = true
+    val isPhotoPickerActive = true
+    val isSensitiveClipboardActive = true
+    val isProtectedReceiversActive = true
     val isDbEncryptionActive = remember(context) { AppSecurityManager.isDbEncryptionEnabled(context) }
     val isBiometricLockActive = remember(context) { AppSecurityManager.isBiometricLockEnabled(context) }
     val isSslPinningActive = remember(context) { AppSecurityManager.isSslPinningEnabled(context) }
     val isMetadataMinimizationActive = remember(context) { AppSecurityManager.isMetadataMinimizationEnabled(context) }
-    val rootStatus = remember(context) { AppSecurityManager.checkRootStatus(context) }
     val isRootMonitoringEnabled = remember(context) { AppSecurityManager.isRootDetectionEnabled(context) }
-    val isRootSafe = isRootMonitoringEnabled && !rootStatus.isRooted
+    var rootStatus by remember(context, isRootMonitoringEnabled) {
+        mutableStateOf<AppSecurityManager.RootCheckResult?>(null)
+    }
+    LaunchedEffect(context, isRootMonitoringEnabled) {
+        rootStatus = withContext(Dispatchers.IO) {
+            AppSecurityManager.checkRootStatus(context)
+        }
+    }
+    val isRootSafe = isRootMonitoringEnabled && rootStatus?.isRooted == false
     val rootStatusText = when {
         !isRootMonitoringEnabled -> strings.securityStatusDisabled
-        rootStatus.isRooted -> strings.securityStatusCompromised
-        else -> strings.securityStatusActive
+        rootStatus == null -> strings.rootScanInProgress
+        rootStatus?.isRooted == true -> strings.securityStatusCompromised
+        else -> strings.rootStateSafe
     }
-    val isBackupEncryptionActive = remember(context) { AppSecurityManager.isBackupEncryptionEnabled(context) }
+    // BackupManager always encrypts exported backups with AES-256-GCM.
+    val isBackupEncryptionActive = true
     val isSpamFirewallActive = remember(context) { AppSecurityManager.isSpamFirewallEnabled(context) }
 
     GlassAlertDialog(
@@ -5524,10 +5642,16 @@ private fun SecurityMeasuresDialog(
                     .fillMaxWidth()
                     .verticalScroll(scrollState)
             ) {
+                Text(
+                    text = strings.securitySummaryDisclaimer,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.textSecondary,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
                 SecurityItemRow(
                     title = strings.secItem1Title,
                     subtitle = strings.secItem1Sub,
-                    isActive = isPhishingActive,
+                    isActive = identifyMaliciousWebsites,
                     onClick = {
                         onDismiss()
                         onNavigateToSetting(SettingsCategoryWindow.CHAT_AND_GESTURES, "identify_malicious_websites")
@@ -5537,37 +5661,29 @@ private fun SecurityMeasuresDialog(
                     title = strings.secItem2Title,
                     subtitle = strings.secItem2Sub,
                     isActive = isIntentSanitizerActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "intent_sanitizer")
-                    }
+                    isConfigurable = false,
+                    onClick = {}
                 )
                 SecurityItemRow(
                     title = strings.secItem3Title,
                     subtitle = strings.secItem3Sub,
                     isActive = isPhotoPickerActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.MESSAGING_AND_NETWORK, "photo_picker")
-                    }
+                    isConfigurable = false,
+                    onClick = {}
                 )
                 SecurityItemRow(
                     title = strings.secItem4Title,
                     subtitle = strings.secItem4Sub,
                     isActive = isSensitiveClipboardActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "sensitive_clipboard")
-                    }
+                    isConfigurable = false,
+                    onClick = {}
                 )
                 SecurityItemRow(
                     title = strings.secItem5Title,
                     subtitle = strings.secItem5Sub,
                     isActive = isProtectedReceiversActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.PRIVACY_AND_SECURITY, "protected_receivers")
-                    }
+                    isConfigurable = false,
+                    onClick = {}
                 )
                 SecurityItemRow(
                     title = strings.secItem6Title,
@@ -5619,10 +5735,8 @@ private fun SecurityMeasuresDialog(
                     title = strings.secItem11Title,
                     subtitle = strings.secItem11Sub,
                     isActive = isBackupEncryptionActive,
-                    onClick = {
-                        onDismiss()
-                        onNavigateToSetting(SettingsCategoryWindow.DATA_AND_STORAGE, "backup_encryption")
-                    }
+                    isConfigurable = false,
+                    onClick = {}
                 )
                 SecurityItemRow(
                     title = strings.secItem12Title,
@@ -5756,9 +5870,11 @@ private fun AppChangelogDialog(
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
                     text = strings.changelogDialogTitle,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     color = palette.textPrimary,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         },
@@ -5827,9 +5943,37 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v3.2",
+                        versionName = "v3.3.1",
                         releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
                         isCurrent = true,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Optimizacija i stabilnost" else "Optimization & Stability",
+                                items = listOf(
+                                    if (strings.isSerbian) "Verzija 3.3.1 donosi poboljšanja performansi, stabilnosti i osvežen prikaz istorije izdanja" else "Version 3.3.1 brings performance and stability enhancements along with updated release history"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v3.3",
+                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        isCurrent = false,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Optimizacija i stabilnost" else "Optimization & Stability",
+                                items = listOf(
+                                    if (strings.isSerbian) "Verzija 3.3 donosi poboljšanja performansi, stabilnosti i osvežen prikaz istorije izdanja" else "Version 3.3 brings performance and stability enhancements along with updated release history"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v3.2",
+                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
                                 title = if (strings.isSerbian) "Performanse i bezbednost" else "Performance & Security",
@@ -5967,7 +6111,7 @@ private fun AppChangelogDialog(
                                 title = if (strings.isSerbian) "Privatnost i bezbednost" else "Privacy & Security",
                                 items = listOf(
                                     if (strings.isSerbian) "Šifrovanje lokalnog keša poruka: AES-256-GCM enkripcija sa nasumičnim ključem zaštićenim Android Keystore-om" else "Local message cache encryption: AES-256-GCM with a random data key protected by Android Keystore",
-                                    if (strings.isSerbian) "Biometrijska zaštita i PIN: Zaključavanje aplikacije otiskom prsta, prepoznavanjem lica ili uređajnim PIN-om uz podesiv tajmaut (Odmah, 1 min, 5 min) i namenski stakleni ekran zaključavanja" else "Biometric protection & PIN: Lock the entire app with fingerprint, face recognition or device PIN, with customizable lock timeout (Immediate, 1 min, 5 min) and dedicated glass lock screen",
+                                    if (strings.isSerbian) "Biometrijska zaštita i PIN: Zaključavanje aplikacije otiskom prsta ili uređajnim PIN-om uz podesiv tajmaut (Odmah, 1 min, 5 min) i namenski stakleni ekran zaključavanja" else "Biometric protection & PIN: Lock the entire app with fingerprint or device PIN, with customizable lock timeout (Immediate, 1 min, 5 min) and dedicated glass lock screen",
                                     if (strings.isSerbian) "HTTPS i TLS/SSL Pinning: Striktna upotreba šifrovanih veza uz SPKI sertifikat pinning za sprečavanje Man-in-the-Middle napada i automatsko blokiranje nešifrovanog HTTP saobraćaja" else "HTTPS & TLS/SSL Pinning: Strict encrypted connections with SPKI certificate pinning to prevent Man-in-the-Middle attacks, blocking plaintext HTTP",
                                     if (strings.isSerbian) "Minimizacija metapodataka: Automatsko uklanjanje EXIF GPS koordinata i detalja sa MMS slika, FLAG_SECURE zaštita od snimanja ekrana i cenzurisana obaveštenja na zaključanom ekranu" else "Metadata minimization: Automated EXIF GPS/camera data stripping from MMS photos, FLAG_SECURE screenshot prevention, and redacted lock-screen notifications",
                                     if (strings.isSerbian) "Detekcija Root stanja: Dubinsko skeniranje integriteta operativnog sistema (provera su binarnih fajlova, Magisk/KernelSU menadžera i test-keys potpisa)" else "Root state detection: Real-time system integrity scan checking su binaries, Magisk/KernelSU managers, and test-keys build tags",
@@ -6531,6 +6675,7 @@ private data class PendingDelayedMessage(
     val durationMillis: Long = 6_000L,
 )
 
+@SuppressLint("MutableCollectionMutableState")
 @Composable
 fun ConversationDetailScreen(
     thread: ConversationThread,
@@ -6800,22 +6945,37 @@ fun ConversationDetailScreen(
     }
     val coroutineScope = rememberCoroutineScope()
     val pinnedMessages = thread.pinnedMessages
-    var activePinnedIndex by remember(thread.id) { mutableStateOf(0) }
-    var prevPinnedCount by remember(thread.id) { mutableStateOf(pinnedMessages.size) }
+    var activePinnedIndex by remember(thread.id) { mutableIntStateOf(0) }
+    var prevPinnedCount by remember(thread.id) { mutableIntStateOf(pinnedMessages.size) }
+    var previousPinnedMessageIds by remember(thread.id) {
+        mutableStateOf(pinnedMessages.mapTo(mutableSetOf()) { it.id })
+    }
     var jumpedToMessageId by remember(thread.id) { mutableStateOf<Long?>(null) }
     var showPinnedMessagesManageDialog by remember(thread.id) { mutableStateOf(value = false) }
     var selectedPinnedIdsForUnpin by remember(thread.id) { mutableStateOf<Set<Long>>(emptySet()) }
     val currentZoom by rememberUpdatedState(bubbleZoomScale)
 
+    LaunchedEffect(pinnedMessages.map { it.id }) {
+        val currentPinnedIds = pinnedMessages.mapTo(mutableSetOf()) { it.id }
+        val unpinnedMessageStillInThread = previousPinnedMessageIds.any { messageId ->
+            messageId !in currentPinnedIds && thread.messages.any { it.id == messageId }
+        }
+        previousPinnedMessageIds = currentPinnedIds
+
+        if (unpinnedMessageStillInThread && thread.messages.isNotEmpty()) {
+            listState.scrollToItem(0)
+        }
+    }
+
     LaunchedEffect(pinnedMessages.size) {
-        if (pinnedMessages.isNotEmpty()) {
-            activePinnedIndex = if (pinnedMessages.size > prevPinnedCount) {
+        activePinnedIndex = if (pinnedMessages.isNotEmpty()) {
+            if (pinnedMessages.size > prevPinnedCount) {
                 pinnedMessages.lastIndex
             } else {
                 activePinnedIndex.coerceIn(0, pinnedMessages.lastIndex)
             }
         } else {
-            activePinnedIndex = 0
+            0
         }
         prevPinnedCount = pinnedMessages.size
     }
@@ -7486,29 +7646,6 @@ fun ConversationDetailScreen(
                             DropdownMenuItem(
                                 text = {
                                     Text(
-                                        text = strings.sendToOtherContactsOption,
-                                        color = palette.textPrimary
-                                    )
-                                },
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = TxturaIcons.Forward,
-                                        contentDescription = null,
-                                        tint = palette.accentPrimary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                onClick = {
-                                    TxturaHaptics.click(view, context)
-                                    showMoreMenu = false
-                                    showBroadcastDialog = true
-                                }
-                            )
-
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
                                         text = strings.viewContactDetails,
                                         color = palette.textPrimary
                                     )
@@ -7884,6 +8021,10 @@ fun ConversationDetailScreen(
                 }
             }
 
+            val displayMessages = remember(thread.messages) {
+                deduplicateMessageList(thread.messages)
+            }
+
             // Messages Thread with two-finger Pinch-to-Zoom and Long-Press Context Menu on each bubble
             LazyColumn(
                 state = listState,
@@ -7911,11 +8052,20 @@ fun ConversationDetailScreen(
                         }
                     }
             ) {
-                items(
-                    items = thread.messages,
-                    key = { it.id },
-                    contentType = { msg -> if (msg.attachment != null) "mms_bubble" else "sms_bubble" }
-                ) { msg ->
+                itemsIndexed(
+                    items = displayMessages,
+                    key = { _, msg -> msg.id },
+                    contentType = { _, msg -> if (msg.attachment != null) "mms_bubble" else "sms_bubble" }
+                ) { index, msg ->
+                    val showDateHeader = index == 0 || !isSameDay(displayMessages[index - 1].timestampMillis, msg.timestampMillis)
+                    if (showDateHeader) {
+                        ChatDateHeaderPill(
+                            timestampMillis = msg.timestampMillis,
+                            strings = strings,
+                            zoomScale = bubbleZoomScale
+                        )
+                    }
+
                     val isMsgSelected = selectedMessageIds.contains(msg.id)
                     MessageBubbleItem(
                         message = msg,
@@ -8375,8 +8525,8 @@ fun ConversationDetailScreen(
                                     label = "dot_alpha"
                                 )
 
-                                val elapsedMs = VoiceMessageManager.recordingDurationMillis.value
-                                val remSecs = VoiceMessageManager.recordingRemainingSeconds.value
+                                val elapsedMs = VoiceMessageManager.recordingDurationMillis.longValue
+                                val remSecs = VoiceMessageManager.recordingRemainingSeconds.longValue
                                 val remText = VoiceMessageManager.formatDuration(remSecs * 1000L)
                                 val elapsedText = VoiceMessageManager.formatDuration(elapsedMs)
 
@@ -8705,7 +8855,7 @@ fun ConversationDetailScreen(
                                                 SmsMmsRepository.playInAppMessageCancelledSound(context)
                                             }
                                             coroutineScope.launch {
-                                                kotlinx.coroutines.delay(100)
+                                                delay(100.milliseconds)
                                                 try {
                                                     inputFocusRequester.requestFocus()
                                                     keyboardController?.show()
@@ -8858,7 +9008,7 @@ fun ConversationDetailScreen(
                                                 }
                                                 TxturaHaptics.reject(view, context)
                                             } else {
-                                                val recDur = VoiceMessageManager.recordingDurationMillis.value
+                                                val recDur = VoiceMessageManager.recordingDurationMillis.longValue
                                                 val recFile = VoiceMessageManager.stopRecording()
                                                 if (recFile != null && recFile.exists() && recFile.length() > 200L && recDur >= 500L) {
                                                     TxturaHaptics.confirm(view, context)
@@ -9505,54 +9655,16 @@ private fun MessageBubbleItem(
         }
     }
 
-    val selectionColors = remember(isOutgoing, palette.accentPrimary) {
-        TextSelectionColors(
-            handleColor = palette.accentPrimary,
-            backgroundColor = if (isOutgoing) {
-                Color.White.copy(alpha = 0.35f)
-            } else {
-                palette.accentPrimary.copy(alpha = 0.35f)
-            }
-        )
-    }
-
-    val selectionState = rememberSelectionState()
-
-    var boxCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var textCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var isBubblePressed by remember { mutableStateOf(false) }
-
-    val isTouchOnText: (Offset) -> Boolean = { downPos ->
-        val bCoords = boxCoordinates
-        val tCoords = textCoordinates
-        if (bCoords != null && tCoords != null && bCoords.isAttached && tCoords.isAttached) {
-            val textBoundsInBox = bCoords.localBoundingBoxOf(tCoords, clipBounds = false)
-            textBoundsInBox.contains(downPos)
-        } else {
-            false
-        }
-    }
-
-    val targetScale = when {
-        isBubblePressed -> 0.96f
-        isSelected -> 1.025f
-        else -> 1.0f
-    }
+    val targetScale = if (isSelected) 1.025f else 1.0f
     val animatedBubbleScale by animateFloatAsState(
         targetValue = targetScale,
         animationSpec = if (expressiveAnimationsEnabled) {
-            TxturaMotion.pressSpec(isBubblePressed)
+            TxturaMotion.pressSpec(false)
         } else {
             tween(durationMillis = 80)
         },
         label = "message_bubble_scale"
     )
-
-    LaunchedEffect(isSelectionMode) {
-        if (isSelectionMode) {
-            selectionState.clear()
-        }
-    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -9572,57 +9684,44 @@ private fun MessageBubbleItem(
                     color = borderColor,
                     shape = bubbleShape
                 )
-                .onGloballyPositioned { boxCoordinates = it }
                 .pointerInput(isSelectionMode) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val downPos = down.position
-                        val onText = !isSelectionMode && isTouchOnText(downPos)
-                        if (onText) {
-                            // Touch is directly on text in normal mode:
-                            // Let SelectionContainer handle text selection & LinkAnnotation handle link clicks!
-                            return@awaitEachGesture
-                        }
 
-                        // Touch is on the bubble window / background
-                        isBubblePressed = true
-                        try {
-                            val longPress = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                                var pointer = down
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Main)
-                                    val current = event.changes.firstOrNull { it.id == pointer.id } ?: break
-                                    if (!current.pressed) {
-                                        current.consume()
-                                        return@withTimeoutOrNull false
-                                    }
-                                    if ((current.position - downPos).getDistance() > viewConfiguration.touchSlop) {
-                                        return@withTimeoutOrNull null
-                                    }
+                        val outcome = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val current = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!current.pressed) {
+                                    return@withTimeoutOrNull 1 // RELEASED
                                 }
-                                null
+                                if ((current.position - downPos).getDistance() > viewConfiguration.touchSlop) {
+                                    return@withTimeoutOrNull 2 // MOVED (scrolling)
+                                }
                             }
+                            1
+                        } ?: 3 // 3 = TIMED_OUT (real long press)
 
-                            if (longPress == null) {
-                                selectionState.clear()
+                        when (outcome) {
+                            3 -> {
                                 TxturaHaptics.longPress(view, context)
                                 currentOnLongPress()
                                 while (true) {
                                     val event = awaitPointerEvent(PointerEventPass.Main)
                                     val current = event.changes.firstOrNull { it.id == down.id } ?: break
-                                    current.consume()
                                     if (!current.pressed) break
                                 }
-                            } else if (longPress == false) {
+                            }
+                            1 -> {
                                 if (isSelectionMode) {
                                     TxturaHaptics.tick(view, context)
                                     currentOnClick()
-                                } else {
-                                    selectionState.clear()
                                 }
                             }
-                        } finally {
-                            isBubblePressed = false
+                            2 -> {
+                                // Finger moved > touchSlop (scrolling). Do nothing!
+                            }
                         }
                     }
                 }
@@ -9715,38 +9814,20 @@ private fun MessageBubbleItem(
                 ))
 
                 if (!isPendingMms && !isPureVoiceOrAttachment) {
-                    CompositionLocalProvider(LocalTextSelectionColors provides selectionColors) {
-                        if (isSelectionMode) {
-                            Text(
-                                text = annotatedMessageText,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontSize = (14f * s).sp,
-                                    lineHeight = (19f * s).sp
-                                ),
-                                color = if (isOutgoing) Color.White else palette.textPrimary
-                            )
-                        } else {
-                            SelectionContainer(state = selectionState) {
-                                Text(
-                                    text = annotatedMessageText,
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontSize = (14f * s).sp,
-                                        lineHeight = (19f * s).sp
-                                    ),
-                                    color = if (isOutgoing) Color.White else palette.textPrimary,
-                                    modifier = Modifier.onGloballyPositioned { textCoordinates = it }
-                                )
-                            }
-                        }
-                    }
+                    Text(
+                        text = annotatedMessageText,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = (14f * s).sp,
+                            lineHeight = (19f * s).sp
+                        ),
+                        color = if (isOutgoing) Color.White else palette.textPrimary
+                    )
                 }
 
                 // Automatic preview cards for web-links (Screenshot 3)
                 val isWifi = remember(context) { SmsMmsRepository.isWifiConnected(context) }
                 val canShowPreviews = remember(autoPreviewsShowAll, autoPreviewsWebLinksOnly, autoPreviewsWifiOnly, isWifi) {
-                    if (!autoPreviewsShowAll && !autoPreviewsWebLinksOnly) false
-                    else if (autoPreviewsWifiOnly && !isWifi) false
-                    else true
+                    !(!autoPreviewsShowAll && !autoPreviewsWebLinksOnly) && !(autoPreviewsWifiOnly && !isWifi)
                 }
                 if (canShowPreviews && safeLinks.isNotEmpty()) {
                     Spacer(modifier = Modifier.height((6f * s).dp))
@@ -10024,7 +10105,7 @@ private fun MessageBubbleItem(
                         )
                     }
                     Text(
-                        text = formatTimestamp(message.timestampMillis),
+                        text = formatMessageTimestamp(message.timestampMillis, strings.isSerbian),
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = (11f * s).sp
                         ),
@@ -10806,8 +10887,7 @@ private fun isGifUri(context: Context, uri: Uri): Boolean {
     val path = uri.path?.lowercase()
     if (path?.endsWith(".gif") == true) return true
     val uriStr = uri.toString().lowercase()
-    if (uriStr.endsWith(".gif") || uriStr.contains("image%2fgif") || uriStr.contains("image/gif")) return true
-    return runCatching {
+    return uriStr.endsWith(".gif") || uriStr.contains("image%2fgif") || uriStr.contains("image/gif") || runCatching {
         context.contentResolver.openInputStream(uri)?.use { stream ->
             val header = ByteArray(6)
             val read = stream.read(header)
@@ -10835,7 +10915,7 @@ private fun MmsImageThumbnail(
                 try {
                     val source = ImageDecoder.createSource(context.contentResolver, uri)
                     ImageDecoder.decodeDrawable(source).also { d ->
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && d is AnimatedImageDrawable) {
+                        if (d is AnimatedImageDrawable) {
                             d.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
                         }
                     }
@@ -12303,9 +12383,9 @@ fun DetectedEntityActionDialog(
                     onClick = {
                         try {
                             val intent = if (isPhone) {
-                                Intent(Intent.ACTION_DIAL, Uri.parse("tel:$value"))
+                                Intent(Intent.ACTION_DIAL, "tel:$value".toUri())
                             } else {
-                                Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$value"))
+                                Intent(Intent.ACTION_SENDTO, "mailto:$value".toUri())
                             }
                             context.startActivity(intent)
                         } catch (_: Exception) {
@@ -12435,13 +12515,28 @@ private fun SecurityItemRow(
     subtitle: String,
     isActive: Boolean,
     statusOverride: String? = null,
+    isConfigurable: Boolean = true,
     onClick: () -> Unit
 ) {
     val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
-    val itemColor = if (isActive) palette.safeColor else palette.cautionColor
-    val iconChar = if (isActive) "✓" else "✕"
-    val statusText = statusOverride ?: if (isActive) strings.securityStatusActive else strings.securityStatusDisabled
+    val isPending = statusOverride == strings.rootScanInProgress
+    val itemColor = when {
+        isPending -> palette.textSecondary
+        isActive -> palette.safeColor
+        else -> palette.cautionColor
+    }
+    val iconChar = when {
+        isPending -> "…"
+        isActive -> "✓"
+        else -> "✕"
+    }
+    val baseStatusText = statusOverride ?: if (isActive) strings.securityStatusEnabled else strings.securityStatusDisabled
+    val statusText = if (isConfigurable) {
+        "$baseStatusText • ${strings.securityStatusTapToConfigure}"
+    } else {
+        strings.securityStatusConfigured
+    }
 
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
@@ -12475,20 +12570,22 @@ private fun SecurityItemRow(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "$statusText • ${strings.securityStatusTapToConfigure}",
+                        text = statusText,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (isActive) palette.textSecondary else palette.cautionColor.copy(alpha = 0.85f),
+                        color = if (isActive || isPending) palette.textSecondary else palette.cautionColor.copy(alpha = 0.85f),
                         fontSize = 11.sp
                     )
                 }
             }
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "→",
-                style = MaterialTheme.typography.titleMedium,
-                color = itemColor,
-                fontWeight = FontWeight.Bold
-            )
+            if (isConfigurable) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "→",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = itemColor,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
@@ -12533,7 +12630,7 @@ private fun SwipeableConversationCard(
                             proposed < 0f && swipeLeftAction == SwipeAction.NONE -> proposed * 0.15f
                             else -> proposed.coerceIn(-maxDragPx, maxDragPx)
                         }
-                        val isTriggered = kotlin.math.abs(clamped) >= thresholdPx && activeAction != SwipeAction.NONE
+                        val isTriggered = abs(clamped) >= thresholdPx && activeAction != SwipeAction.NONE
                         if (isTriggered && !hasSnappedThreshold) {
                             hasSnappedThreshold = true
                             TxturaHaptics.swipeSnap(view, context)
@@ -13029,7 +13126,9 @@ fun DeletedMessagesScreen(
     onBack: () -> Unit,
     onSelectGroupingMode: (DeletedGroupingMode) -> Unit,
     onRestoreThread: (Long) -> Unit,
+    onRestoreMessages: (Long, Set<Long>) -> Unit = { _, _ -> },
     onPermanentlyDeleteThread: (Long) -> Unit,
+    onPermanentlyDeleteMessages: (Long, Set<Long>) -> Unit = { _, _ -> },
     onEmptyTrash: () -> Unit,
     highlightedCount: Int = 0,
     dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
@@ -13041,6 +13140,7 @@ fun DeletedMessagesScreen(
 ) {
     val strings = TxturaStrings.current()
     var pendingPermanentDeleteEntry by remember { mutableStateOf<DeletedConversationEntry?>(null) }
+    var inspectingEntry by remember { mutableStateOf<DeletedConversationEntry?>(null) }
 
     val groupedSections: List<Pair<String, List<DeletedConversationEntry>>> =
         remember(deletedEntries, groupingMode) {
@@ -13350,7 +13450,7 @@ fun DeletedMessagesScreen(
                                     Spacer(modifier = Modifier.height(10.dp))
 
                                     Row(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         GlassCard(
@@ -13359,8 +13459,46 @@ fun DeletedMessagesScreen(
                                                 .height(40.dp),
                                             shape = RoundedCornerShape(14.dp),
                                             elevated = true,
+                                            accentHighlight = palette.accentPrimary,
+                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                                            onClick = { inspectingEntry = entry }
+                                        ) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier.fillMaxSize()
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.Center
+                                                ) {
+                                                    Icon(
+                                                        imageVector = TxturaIcons.Search,
+                                                        contentDescription = null,
+                                                        tint = palette.accentPrimary,
+                                                        modifier = Modifier.size(15.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = strings.inspectTrashMessagesButton,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = palette.accentPrimary,
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        GlassCard(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(40.dp),
+                                            shape = RoundedCornerShape(14.dp),
+                                            elevated = true,
                                             accentHighlight = palette.safeColor,
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                                             onClick = { onRestoreThread(entry.thread.id) }
                                         ) {
                                             Box(
@@ -13377,7 +13515,7 @@ fun DeletedMessagesScreen(
                                                         tint = palette.safeColor,
                                                         modifier = Modifier.size(15.dp)
                                                     )
-                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
                                                     Text(
                                                         text = strings.restoreButton,
                                                         style = MaterialTheme.typography.labelSmall,
@@ -13397,7 +13535,7 @@ fun DeletedMessagesScreen(
                                                 .height(40.dp),
                                             shape = RoundedCornerShape(14.dp),
                                             accentHighlight = palette.dangerColor,
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                                             onClick = { pendingPermanentDeleteEntry = entry }
                                         ) {
                                             Box(
@@ -13414,7 +13552,7 @@ fun DeletedMessagesScreen(
                                                         tint = palette.dangerColor,
                                                         modifier = Modifier.size(15.dp)
                                                     )
-                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
                                                     Text(
                                                         text = strings.deletePermanentlyButton,
                                                         style = MaterialTheme.typography.labelSmall,
@@ -13479,7 +13617,306 @@ fun DeletedMessagesScreen(
                 }
             )
         }
+
+        val activeInspectEntry = inspectingEntry
+        if (activeInspectEntry != null) {
+            val currentEntryInTrash = deletedEntries.find { it.thread.id == activeInspectEntry.thread.id }
+            if (currentEntryInTrash != null) {
+                InspectTrashConversationDialog(
+                    entry = currentEntryInTrash,
+                    retentionDays = retentionDays,
+                    onDismiss = { inspectingEntry = null },
+                    onRestoreMessages = onRestoreMessages,
+                    onPermanentlyDeleteMessages = onPermanentlyDeleteMessages
+                )
+            } else {
+                inspectingEntry = null
+            }
+        }
     }
+}
+
+@Composable
+private fun InspectTrashConversationDialog(
+    entry: DeletedConversationEntry,
+    retentionDays: Int,
+    onDismiss: () -> Unit,
+    onRestoreMessages: (Long, Set<Long>) -> Unit,
+    onPermanentlyDeleteMessages: (Long, Set<Long>) -> Unit
+) {
+    val palette = LocalGlassPalette.current
+    val strings = TxturaStrings.current()
+    val allMessageIds = remember(entry.thread.messages) { entry.thread.messages.map { it.id }.toSet() }
+    var selectedMsgIds by remember(entry.thread.messages) { mutableStateOf(allMessageIds) }
+
+    GlassAlertDialog(
+        onDismissRequest = onDismiss,
+        accentBorderColor = palette.cautionColor,
+        title = {
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(palette.cautionColor.copy(alpha = 0.16f))
+                            .border(1.dp, palette.cautionColor.copy(alpha = 0.45f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = TxturaIcons.Delete,
+                            contentDescription = null,
+                            tint = palette.cautionColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = strings.inspectTrashDialogTitle(entry.thread.contactName),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${entry.thread.address} • ${strings.daysRemainingBadge(entry.daysRemaining(retentionDays))}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = strings.selectedCountLabel(selectedMsgIds.size),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.accentPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    GlassCard(
+                        shape = RoundedCornerShape(50),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        onClick = {
+                            selectedMsgIds = if (selectedMsgIds.size == allMessageIds.size) {
+                                emptySet()
+                            } else {
+                                allMessageIds
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = if (selectedMsgIds.size == allMessageIds.size) strings.deselectAllContactsLabel else strings.selectAllContactsLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.accentPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                val scrollState = rememberScrollState()
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(scrollState)
+                ) {
+                    entry.thread.messages.forEach { msg ->
+                        val isChecked = msg.id in selectedMsgIds
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            elevated = isChecked,
+                            accentHighlight = if (isChecked) palette.accentPrimary else null,
+                            contentPadding = PaddingValues(10.dp),
+                            onClick = {
+                                selectedMsgIds = if (isChecked) {
+                                    selectedMsgIds - msg.id
+                                } else {
+                                    selectedMsgIds + msg.id
+                                }
+                            }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = if (isChecked) TxturaIcons.Check else TxturaIcons.Close,
+                                    contentDescription = null,
+                                    tint = if (isChecked) palette.accentPrimary else palette.textSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = msg.body,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = palette.textPrimary,
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = formatTimestamp(msg.timestampMillis),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textSecondary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                GlassIconButton(
+                                    icon = TxturaIcons.Restore,
+                                    contentDescription = strings.restoreButton,
+                                    tint = palette.safeColor,
+                                    onClick = {
+                                        onRestoreMessages(entry.thread.id, setOf(msg.id))
+                                        if (entry.thread.messages.size <= 1) {
+                                            onDismiss()
+                                        }
+                                    },
+                                    size = 32.dp
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                GlassIconButton(
+                                    icon = TxturaIcons.Delete,
+                                    contentDescription = strings.deletePermanentlyButton,
+                                    tint = palette.dangerColor,
+                                    onClick = {
+                                        onPermanentlyDeleteMessages(entry.thread.id, setOf(msg.id))
+                                        if (entry.thread.messages.size <= 1) {
+                                            onDismiss()
+                                        }
+                                    },
+                                    size = 32.dp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                GlassCard(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(40.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    elevated = selectedMsgIds.isNotEmpty(),
+                    accentHighlight = palette.safeColor,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                    onClick = {
+                        if (selectedMsgIds.isNotEmpty()) {
+                            onRestoreMessages(entry.thread.id, selectedMsgIds)
+                            onDismiss()
+                        }
+                    }
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = TxturaIcons.Restore,
+                                contentDescription = null,
+                                tint = if (selectedMsgIds.isNotEmpty()) palette.safeColor else palette.textSecondary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = strings.restoreSelectedMessagesButton,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (selectedMsgIds.isNotEmpty()) palette.safeColor else palette.textSecondary,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                GlassCard(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(40.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    elevated = selectedMsgIds.isNotEmpty(),
+                    accentHighlight = palette.dangerColor,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                    onClick = {
+                        if (selectedMsgIds.isNotEmpty()) {
+                            onPermanentlyDeleteMessages(entry.thread.id, selectedMsgIds)
+                            onDismiss()
+                        }
+                    }
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = TxturaIcons.Delete,
+                                contentDescription = null,
+                                tint = if (selectedMsgIds.isNotEmpty()) palette.dangerColor else palette.textSecondary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = strings.deleteSelectedMessagesButton,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (selectedMsgIds.isNotEmpty()) palette.dangerColor else palette.textSecondary,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            GlassCard(
+                modifier = Modifier.height(40.dp),
+                shape = RoundedCornerShape(14.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                onClick = onDismiss
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Text(
+                        text = strings.cancel,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.textSecondary,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+    )
 }
 
 private val shortTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
@@ -13520,6 +13957,134 @@ private fun formatThreadTimestamp(millis: Long): Pair<String, String?> {
     } else {
         val dateStr = yearDateFormatter.get()?.format(Date(millis)).orEmpty()
         Pair(timeStr, dateStr)
+    }
+}
+
+private fun isSameDay(ms1: Long, ms2: Long): Boolean {
+    val cal1 = Calendar.getInstance().apply { timeInMillis = ms1 }
+    val cal2 = Calendar.getInstance().apply { timeInMillis = ms2 }
+    return cal1.get(Calendar.YEAR) == cal2.get(Calendar.YEAR) &&
+        cal1.get(Calendar.DAY_OF_YEAR) == cal2.get(Calendar.DAY_OF_YEAR)
+}
+
+private fun cyrillicToLatin(text: String): String {
+    val mapping = mapOf(
+        'а' to "a", 'б' to "b", 'в' to "v", 'г' to "g", 'д' to "d", 'ђ' to "đ",
+        'е' to "e", 'ж' to "ž", 'з' to "z", 'и' to "i", 'ј' to "j", 'к' to "k",
+        'л' to "l", 'љ' to "lj", 'м' to "m", 'н' to "n", 'њ' to "nj", 'о' to "o",
+        'п' to "p", 'р' to "r", 'с' to "s", 'т' to "t", 'ћ' to "ć", 'у' to "u",
+        'ф' to "f", 'х' to "h", 'ц' to "c", 'ч' to "č", 'џ' to "dž", 'š' to "š", 'ш' to "š",
+        'А' to "A", 'Б' to "B", 'В' to "V", 'Г' to "G", 'Д' to "D", 'Ђ' to "Đ",
+        'Е' to "E", 'Ж' to "Ž", 'З' to "Z", 'И' to "I", 'Ј' to "J", 'К' to "K",
+        'Л' to "L", 'Љ' to "Lj", 'М' to "M", 'Н' to "N", 'Њ' to "Nj", 'О' to "O",
+        'П' to "P", 'Р' to "R", 'С' to "S", 'Т' to "T", 'Ћ' to "Ć", 'У' to "U",
+        'Ф' to "F", 'Х' to "H", 'Ц' to "C", 'Ч' to "Č", 'Џ' to "Dž", 'Ш' to "Š"
+    )
+    val sb = StringBuilder(text.length)
+    for (ch in text) {
+        sb.append(mapping[ch] ?: ch.toString())
+    }
+    return sb.toString()
+}
+
+private fun formatChatDateHeader(timestampMillis: Long, isSerbian: Boolean): String {
+    val now = Calendar.getInstance()
+    val msgCal = Calendar.getInstance().apply { timeInMillis = timestampMillis }
+
+    val isSameYear = now.get(Calendar.YEAR) == msgCal.get(Calendar.YEAR)
+    val isToday = isSameYear && now.get(Calendar.DAY_OF_YEAR) == msgCal.get(Calendar.DAY_OF_YEAR)
+
+    val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+    val isYesterday = yesterday.get(Calendar.YEAR) == msgCal.get(Calendar.YEAR) &&
+        yesterday.get(Calendar.DAY_OF_YEAR) == msgCal.get(Calendar.DAY_OF_YEAR)
+
+    return when {
+        isToday -> if (isSerbian) "danas" else "today"
+        isYesterday -> if (isSerbian) "juče" else "yesterday"
+        else -> {
+            val locale = if (isSerbian) Locale.forLanguageTag("sr-Latn-RS") else Locale.getDefault()
+            val pattern = if (isSameYear) "EEEE, d. MMMM" else "EEEE, d. MMMM yyyy."
+            val sdf = SimpleDateFormat(pattern, locale)
+            val rawDate = sdf.format(Date(timestampMillis)).lowercase(locale)
+            if (isSerbian) cyrillicToLatin(rawDate) else rawDate
+        }
+    }
+}
+
+private fun formatMessageTimestamp(timestampMillis: Long, isSerbian: Boolean): String {
+    val now = System.currentTimeMillis()
+    val diffMs = now - timestampMillis
+
+    if (diffMs < 0) {
+        val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
+        return sdf.format(Date(timestampMillis))
+    }
+
+    val diffMinutes = diffMs / 60000L
+    val diffHours = diffMs / 3600000L
+
+    return when {
+        diffMinutes < 1 -> if (isSerbian) "Upravo sada" else "Just now"
+        diffMinutes < 60 -> {
+            val m = diffMinutes.toInt()
+            if (isSerbian) {
+                if (m == 1) "Pre 1 minut" else "Pre $m minuta"
+            } else {
+                if (m == 1) "1 min ago" else "$m mins ago"
+            }
+        }
+        diffHours < 6 -> {
+            val h = diffHours.toInt()
+            if (isSerbian) {
+                if (h == 1) "Pre 1 sat" else if (h in 2..4) "Pre $h sata" else "Pre $h sati"
+            } else {
+                if (h == 1) "1 hour ago" else "$h hours ago"
+            }
+        }
+        else -> {
+            val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
+            sdf.format(Date(timestampMillis))
+        }
+    }
+}
+
+@Composable
+private fun ChatDateHeaderPill(
+    timestampMillis: Long,
+    strings: AppStrings,
+    zoomScale: Float = 1.0f
+) {
+    val palette = LocalGlassPalette.current
+    val dateText = remember(timestampMillis, strings.isSerbian) {
+        formatChatDateHeader(timestampMillis, strings.isSerbian)
+    }
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = (6f * zoomScale).dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(palette.incomingBubbleSurface.copy(alpha = 0.55f))
+                .border(
+                    width = 0.5.dp,
+                    color = palette.glassBorderTop.copy(alpha = 0.35f),
+                    shape = RoundedCornerShape(50)
+                )
+                .padding(horizontal = (14f * zoomScale).dp, vertical = (4f * zoomScale).dp)
+        ) {
+            Text(
+                text = dateText,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = (11f * zoomScale).sp,
+                    fontWeight = FontWeight.Medium
+                ),
+                color = palette.textSecondary.copy(alpha = 0.9f)
+            )
+        }
     }
 }
 

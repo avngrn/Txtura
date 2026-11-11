@@ -1,13 +1,10 @@
 package com.txtura.telephony
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
 import com.txtura.data.MmsCreationMode
 import java.io.ByteArrayOutputStream
-import java.io.File
 
 /**
  * Parsed MMS Notification (`m-notification-ind`, 0x82) received via WAP Push.
@@ -36,7 +33,43 @@ data class MmsDownloadedMessage(
     val otherBytes: ByteArray? = null,
     val otherMimeType: String? = null,
     val otherFileName: String? = null,
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+
+        other as MmsDownloadedMessage
+
+        if (timestampMillis != other.timestampMillis) return false
+        if (senderAddress != other.senderAddress) return false
+        if (subject != other.subject) return false
+        if (bodyText != other.bodyText) return false
+        if (!imageBytes.contentEquals(other.imageBytes)) return false
+        if (imageMimeType != other.imageMimeType) return false
+        if (!audioBytes.contentEquals(other.audioBytes)) return false
+        if (audioMimeType != other.audioMimeType) return false
+        if (!otherBytes.contentEquals(other.otherBytes)) return false
+        if (otherMimeType != other.otherMimeType) return false
+        if (otherFileName != other.otherFileName) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = timestampMillis.hashCode()
+        result = 31 * result + senderAddress.hashCode()
+        result = 31 * result + subject.hashCode()
+        result = 31 * result + bodyText.hashCode()
+        result = 31 * result + (imageBytes?.contentHashCode() ?: 0)
+        result = 31 * result + imageMimeType.hashCode()
+        result = 31 * result + (audioBytes?.contentHashCode() ?: 0)
+        result = 31 * result + audioMimeType.hashCode()
+        result = 31 * result + (otherBytes?.contentHashCode() ?: 0)
+        result = 31 * result + otherMimeType.hashCode()
+        result = 31 * result + otherFileName.hashCode()
+        return result
+    }
+}
 
 /**
  * Robust on-device WAP MMS 1.2 / 1.3 (OMA MMS Encapsulation) PDU builder, parser, and media optimizer.
@@ -198,26 +231,26 @@ object MmsPduHelper {
 
         writeUintvar(out, parts.size.toLong())
 
-        for (part in parts) {
+        for ((contentType, contentLocation, contentId, data) in parts) {
             val headerStream = ByteArrayOutputStream()
 
-            headerStream.write(part.contentType.toByteArray(Charsets.US_ASCII))
+            headerStream.write(contentType.toByteArray(Charsets.US_ASCII))
             headerStream.write(0x00)
 
             headerStream.write(0x8E)
-            headerStream.write(part.contentLocation.toByteArray(Charsets.US_ASCII))
+            headerStream.write(contentLocation.toByteArray(Charsets.US_ASCII))
             headerStream.write(0x00)
 
             headerStream.write(0xC0)
-            headerStream.write(part.contentId.toByteArray(Charsets.US_ASCII))
+            headerStream.write(contentId.toByteArray(Charsets.US_ASCII))
             headerStream.write(0x00)
 
             val partHeaders = headerStream.toByteArray()
 
             writeUintvar(out, partHeaders.size.toLong())
-            writeUintvar(out, part.data.size.toLong())
+            writeUintvar(out, data.size.toLong())
             out.write(partHeaders)
-            out.write(part.data)
+            out.write(data)
         }
 
         return out.toByteArray()
@@ -458,20 +491,20 @@ object MmsPduHelper {
 
                         if (i < partHeaderEnd) {
                             val firstByte = bytes[i].toInt() and 0xFF
-                            when {
-                                firstByte == 0x83 -> {
+                            when (firstByte) {
+                                0x83 -> {
                                     partContentType = "text/plain"
                                     i++
                                 }
-                                firstByte == 0x9D -> {
+                                0x9D -> {
                                     partContentType = "image/jpeg"
                                     i++
                                 }
-                                firstByte == 0xA0 -> {
+                                0xA0 -> {
                                     partContentType = "image/png"
                                     i++
                                 }
-                                firstByte == 0x8C -> {
+                                0x8C -> {
                                     partContentType = "image/gif"
                                     i++
                                 }
@@ -760,13 +793,12 @@ object MmsPduHelper {
         if (start >= bytes.size) return StringResult("", start)
         val b = bytes[start].toInt() and 0xFF
         return if (b < 32) {
-            val len = b
             val strStart = (start + 2).coerceAtMost(bytes.size)
-            val strEnd = (start + 1 + len).coerceAtMost(bytes.size)
+            val strEnd = (start + 1 + b).coerceAtMost(bytes.size)
             val text = if (strStart < strEnd) {
                 String(bytes, strStart, strEnd - strStart, Charsets.UTF_8).trimEnd('\u0000')
             } else ""
-            StringResult(text, (start + 1 + len).coerceAtMost(bytes.size))
+            StringResult(text, (start + 1 + b).coerceAtMost(bytes.size))
         } else {
             readNullTerminatedString(bytes, start)
         }
@@ -795,5 +827,27 @@ object MmsPduHelper {
         val contentLocation: String,
         val contentId: String,
         val data: ByteArray,
-    )
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+
+            other as MmsPart
+
+            if (contentType != other.contentType) return false
+            if (contentLocation != other.contentLocation) return false
+            if (contentId != other.contentId) return false
+            if (!data.contentEquals(other.data)) return false
+
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = contentType.hashCode()
+            result = 31 * result + contentLocation.hashCode()
+            result = 31 * result + contentId.hashCode()
+            result = 31 * result + data.contentHashCode()
+            return result
+        }
+    }
 }

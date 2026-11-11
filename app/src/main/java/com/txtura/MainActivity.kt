@@ -4,6 +4,7 @@ package com.txtura
 
 import android.Manifest
 import android.app.KeyguardManager
+import android.app.NotificationManager
 import android.app.role.RoleManager
 import android.content.ClipData
 import android.content.ClipDescription
@@ -16,7 +17,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
-import android.app.NotificationManager
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.PersistableBundle
@@ -32,19 +32,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import com.txtura.ui.theme.TxturaMotion
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.unit.dp
-import com.txtura.ui.theme.LocalAdaptiveMetrics
-import com.txtura.ui.components.GlassBackground
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -58,25 +47,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
-import com.txtura.ui.theme.LocalGlassPalette
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.lifecycle.lifecycleScope
-import kotlin.time.Duration.Companion.minutes
-import kotlinx.coroutines.delay
 import com.txtura.data.AppSettingsSnapshot
 import com.txtura.data.AppUpdateManager
 import com.txtura.data.BackupManager
 import com.txtura.data.BackupRestorePayload
 import com.txtura.data.ContactPickerItem
 import com.txtura.data.ConversationFilter
-import com.txtura.data.DockBarItem
 import com.txtura.data.ConversationThread
 import com.txtura.data.DeletedGroupingMode
+import com.txtura.data.DockBarItem
 import com.txtura.data.MainListLayoutMode
 import com.txtura.data.SmsMmsRepository
 import com.txtura.data.SmsNotificationSound
 import com.txtura.data.SwipeAction
+import com.txtura.telephony.EmergencyAlertManager
 import com.txtura.data.UiColorMode
 import com.txtura.data.WallpaperConfig
 import com.txtura.data.WallpaperPreset
@@ -85,9 +72,9 @@ import com.txtura.security.AppSecurityManager
 import com.txtura.security.DeviceKeyMismatchException
 import com.txtura.security.MessageSecurityAnalyzer
 import com.txtura.security.SecurityCryptoManager
-import com.txtura.telephony.EmergencyAlertManager
 import com.txtura.telephony.FlashNotificationManager
 import com.txtura.telephony.MmsImageCompressor
+import com.txtura.ui.components.GlassBackground
 import com.txtura.ui.i18n.TxturaStrings
 import com.txtura.ui.screens.AppLockScreen
 import com.txtura.ui.screens.ConfirmMoveToTrashDialog
@@ -98,21 +85,23 @@ import com.txtura.ui.screens.CreateEncryptedBackupDialog
 import com.txtura.ui.screens.DefaultSmsRolePromptDialog
 import com.txtura.ui.screens.DeletedMessagesScreen
 import com.txtura.ui.screens.HighlightedMessagesScreen
-import com.txtura.ui.screens.HomeBottomDockBar
 import com.txtura.ui.screens.NewMessageDialog
 import com.txtura.ui.screens.RestoreEncryptedBackupPasswordDialog
 import com.txtura.ui.screens.SettingsScreen
 import com.txtura.ui.screens.WallpaperPickerDialog
 import com.txtura.ui.theme.TxturaHaptics
+import com.txtura.ui.theme.TxturaMotion
 import com.txtura.ui.theme.TxturaTheme
 import com.txtura.ui.theme.TxturaThemeMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.minutes
 
 private enum class MainAppScreen {
     DELETED_MESSAGES,
@@ -226,6 +215,7 @@ class MainActivity : ComponentActivity() {
     private var permissionRefreshTick by mutableIntStateOf(0)
     private var isAppLocked by mutableStateOf(false)
     private var startupPreferencesReady by mutableStateOf(false)
+    private var initialMessageLoadFinished by mutableStateOf(false)
     private var startupInitializationFinished = false
     private var pendingStartupIntent: Intent? = null
     private var firstStartupDone = false
@@ -437,6 +427,8 @@ class MainActivity : ComponentActivity() {
                     val highlightedMsgs = SmsMmsRepository.getHighlightedMessageIdsSnapshot()
                     val blockedAddrs = SmsMmsRepository.getBlockedAddressesSnapshot()
                     val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
+                    SmsMmsRepository.awaitInitialization()
+                    SmsMmsRepository.loadAllCachedThreadHistories(this@MainActivity)
                     val currentThreads = SmsMmsRepository.threads.value
                     val currentDeleted = SmsMmsRepository.deletedThreads.value
 
@@ -530,6 +522,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SmsMmsRepository.initializePersistedState(this)
+        EmergencyAlertManager.initialize(this)
         enableEdgeToEdge()
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
@@ -551,20 +545,33 @@ class MainActivity : ComponentActivity() {
 
             var availableContacts by remember { mutableStateOf<List<ContactPickerItem>>(emptyList()) }
 
-            LaunchedEffect(hasSmsPerm, isDefaultSms, autoDeleteDays) {
-                SmsMmsRepository.awaitInitialization()
-                SmsMmsRepository.purgeExpiredDeletedThreads(this@MainActivity, autoDeleteDays)
-                if (hasSmsPerm || isDefaultSms) {
-                    SmsMmsRepository.syncDeviceMessages(this@MainActivity, autoDeleteDays)
+            LaunchedEffect(showDeletedMessagesScreen, showHighlightedMessagesScreen) {
+                if (showDeletedMessagesScreen || showHighlightedMessagesScreen) {
+                    SmsMmsRepository.awaitInitialization()
+                    SmsMmsRepository.loadAllCachedThreadHistories(this@MainActivity)
                 }
-                availableContacts = SmsMmsRepository.loadAvailableContactsForPicker(this@MainActivity)
+            }
+
+            LaunchedEffect(hasSmsPerm, isDefaultSms, autoDeleteDays) {
+                launch {
+                    availableContacts = SmsMmsRepository.loadAvailableContactsForPicker(this@MainActivity)
+                }
+                try {
+                    SmsMmsRepository.awaitInitialization()
+                    SmsMmsRepository.purgeExpiredDeletedThreads(this@MainActivity, autoDeleteDays)
+                    if (hasSmsPerm || isDefaultSms) {
+                        SmsMmsRepository.syncDeviceMessagesIfStale(this@MainActivity, autoDeleteDays)
+                    }
+                } finally {
+                    initialMessageLoadFinished = true
+                }
             }
 
             // Real-time GitHub Update Checker: checks every 6 hours when Wi-Fi or mobile data is connected
             val currentAppVersionName = remember {
                 runCatching {
-                    packageManager.getPackageInfo(packageName, 0).versionName ?: "3.2"
-                }.getOrDefault("3.2")
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "3.3.1"
+                }.getOrDefault("3.3.1")
             }
             LaunchedEffect(Unit) {
                 while (true) {
@@ -618,6 +625,12 @@ class MainActivity : ComponentActivity() {
                     SmsMmsRepository.findThreadByAddress(threads, addr)
                 }
 
+            LaunchedEffect(selectedThread?.id, selectedThread?.isHistoryLoaded) {
+                if (selectedThread != null && !selectedThread.isHistoryLoaded) {
+                    SmsMmsRepository.loadCachedThreadHistory(this@MainActivity, selectedThread.id)
+                }
+            }
+
             LaunchedEffect(selectedThread?.id, activeThreadAddress) {
                 SmsMmsRepository.setActiveForegroundThread(selectedThread?.id)
                 if (selectedThread != null) {
@@ -627,7 +640,7 @@ class MainActivity : ComponentActivity() {
                     if (activeThreadAddress.isNullOrBlank()) {
                         activeThreadAddress = selectedThread.address
                     }
-                    SmsMmsRepository.markThreadRead(this@MainActivity, selectedThread.id)
+                    SmsMmsRepository.markThreadRead(this@MainActivity, selectedThread.id, playSound = false)
                 }
             }
 
@@ -646,9 +659,12 @@ class MainActivity : ComponentActivity() {
             }
             LaunchedEffect(selectedThread?.id, selectedThread?.messages?.size) {
                 val currentCount = selectedThread?.messages?.size ?: 0
-                if (selectedThread != null && currentCount > previousMessageCount) {
+                val isHistoryFullyLoaded = selectedThread?.isHistoryLoaded == true
+                if (selectedThread != null && isHistoryFullyLoaded && currentCount > previousMessageCount && previousMessageCount > 1) {
                     val lastMsg = selectedThread.messages.lastOrNull()
-                    if (lastMsg != null && lastMsg.isIncoming && inAppSoundsEnabled) {
+                    val isRealTimeIncoming = lastMsg != null && lastMsg.isIncoming &&
+                        (System.currentTimeMillis() - lastMsg.timestampMillis < 10_000L)
+                    if (isRealTimeIncoming && inAppSoundsEnabled) {
                         SmsMmsRepository.playInAppMessageReceivedSound(this@MainActivity)
                     }
                 }
@@ -768,8 +784,30 @@ class MainActivity : ComponentActivity() {
                                     ).show()
                                 }
                             },
+                            onRestoreMessages = { threadId, messageIds ->
+                                val restoredName = SmsMmsRepository.restoreDeletedMessages(
+                                    this@MainActivity,
+                                    threadId,
+                                    messageIds,
+                                )
+                                if (restoredName != null) {
+                                    val locStrings = TxturaStrings.forLocale()
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        locStrings.restoredToast(restoredName),
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            },
                             onPermanentlyDeleteThread = { threadId ->
                                 SmsMmsRepository.permanentlyDeleteThread(this@MainActivity, threadId)
+                            },
+                            onPermanentlyDeleteMessages = { threadId, messageIds ->
+                                SmsMmsRepository.permanentlyDeleteMessages(
+                                    this@MainActivity,
+                                    threadId,
+                                    messageIds,
+                                )
                             },
                             highlightedCount = totalHighlightedCount,
                             dockBarOrder = dockBarOrder,
@@ -1294,6 +1332,7 @@ class MainActivity : ComponentActivity() {
                     MainAppScreen.CONVERSATIONS_LIST -> {
                         ConversationsListScreen(
                             threads = threads,
+                            isInitialLoading = !initialMessageLoadFinished,
                             deletedCount = deletedThreads.size,
                             autoDeleteDays = autoDeleteDays,
                             showContactPhotos = showContactPhotos,
@@ -1692,8 +1731,8 @@ class MainActivity : ComponentActivity() {
     private fun triggerAppEntryUpdateCheck() {
         lifecycleScope.launch(Dispatchers.IO) {
             val currentAppVersionName = runCatching {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "3.2"
-            }.getOrDefault("3.2")
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "3.3.1"
+            }.getOrDefault("3.3.1")
             AppUpdateManager.checkAndNotifyIfUpdateAvailable(this@MainActivity, currentAppVersionName)
         }
     }
@@ -1858,7 +1897,7 @@ class MainActivity : ComponentActivity() {
 
         val savedContactWpSet = (values[KEY_CONTACT_WALLPAPERS] as? Set<*>)
             .orEmpty()
-            .mapNotNull { it as? String }
+            .filterIsInstance<String>()
         val parsedMap = mutableMapOf<String, WallpaperConfig>()
         savedContactWpSet.forEach { entry ->
             val sepIdx = entry.indexOf('|')
@@ -2122,6 +2161,8 @@ class MainActivity : ComponentActivity() {
             val highlightedMsgs = SmsMmsRepository.getHighlightedMessageIdsSnapshot()
             val blockedAddrs = SmsMmsRepository.getBlockedAddressesSnapshot()
             val deletedMeta = SmsMmsRepository.getDeletedThreadsMetaSnapshot()
+            SmsMmsRepository.awaitInitialization()
+            SmsMmsRepository.loadAllCachedThreadHistories(this@MainActivity)
             val currentThreads = SmsMmsRepository.threads.value
             val currentDeleted = SmsMmsRepository.deletedThreads.value
 
@@ -2479,14 +2520,10 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun rememberDynamicNotificationPermissionState(tick: Int): Boolean {
-        val notif = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
+        val notif = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
         return (tick >= 0) && notif
     }
 

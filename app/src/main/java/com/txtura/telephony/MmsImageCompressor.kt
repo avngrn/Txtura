@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ColorSpace
 import android.graphics.Matrix
-import android.media.ExifInterface
+import androidx.exifinterface.media.ExifInterface
 import android.net.Uri
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -13,6 +13,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.math.roundToInt
+import androidx.core.graphics.scale
 
 /**
  * High-efficiency, color-preserving image compressor for MMS attachments.
@@ -26,24 +27,6 @@ object MmsImageCompressor {
 
     private const val TAG = "MmsImageCompressor"
     const val MAX_MMS_IMAGE_BYTES = 299_900L // 299.9 kB exact limit
-
-    /**
-     * Checks if the image at [uri] exceeds the maximum MMS limit of 299.9 kB.
-     */
-    fun isOversized(context: Context, uri: Uri, maxBytes: Long = MAX_MMS_IMAGE_BYTES): Boolean {
-        return try {
-            val length = context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
-            if ((length != null) && (length > 0L)) {
-                length > maxBytes
-            } else {
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    stream.available().toLong() > maxBytes
-                } ?: true
-            }
-        } catch (_: Exception) {
-            true
-        }
-    }
 
     /**
      * Compresses the image at [sourceUri] if it exceeds [maxBytes] (299.9 kB),
@@ -163,7 +146,7 @@ object MmsImageCompressor {
                     currentWidth = (currentWidth * 0.82f).roundToInt()
                     currentHeight = (currentHeight * 0.82f).roundToInt()
 
-                    val scaledBitmap = Bitmap.createScaledBitmap(currentBitmap, currentWidth, currentHeight, true)
+                    val scaledBitmap = currentBitmap.scale(currentWidth, currentHeight)
                     if (scaledBitmap != currentBitmap && currentBitmap != baseBitmap) {
                         currentBitmap.recycle()
                     }

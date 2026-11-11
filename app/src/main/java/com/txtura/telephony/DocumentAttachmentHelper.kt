@@ -38,7 +38,7 @@ object DocumentAttachmentHelper {
         if (name.isNullOrBlank()) {
             name = uri.lastPathSegment?.substringAfterLast('/') ?: "document_${System.currentTimeMillis()}"
         }
-        return name!!
+        return name
     }
 
     fun getFileSize(context: Context, uri: Uri): Long {

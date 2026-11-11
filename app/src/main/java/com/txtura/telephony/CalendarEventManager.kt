@@ -88,7 +88,7 @@ object CalendarEventManager {
                     val location = if (locIdx >= 0) cursor.getString(locIdx) else null
                     val start = if (startIdx >= 0) cursor.getLong(startIdx) else 0L
                     val end = if (endIdx >= 0) cursor.getLong(endIdx) else (start + 3600_000L)
-                    val allDay = if (allDayIdx >= 0) cursor.getInt(allDayIdx) == 1 else false
+                    val allDay = allDayIdx >= 0 && cursor.getInt(allDayIdx) == 1
 
                     if (start > 0L) {
                         events.add(

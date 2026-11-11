@@ -21,6 +21,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.sqrt
+import androidx.core.content.edit
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Manages flashlight (camera torch) notification alerts synchronized with the rhythm
@@ -56,9 +58,9 @@ object FlashNotificationManager {
 
     fun setFlashAlertEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_FLASH_ALERT_ENABLED, enabled)
-            .apply()
+            .edit {
+                putBoolean(KEY_FLASH_ALERT_ENABLED, enabled)
+            }
     }
 
     /**
@@ -242,7 +244,7 @@ object FlashNotificationManager {
                     pulses.add(FlashPulse(compStart, compEnd))
                 }
 
-                return if (pulses.isNotEmpty()) pulses else getDefaultFallbackPattern()
+                return pulses.ifEmpty { getDefaultFallbackPattern() }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error analyzing WAV PCM rhythm", e)
@@ -270,17 +272,17 @@ object FlashNotificationManager {
         val pulses = getOrAnalyzeWavRhythm(context, resId)
         val startTime = System.currentTimeMillis()
 
-        for (pulse in pulses) {
+        for ((startMs, endMs) in pulses) {
             val now = System.currentTimeMillis()
             val elapsed = now - startTime
-            val waitToStart = pulse.startMs - elapsed
+            val waitToStart = startMs - elapsed
             if (waitToStart > 0) {
-                delay(waitToStart)
+                delay(waitToStart.milliseconds)
             }
             setTorchSafely(cameraManager, cameraId, true)
 
-            val pulseDuration = pulse.endMs - pulse.startMs
-            delay(pulseDuration.coerceAtLeast(35L))
+            val pulseDuration = endMs - startMs
+            delay(pulseDuration.coerceAtLeast(35L).milliseconds)
             setTorchSafely(cameraManager, cameraId, false)
         }
     }
@@ -297,17 +299,17 @@ object FlashNotificationManager {
         val pulses = getDefaultFallbackPattern()
         val startTime = System.currentTimeMillis()
 
-        for (pulse in pulses) {
+        for ((startMs, endMs) in pulses) {
             val now = System.currentTimeMillis()
             val elapsed = now - startTime
-            val waitToStart = pulse.startMs - elapsed
+            val waitToStart = startMs - elapsed
             if (waitToStart > 0) {
-                delay(waitToStart)
+                delay(waitToStart.milliseconds)
             }
             setTorchSafely(cameraManager, cameraId, true)
 
-            val pulseDuration = pulse.endMs - pulse.startMs
-            delay(pulseDuration.coerceAtLeast(35L))
+            val pulseDuration = endMs - startMs
+            delay(pulseDuration.coerceAtLeast(35L).milliseconds)
             setTorchSafely(cameraManager, cameraId, false)
         }
     }
@@ -382,7 +384,7 @@ object FlashNotificationManager {
                 executePcmWavFlashPattern(context, cameraManager, cameraId, R.raw.dolazna)
             } else {
                 val duration = mediaPlayer.duration.coerceIn(500, 3500).toLong()
-                delay(duration)
+                delay(duration.milliseconds)
             }
         } finally {
             try { visualizer?.enabled = false } catch (_: Exception) {}

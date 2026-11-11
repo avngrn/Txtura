@@ -2,6 +2,7 @@
 
 package com.txtura.security
 
+import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -26,9 +27,8 @@ class InvalidBackupPasswordException(message: String) : Exception(message)
 /**
  * Authenticated encryption for the local conversation snapshot and exported backups.
  *
- * The local snapshot uses a random AES-256 data key wrapped by Android Keystore. The
- * unwrapped key is held in process memory for the session so large snapshots do not
- * cross the Keystore boundary for every read/write.
+ * The local Room snapshot can use a random AES-256-GCM data key wrapped by Android
+ * Keystore. The SQLCipher database passphrase is independently generated and Keystore-wrapped.
  */
 object SecurityCryptoManager {
 
@@ -45,6 +45,15 @@ object SecurityCryptoManager {
     private const val CACHE_DATA_KEY_FILE = "txtura_cache_data_key_v2"
     private const val CACHE_FILE_NAME = "threads_cache.enc"
     private val CACHE_V2_AAD = CACHE_MAGIC_HEADER + byteArrayOf(CACHE_FORMAT_VERSION_V2)
+
+    private val SQLCIPHER_KEY_MAGIC_HEADER =
+        byteArrayOf('T'.code.toByte(), 'D'.code.toByte(), 'B'.code.toByte(), 'K'.code.toByte())
+    private const val SQLCIPHER_KEY_FORMAT_VERSION: Byte = 1
+    private const val SQLCIPHER_PASSPHRASE_LENGTH_BYTES = 44
+    private const val SQLCIPHER_KEY_FILE = "txtura_room_sqlcipher_key_v1"
+    private const val KEY_ALIAS_SQLCIPHER = "txtura_room_sqlcipher_wrap_v1"
+    private val SQLCIPHER_KEY_AAD = SQLCIPHER_KEY_MAGIC_HEADER + byteArrayOf(SQLCIPHER_KEY_FORMAT_VERSION)
+    private val sqlCipherKeyLock = Any()
 
     private const val KEY_ALIAS_CACHE = "txtura_conversations_cache_v1"
     private const val KEY_ALIAS_BACKUP = "txtura_backup_device_key_v1"
@@ -93,6 +102,105 @@ object SecurityCryptoManager {
         return keyGenerator.generateKey()
     }
 
+    /**
+     * Returns the stable random passphrase used by SQLCipher to encrypt the Room database.
+     * The passphrase is wrapped by a separate Android Keystore AES-GCM key and stored in
+     * noBackupFilesDir so Android backup/restore cannot separate it from the database.
+     */
+    fun getOrCreateSqlCipherPassphrase(
+        context: Context,
+        databaseFileExists: Boolean,
+    ): ByteArray = synchronized(sqlCipherKeyLock) {
+        val keyFile = File(context.noBackupFilesDir, SQLCIPHER_KEY_FILE)
+        val atomicKeyFile = AtomicFile(keyFile)
+        val backupKeyFile = File(keyFile.path + ".bak")
+
+        if (keyFile.exists() || backupKeyFile.exists()) {
+            val wrappedBytes = atomicKeyFile.openRead().use { it.readBytes() }
+            try {
+                unwrapSqlCipherPassphrase(wrappedBytes)
+            } catch (error: Exception) {
+                throw IllegalStateException(
+                    "Unable to unlock the Room SQLCipher database key; database files were preserved.",
+                    error,
+                )
+            } finally {
+                wrappedBytes.fill(0)
+            }
+        } else {
+            check(!databaseFileExists) {
+                "Room SQLCipher key is missing while the database exists; refusing to replace the database key."
+            }
+            val randomKeyMaterial = ByteArray(32)
+            secureRandom.nextBytes(randomKeyMaterial)
+            val passphrase = Base64.encode(randomKeyMaterial, Base64.NO_WRAP)
+            randomKeyMaterial.fill(0)
+            try {
+                persistSqlCipherPassphrase(keyFile, wrapSqlCipherPassphrase(passphrase))
+                passphrase
+            } catch (error: Exception) {
+                passphrase.fill(0)
+                throw error
+            }
+        }
+    }
+
+    private fun wrapSqlCipherPassphrase(passphrase: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKeyStoreSecretKey(KEY_ALIAS_SQLCIPHER))
+        cipher.updateAAD(SQLCIPHER_KEY_AAD)
+        val iv = cipher.iv ?: throw IllegalStateException("Cipher failed to generate SQLCipher key IV")
+        val encryptedPassphrase = cipher.doFinal(passphrase)
+        return ByteBuffer.allocate(
+            SQLCIPHER_KEY_MAGIC_HEADER.size + 1 + iv.size + encryptedPassphrase.size
+        )
+            .put(SQLCIPHER_KEY_MAGIC_HEADER)
+            .put(SQLCIPHER_KEY_FORMAT_VERSION)
+            .put(iv)
+            .put(encryptedPassphrase)
+            .array()
+    }
+
+    private fun unwrapSqlCipherPassphrase(wrappedBytes: ByteArray): ByteArray {
+        val expectedLength =
+            SQLCIPHER_KEY_MAGIC_HEADER.size + 1 + GCM_IV_LENGTH_BYTES +
+                SQLCIPHER_PASSPHRASE_LENGTH_BYTES + (GCM_TAG_LENGTH_BITS / 8)
+        require(wrappedBytes.size == expectedLength) { "Invalid wrapped SQLCipher passphrase length" }
+        require(SQLCIPHER_KEY_MAGIC_HEADER.indices.all { wrappedBytes[it] == SQLCIPHER_KEY_MAGIC_HEADER[it] }) {
+            "Invalid wrapped SQLCipher passphrase header"
+        }
+        require(wrappedBytes[SQLCIPHER_KEY_MAGIC_HEADER.size] == SQLCIPHER_KEY_FORMAT_VERSION) {
+            "Unsupported wrapped SQLCipher passphrase version"
+        }
+
+        val ivOffset = SQLCIPHER_KEY_MAGIC_HEADER.size + 1
+        val iv = wrappedBytes.copyOfRange(ivOffset, ivOffset + GCM_IV_LENGTH_BYTES)
+        val ciphertext = wrappedBytes.copyOfRange(ivOffset + GCM_IV_LENGTH_BYTES, wrappedBytes.size)
+        val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            getOrCreateKeyStoreSecretKey(KEY_ALIAS_SQLCIPHER),
+            GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv),
+        )
+        cipher.updateAAD(SQLCIPHER_KEY_AAD)
+        return cipher.doFinal(ciphertext)
+    }
+
+    private fun persistSqlCipherPassphrase(keyFile: File, wrappedBytes: ByteArray) {
+        keyFile.parentFile?.mkdirs()
+        val atomicFile = AtomicFile(keyFile)
+        val stream = atomicFile.startWrite()
+        try {
+            stream.write(wrappedBytes)
+            atomicFile.finishWrite(stream)
+        } catch (error: Exception) {
+            atomicFile.failWrite(stream)
+            throw error
+        } finally {
+            wrappedBytes.fill(0)
+        }
+    }
+
     // =========================================================================
     // 2. Local Conversation Snapshot Encryption
     // =========================================================================
@@ -101,7 +209,7 @@ object SecurityCryptoManager {
      * Initializes the cache data key on a worker thread. Keystore is used once to unwrap
      * the data key. New v2 snapshots use AES-GCM with the in-memory raw key.
      */
-    fun initializeCacheSessionKey(context: android.content.Context) {
+    fun initializeCacheSessionKey(context: Context) {
         if (cacheSessionKey != null) return
         synchronized(cacheKeyLock) {
             if (cacheSessionKey != null) return
@@ -139,7 +247,7 @@ object SecurityCryptoManager {
      * Encrypts a snapshot using the cached random AES-256 data key.
      * V2 format: [TENC] [version 2] [12-byte IV] [ciphertext + GCM tag].
      */
-    fun encryptCache(context: android.content.Context, plaintextBytes: ByteArray): ByteArray {
+    fun encryptCache(context: Context, plaintextBytes: ByteArray): ByteArray {
         initializeCacheSessionKey(context)
         val keyBytes = copyCacheSessionKey()
         try {
@@ -161,7 +269,7 @@ object SecurityCryptoManager {
     }
 
     /** Reads both the original Keystore-encrypted v1 file and the v2 wrapped-data-key format. */
-    fun decryptCache(context: android.content.Context, encryptedBytes: ByteArray): ByteArray {
+    fun decryptCache(context: Context, encryptedBytes: ByteArray): ByteArray {
         val minLength = CACHE_MAGIC_HEADER.size + 1 + GCM_IV_LENGTH_BYTES + (GCM_TAG_LENGTH_BITS / 8)
         require(encryptedBytes.size >= minLength) {
             "Corrupted or truncated cache file (size ${encryptedBytes.size})"
@@ -201,13 +309,17 @@ object SecurityCryptoManager {
         }
     }
 
-    fun isLegacyCacheFormat(encryptedBytes: ByteArray): Boolean =
+    fun isEncryptedCache(encryptedBytes: ByteArray): Boolean =
         encryptedBytes.size >= CACHE_MAGIC_HEADER.size + 1 &&
             CACHE_MAGIC_HEADER.indices.all { encryptedBytes[it] == CACHE_MAGIC_HEADER[it] } &&
+            encryptedBytes[CACHE_MAGIC_HEADER.size] in setOf(CACHE_FORMAT_VERSION_V1, CACHE_FORMAT_VERSION_V2)
+
+    fun isLegacyCacheFormat(encryptedBytes: ByteArray): Boolean =
+        isEncryptedCache(encryptedBytes) &&
             encryptedBytes[CACHE_MAGIC_HEADER.size] == CACHE_FORMAT_VERSION_V1
 
     /** Clears the in-process data key and optionally removes its wrapped copy. */
-    fun clearCacheSessionKey(context: android.content.Context, deleteWrappedKey: Boolean = false) {
+    fun clearCacheSessionKey(context: Context, deleteWrappedKey: Boolean = false) {
         synchronized(cacheKeyLock) {
             cacheSessionKey?.fill(0)
             cacheSessionKey = null
@@ -233,7 +345,7 @@ object SecurityCryptoManager {
         }
     }
 
-    private fun discardUnrecoverableCache(context: android.content.Context, keyFile: AtomicFile) {
+    private fun discardUnrecoverableCache(context: Context, keyFile: AtomicFile) {
         File(context.filesDir, CACHE_FILE_NAME).delete()
         keyFile.delete()
     }
@@ -286,14 +398,13 @@ object SecurityCryptoManager {
         }
     }
 
-    private fun hasV2CacheFile(context: android.content.Context): Boolean {
+    private fun hasV2CacheFile(context: Context): Boolean {
         val cacheFile = File(context.filesDir, CACHE_FILE_NAME)
-        if (!cacheFile.isFile || cacheFile.length() < CACHE_MAGIC_HEADER.size + 1L) return false
-        return cacheFile.inputStream().buffered().use { input ->
+        return !(!cacheFile.isFile || cacheFile.length() < CACHE_MAGIC_HEADER.size + 1L) && cacheFile.inputStream().buffered().use { input ->
             val header = ByteArray(CACHE_MAGIC_HEADER.size + 1)
             input.read(header) == header.size &&
-                CACHE_MAGIC_HEADER.indices.all { header[it] == CACHE_MAGIC_HEADER[it] } &&
-                header[CACHE_MAGIC_HEADER.size] == CACHE_FORMAT_VERSION_V2
+                    CACHE_MAGIC_HEADER.indices.all { header[it] == CACHE_MAGIC_HEADER[it] } &&
+                    header[CACHE_MAGIC_HEADER.size] == CACHE_FORMAT_VERSION_V2
         }
     }
 
@@ -306,11 +417,10 @@ object SecurityCryptoManager {
      */
     fun isEncryptedBackup(rawString: String): Boolean {
         val trimmed = rawString.trim()
-        if (!trimmed.startsWith("{")) return false
-        return try {
+        return trimmed.startsWith("{") && try {
             val obj = JSONObject(trimmed)
             obj.optBoolean("txturaEncrypted", false) &&
-                obj.optString("format") == BACKUP_CONTAINER_FORMAT
+                    obj.optString("format") == BACKUP_CONTAINER_FORMAT
         } catch (_: Exception) {
             false
         }
@@ -383,9 +493,7 @@ object SecurityCryptoManager {
      */
     fun decryptBackup(rawContainerString: String, password: String? = null): String {
         val root = JSONObject(rawContainerString.trim())
-        val type = root.optString("type")
-
-        return when (type) {
+        return when (val type = root.optString("type")) {
             BACKUP_TYPE_PASSWORD -> {
                 if (password.isNullOrBlank()) {
                     throw InvalidBackupPasswordException("Password required to decrypt this backup")

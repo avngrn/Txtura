@@ -10,6 +10,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 
 /**
  * Manages dynamic runtime permission requests with contextual rationale messages
@@ -55,11 +56,7 @@ object DynamicPermissionManager {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val requestedBefore = prefs.getBoolean("requested_$permission", false)
 
-        val isPermanentlyDenied = if (activity != null && requestedBefore) {
-            !ActivityCompat.shouldShowRequestPermissionRationale(activity, permission)
-        } else {
-            false
-        }
+        val isPermanentlyDenied = activity != null && requestedBefore && !ActivityCompat.shouldShowRequestPermissionRationale(activity, permission)
 
         if (isPermanentlyDenied) {
             val msg = permanentlyDeniedMessage ?: companionMessage
@@ -70,7 +67,7 @@ object DynamicPermissionManager {
             }
             context.startActivity(intent)
         } else {
-            prefs.edit().putBoolean("requested_$permission", true).apply()
+            prefs.edit { putBoolean("requested_$permission", true) }
             Toast.makeText(context, companionMessage, Toast.LENGTH_SHORT).show()
             requestLauncher(permission)
         }

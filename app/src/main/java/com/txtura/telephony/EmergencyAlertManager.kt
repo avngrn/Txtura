@@ -6,13 +6,12 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.RingtoneManager
-import android.net.Uri
-import android.os.Build
 import android.provider.Settings
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import com.txtura.MainActivity
 import com.txtura.R
 import com.txtura.ui.i18n.TxturaStrings
@@ -300,26 +299,24 @@ object EmergencyAlertManager {
     }
 
     private fun ensureNotificationChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-            val channel = NotificationChannel(
-                CHANNEL_ID_EMERGENCY,
-                "Txtura Emergency Alerts",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Wireless emergency alerts and civil protection"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 500, 250, 500, 250, 1000)
-                setSound(
-                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
-            }
-            nm.createNotificationChannel(channel)
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        val channel = NotificationChannel(
+            CHANNEL_ID_EMERGENCY,
+            "Txtura Emergency Alerts",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Wireless emergency alerts and civil protection"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 500, 250, 500, 250, 1000)
+            setSound(
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
         }
+        nm.createNotificationChannel(channel)
     }
 
     private fun dispatchAlertNotification(context: Context, alert: EmergencyAlert) {
@@ -357,7 +354,7 @@ object EmergencyAlertManager {
 
     private fun syncSystemCellBroadcasts(context: Context) {
         try {
-            val uri = Uri.parse("content://cellbroadcasts")
+            val uri = "content://cellbroadcasts".toUri()
             val cursor = context.contentResolver.query(uri, null, null, null, "date DESC")
             cursor?.use { c ->
                 val bodyCol = c.getColumnIndex("body").takeIf { it >= 0 }
@@ -455,16 +452,16 @@ object EmergencyAlertManager {
     private fun saveAlerts(context: Context, list: List<EmergencyAlert>) {
         try {
             val arr = JSONArray()
-            for (item in list.take(50)) {
+            for ((id, title, body, severity, timestampMillis, countryIso, scope, isRead) in list.take(50)) {
                 val obj = JSONObject().apply {
-                    put("id", item.id)
-                    put("title", item.title)
-                    put("body", item.body)
-                    put("severity", item.severity.name)
-                    put("timestampMillis", item.timestampMillis)
-                    put("countryIso", item.countryIso)
-                    put("scope", item.scope)
-                    put("isRead", item.isRead)
+                    put("id", id)
+                    put("title", title)
+                    put("body", body)
+                    put("severity", severity.name)
+                    put("timestampMillis", timestampMillis)
+                    put("countryIso", countryIso)
+                    put("scope", scope)
+                    put("isRead", isRead)
                 }
                 arr.put(obj)
             }

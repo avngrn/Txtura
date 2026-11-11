@@ -11,15 +11,14 @@ import android.os.BadParcelableException
 import android.util.Log
 import androidx.core.content.IntentSanitizer
 import com.txtura.ui.i18n.TxturaStrings
-import java.net.HttpURLConnection
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.net.IDN
 import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.SSLHandshakeException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
 
 enum class SecurityRiskLevel {
     SAFE,
@@ -613,7 +612,7 @@ object MessageSecurityAnalyzer {
 
             // 1. Check domain reputation via Cloudflare Malware/Phishing Filtering DNS-over-HTTPS
             if (!isTrusted) {
-                val blockedBySecurityDns = checkCloudflareSecurityDnsBlocked(url.host)
+                val blockedBySecurityDns = checkCloudflareSecurityDnsBlocked(url.host, context)
                 if (blockedBySecurityDns) {
                     val reason = strings.reasonMaliciousWebsiteOnline(url.host)
                     val verdict = OnlineUrlVerdict(isMalicious = true, reason = reason)
@@ -626,7 +625,7 @@ object MessageSecurityAnalyzer {
 
             // 2. Inspect redirect chain, TLS validity, and landing page for shorteners or untrusted links
             if (!isTrusted || (url.registeredDomain in urlShorteners) || (url.host in urlShorteners)) {
-                val redirectVerdict = inspectUrlRedirectAndLandingOnline(url, strings)
+                val redirectVerdict = inspectUrlRedirectAndLandingOnline(url, strings, context)
                 onlineVerdictCache[rawKey] = redirectVerdict
                 if (redirectVerdict.isMalicious) {
                     if (url.registeredDomain !in urlShorteners) {
@@ -664,14 +663,14 @@ object MessageSecurityAnalyzer {
      * If the domain is sinkholed to `0.0.0.0` or carries the "Censored"/"Filtered" EDE comment,
      * the domain is a confirmed malicious/phishing website.
      */
-    private fun checkCloudflareSecurityDnsBlocked(rawHost: String): Boolean {
+    private fun checkCloudflareSecurityDnsBlocked(rawHost: String, context: Context): Boolean {
         return try {
             val asciiHost = IDN.toASCII(rawHost.trim().trimEnd('.'))
             if (asciiHost.isBlank() || ipv4HostRegex.matches(asciiHost)) return false
 
             val encodedName = URLEncoder.encode(asciiHost, "UTF-8")
             val endpoint = URL("https://security.cloudflare-dns.com/dns-query?name=$encodedName&type=A")
-            val conn = (AppSecurityManager.openSecureConnection(endpoint) as? HttpURLConnection) ?: return false
+            val conn = AppSecurityManager.openSecureConnection(endpoint, context)
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/dns-json")
             conn.connectTimeout = 3500
@@ -714,7 +713,8 @@ object MessageSecurityAnalyzer {
      */
     private fun inspectUrlRedirectAndLandingOnline(
         initialUrl: ParsedUrl,
-        strings: com.txtura.ui.i18n.AppStrings
+        strings: com.txtura.ui.i18n.AppStrings,
+        context: Context
     ): OnlineUrlVerdict {
         var currentUrlStr = if (
             initialUrl.rawUrl.startsWith("http://", ignoreCase = true) ||
@@ -729,7 +729,7 @@ object MessageSecurityAnalyzer {
         while (hops < 4) {
             hops++
             val conn = try {
-                (AppSecurityManager.openSecureConnection(URL(currentUrlStr)) as? HttpURLConnection)
+                AppSecurityManager.openSecureConnection(URL(currentUrlStr), context)
             } catch (_: Exception) {
                 null
             } ?: break
@@ -755,7 +755,7 @@ object MessageSecurityAnalyzer {
                     }
                     val parsedDest = parseSingleUrl(nextUrl)
                     if ((parsedDest != null) &&
-                        (!isParsedUrlIndividuallySafe(parsedDest) || checkCloudflareSecurityDnsBlocked(parsedDest.host))
+                        (!isParsedUrlIndividuallySafe(parsedDest) || checkCloudflareSecurityDnsBlocked(parsedDest.host, context))
                     ) {
                         return OnlineUrlVerdict(
                             isMalicious = true,

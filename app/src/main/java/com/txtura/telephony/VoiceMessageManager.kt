@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +21,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Manages voice recording strictly capped at 299,900 bytes (299.9 kB max limit)
@@ -40,9 +42,9 @@ object VoiceMessageManager {
     private var recordStartTimeMillis: Long = 0L
 
     val isRecording = mutableStateOf(false)
-    val recordingDurationMillis = mutableStateOf(0L)
-    val recordingFileSizeBytes = mutableStateOf(0L)
-    val recordingRemainingSeconds = mutableStateOf(196L) // ~3m 16s max (299.9 kB)
+    val recordingDurationMillis = mutableLongStateOf(0L)
+    val recordingFileSizeBytes = mutableLongStateOf(0L)
+    val recordingRemainingSeconds = mutableLongStateOf(196L) // ~3m 16s max (299.9 kB)
 
     private var recordTickerJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main)
@@ -90,24 +92,24 @@ object VoiceMessageManager {
             activeRecorder = recorder
             recordStartTimeMillis = System.currentTimeMillis()
             isRecording.value = true
-            recordingDurationMillis.value = 0L
-            recordingFileSizeBytes.value = 0L
+            recordingDurationMillis.longValue = 0L
+            recordingFileSizeBytes.longValue = 0L
             val totalMaxSeconds = (MAX_VOICE_MMS_BYTES / AMR_BYTE_RATE)
-            recordingRemainingSeconds.value = totalMaxSeconds
+            recordingRemainingSeconds.longValue = totalMaxSeconds
 
             recordTickerJob?.cancel()
             recordTickerJob = scope.launch {
                 while (isActive && isRecording.value) {
-                    delay(100)
+                    delay(100.milliseconds)
                     val elapsed = System.currentTimeMillis() - recordStartTimeMillis
-                    recordingDurationMillis.value = elapsed
+                    recordingDurationMillis.longValue = elapsed
 
                     val len = activeRecordFile?.length() ?: 0L
-                    recordingFileSizeBytes.value = len
+                    recordingFileSizeBytes.longValue = len
 
                     val elapsedSeconds = elapsed / 1000L
                     val remSecs = if (len >= MAX_VOICE_MMS_BYTES) 0L else (totalMaxSeconds - elapsedSeconds).coerceAtLeast(0L)
-                    recordingRemainingSeconds.value = remSecs
+                    recordingRemainingSeconds.longValue = remSecs
 
                     if (remSecs <= 0L) {
                         val finishedFile = stopRecording()
@@ -327,7 +329,7 @@ object VoiceMessageManager {
                     _currentPositionMs.intValue = pos
                     _progressFraction.floatValue = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
                 } catch (_: Exception) {}
-                delay(40)
+                delay(40.milliseconds)
             }
         }
     }

@@ -198,25 +198,35 @@ class AppStrings(val isSerbian: Boolean) {
     val settingsCategoryPrivacy: String = s("Privacy & Security", "Privatnost i bezbednost")
 
     // Privacy & Security Details
-    val dbEncryptionTitle: String = s("Local Message Cache Encryption", "Šifrovanje lokalnog keša poruka")
+    val dbEncryptionTitle: String = s("Encrypted Local Database", "Šifrovana lokalna baza")
     val dbEncryptionSub: String = s(
-        "AES-256-GCM encryption for the local conversation snapshot, protected by an Android Keystore-wrapped key.",
-        "AES-256-GCM zaštita lokalnog keša razgovora ključem zaštićenim u Android Keystore-u.",
+        "Room data is always encrypted with SQLCipher. This option adds AES-256-GCM encryption to the stored conversation snapshot; its key is protected by Android Keystore.",
+        "Room baza je uvek šifrovana SQLCipher-om. Ova opcija dodaje AES-256-GCM šifrovanje snapshot-a razgovora, a ključ je zaštićen Android Keystore-om.",
     )
-    val dbEncryptionBadge: String = s("AES-256-GCM Cache Encryption Active", "AES-256-GCM zaštita keša je aktivna")
-    val dbEncryptionSwitchLabel: String = s("Enable Cache Encryption", "Aktiviraj šifrovanje keša")
+    val dbEncryptionBadge: (Boolean) -> String = { aesLayerEnabled ->
+        when {
+            isSerbian && aesLayerEnabled -> "SQLCipher + AES-256-GCM"
+            isSerbian -> "SQLCipher aktivan"
+            aesLayerEnabled -> "SQLCipher + AES-256-GCM"
+            else -> "SQLCipher active"
+        }
+    }
+    val dbEncryptionSwitchLabel: String = s(
+        "Add AES-256-GCM payload layer",
+        "Dodaj AES-256-GCM sloj za podatke",
+    )
     val biometricLockTitle: String = s(
-        "Biometric Protection & PIN/Passphrase",
-        "Biometrijska zaštita i PIN/Passphrase",
+        "Biometric Protection & PIN",
+        "Biometrijska zaštita i PIN",
     )
     val biometricLockSub: String = s(
-        "App locking with fingerprint, face recognition or separate password",
-        "Omogućavanje zaključavanja same aplikacije otiskom prsta, prepoznavanjem lica ili odvojenom lozinkom",
+        "Enabling app locking with fingerprint, PIN, or device password",
+        "Omogućavanje zaključavanja same aplikacije otiskom prsta, PIN-om ili lozinkom uređaja",
     )
     val biometricLockEnabledLabel: String = s("Lock App When Closed", "Zaključavanje aplikacije pri izlasku")
     val sslPinningTitle: String = s(
-        "HTTPS & TLS/SSL with Pinning (SSL Pinning)",
-        "HTTPS i TLS/SSL sa Pinning-om (SSL Pinning)",
+        "HTTPS & TLS/SSL with Pinning",
+        "HTTPS i TLS/SSL sa Pinning-om",
     )
     val sslPinningSub: String = s(
         "Strict encrypted connections with certificate pinning to prevent Man-in-the-Middle (MitM) attacks.",
@@ -226,26 +236,39 @@ class AppStrings(val isSerbian: Boolean) {
     val sslPinningSwitchLabel: String = s("Enable SSL Pinning", "Aktiviraj SSL Pinning")
     val metadataMinimizationTitle: String = s("Metadata Minimization", "Minimizacija metapodataka")
     val metadataMinimizationSub: String = s(
-        "Retain minimal information about sender, recipient, timestamp and location (Zero metadata policies).",
-        "Čuvanje što manje informacija o tome ko šalje poruku kome, kada i odakle (Zero metadata politike).",
+        "Retain minimal information about sender, recipient, timestamp and location.",
+        "Čuvanje što manje informacija o tome ko šalje poruku kome, kada i odakle.",
     )
-    val metadataMinimizationBadge: String = s("Zero Metadata Active", "Zero Metadata Aktivna")
-    val metadataMinimizationSwitchLabel: String = s("Enable Zero Metadata Policy", "Aktiviraj politiku nultih metapodataka")
+    val metadataMinimizationBadge: String = s("Zero Metadata Active", "Zero Metadata Aktivno")
+    val metadataMinimizationSwitchLabel: String = s("Zero Metadata Policy", "Politika nultih metapodataka")
     val rootDetectionTitle: String = s("Root State Detection", "Detekcija \"Root\" stanja")
     val rootDetectionSub: String = s(
-        "Check if the operating system is compromised, preventing malicious apps from reading memory on rooted devices.",
-        "Provera da li je operativni sistem kompromitovan, jer na root-ovanim uređajima maliciozne aplikacije lakše čitaju memoriju.",
+        "Check for common signs of a modified operating system. This is a best-effort check, not a guarantee of device integrity.",
+        "Provera uobičajenih znakova izmenjenog operativnog sistema. Provera je informativna i ne garantuje integritet uređaja.",
     )
-    val rootStateSafe: String = s("System is secure (No Root detected)", "Sistem je bezbedan (Root nije detektovan)")
-    val rootStateCompromised: String = s("Warning: Compromised / Root access detected", "Upozorenje: Kompromitovan / Detektovan Root pristup")
-    val rootCheckBinarySafe: String = s("SU binary: Not found (Safe)", "SU binarni fajl: Nije pronađen (Bezbedno)")
-    val rootCheckBinaryRisk: String = s("SU binary: Found on system (Risk)", "SU binarni fajl: Pronađen u sistemu (Rizik)")
-    val rootCheckTagsSafe: String = s("Build tags: Official release-keys", "Build ključevi: Zvanični release-keys")
-    val rootCheckTagsRisk: String = s("Build tags: Test-keys detected", "Build ključevi: Detektovani test-keys")
-    val rootCheckAppsSafe: String = s("Root managers: None detected", "Root menadžeri: Nisu detektovani")
-    val rootCheckAppsRisk: String = s("Root managers: Management app present", "Root menadžeri: Prisutna root aplikacija")
-    val rootRescanButton: String = s("Re-scan Device Integrity", "Ponovi proveru integriteta")
-    val rootScanInProgress: String = s("Scanning device integrity...", "Provera integriteta uređaja...")
+    val rootDetectionSwitchLabel: String = s("Enable root checks", "Uključi proveru root stanja")
+    val rootDetectionSwitchSub: String = s(
+        "Scan when this settings page opens or when you tap re-scan.",
+        "Skeniranje pri otvaranju ove stranice ili kada dodirnete ponovnu proveru.",
+    )
+    val spamFirewallTitle: String = s("Blocked Sender Firewall", "Zaštitni zid blokiranih pošiljalaca")
+    val spamFirewallSub: String = s(
+        "New SMS from blocked senders can be discarded before Txtura saves them; blocked MMS notifications are ignored and not downloaded. Turning this off does not recover discarded messages. The list is retained.",
+        "Nove SMS poruke blokiranih pošiljalaca mogu biti odbačene pre nego što ih Txtura sačuva; MMS obaveštenja se ignorišu i sadržaj se ne preuzima. Isključivanje opcije ne vraća odbačene poruke. Lista ostaje sačuvana.",
+    )
+    val rootStateSafe: String = s(
+        "No common root indicators found (best-effort check; not proof of device integrity)",
+        "Nisu pronađeni uobičajeni root indikatori (orijentaciona provera; nije dokaz integriteta uređaja)",
+    )
+    val rootStateCompromised: String = s("Warning: Common root indicators found", "Upozorenje: Pronađeni uobičajeni root indikatori")
+    val rootCheckBinarySafe: String = s("SU binary: Not found in checked paths", "SU fajl: Nije pronađen na proverenim putanjama")
+    val rootCheckBinaryRisk: String = s("SU binary: Found", "SU fajl: Pronađen")
+    val rootCheckTagsSafe: String = s("Build tags: No test-keys found", "Build oznake: Test-keys nisu pronađeni")
+    val rootCheckTagsRisk: String = s("Build tags: Test-keys detected", "Build oznake: Pronađeni test-keys")
+    val rootCheckAppsSafe: String = s("Known root managers: None found", "Poznati root menadžeri: Nisu pronađeni")
+    val rootCheckAppsRisk: String = s("Known root manager found", "Pronađen poznati root menadžer")
+    val rootRescanButton: String = s("Re-check common root indicators", "Ponovo proveri uobičajene root indikatore")
+    val rootScanInProgress: String = s("Checking common root indicators...", "Provera uobičajenih root indikatora...")
     val addBlockedSenderTitle: String = s("Block New Number", "Blokiraj novi broj")
     val blockSenderDialogHint: String = s("Enter phone number to block...", "Unesite broj telefona za blokiranje...")
     val blockSenderAction: String = s("Block", "Blokiraj")
@@ -255,12 +278,12 @@ class AppStrings(val isSerbian: Boolean) {
     val lockTimeout5Min: String = s("After 5 minutes", "Nakon 5 minuta")
     val lockAppNowButton: String = s("Lock App Now (Test)", "Zaključaj aplikaciju odmah (Test)")
     val dbEncryptionEnabledToast: String = s(
-        "Local message cache encrypted with AES-256-GCM.",
-        "Lokalni keš poruka je šifrovan AES-256-GCM algoritmom.",
+        "AES-256-GCM payload encryption enabled. SQLCipher remains active.",
+        "Uključeno je AES-256-GCM šifrovanje podataka. SQLCipher ostaje aktivan.",
     )
     val dbEncryptionDisabledToast: String = s(
-        "Local message cache encryption disabled.",
-        "Šifrovanje lokalnog keša poruka je isključeno.",
+        "AES-256-GCM payload layer disabled. SQLCipher remains active.",
+        "AES-256-GCM sloj je isključen. SQLCipher ostaje aktivan.",
     )
     val appearanceSectionTitle: String = s("Appearance adjustments", "Prilagođavanje izgleda")
     val uiTransparencyTitle: String = s("UI Transparency", "Providnost interfejsa")
@@ -308,7 +331,11 @@ class AppStrings(val isSerbian: Boolean) {
     )
     val dialerErrorToast: String = s("Unable to open phone dialer app.", "Nije moguće otvoriti aplikaciju za pozive.")
     val contactsErrorToast: String = s("Unable to open contacts app.", "Nije moguće otvoriti aplikaciju za kontakte.")
-    val securitySectionTitle: String = s("Active Security Measures", "Aktivne Bezbednosne Mere")
+    val securitySectionTitle: String = s("Security Configuration Summary", "Pregled podešavanja zaštite")
+    val securitySummaryDisclaimer: String = s(
+        "This summarizes app settings and built-in controls; it does not continuously verify that every protection is working.",
+        "Ovo prikazuje podešavanja i ugrađene zaštite; ne proverava neprekidno da li svaka zaštita ispravno radi.",
+    )
     val secItem1Title: String = s(
         "Global Anti-Phishing, Malware & AI Scam Engine",
         "Globalni Anti-Phishing, Malver i AI-Scam Štit",
@@ -349,20 +376,20 @@ class AppStrings(val isSerbian: Boolean) {
         "Kada je uključeno, lokalni keš razgovora koristi AES-256-GCM i nasumični ključ zaštićen Android Keystore-om.",
     )
     val secItem7Title: String = s(
-        "Biometric Protection & PIN/Passphrase App Lock",
-        "Biometrijska zaštita i PIN/Passphrase zaključavanje",
+        "Biometric & Device PIN App Lock",
+        "Zaključavanje aplikacije biometrijom i PIN-om uređaja",
     )
     val secItem7Sub: String = s(
-        "Locks the application with fingerprint, face recognition or device PIN, with customizable lock timeout and an impenetrable lock screen overlay.",
-        "Zaključava aplikaciju otiskom prsta, prepoznavanjem lica ili uređajnim PIN-om uz podesivo vreme zaključavanja i neprobojni ekran zaključavanja.",
+        "Locks the application with fingerprint or device PIN, with customizable lock timeout and an impenetrable lock screen overlay.",
+        "Zaključava aplikaciju otiskom prsta  ili PIN-om uređaja uz podesivo vreme zaključavanja i neprobojni ekran zaključavanja.",
     )
     val secItem8Title: String = s(
         "HTTPS & TLS/SSL Certificate Pinning (SPKI)",
         "HTTPS i TLS/SSL sertifikat pinning (SPKI)",
     )
     val secItem8Sub: String = s(
-        "Strict public key (SPKI) pinning for external connections to thwart Man-in-the-Middle (MitM) attacks, blocking unencrypted HTTP transfers.",
-        "Striktni SPKI sertifikat pinning za mrežne veze radi sprečavanja Man-in-the-Middle napada, uz potpuno blokiranje nešifrovanog HTTP saobraćaja.",
+        "These app-managed requests always require HTTPS. When enabled, SPKI pins are checked for configured GitHub and Cloudflare hosts; other hosts use Android's standard TLS certificate validation.",
+        "Ove mrežne veze uvek zahtevaju HTTPS. Kada je opcija uključena, SPKI pinovi se proveravaju za podešene GitHub i Cloudflare hostove; ostali hostovi koriste standardnu Android TLS proveru sertifikata.",
     )
     val secItem9Title: String = s(
         "Metadata Minimization & Zero-Telemetry",
@@ -373,12 +400,12 @@ class AppStrings(val isSerbian: Boolean) {
         "Automatsko uklanjanje EXIF GPS koordinata i detalja kamere sa slika pre slanja i cenzurisana obaveštenja na zaključanom ekranu.",
     )
     val secItem10Title: String = s(
-        "Deep System Integrity & Root State Detection",
-        "Dubinsko skeniranje integriteta i detekcija Root stanja",
+        "Best-Effort Root Indicator Check",
+        "Orijentaciona provera root indikatora",
     )
     val secItem10Sub: String = s(
-        "Real-time scan for su binaries, which su execution, Magisk/KernelSU managers, system partition remounts, and test-keys build tags.",
-        "Skeniranje su binarnih fajlova u realnom vremenu, which su komande, Magisk/KernelSU menadžera, modifikovanih particija i test-keys potpisa.",
+        "On-demand checks for common root binaries, test build tags, and known root manager packages. A clean result does not prove device integrity.",
+        "Provera na zahtev traži uobičajene root fajlove, test potpise sistema i poznate root menadžere. Čist rezultat ne potvrđuje integritet uređaja.",
     )
     val secItem11Title: String = s(
         "Hardware Encrypted Backup & PBKDF2 Password Protection",
@@ -393,22 +420,23 @@ class AppStrings(val isSerbian: Boolean) {
         "Zaštitni zid za spem i blokirane pošiljaoce",
     )
     val secItem12Sub: String = s(
-        "Strict inbound message filtering that silently drops SMS/MMS messages and notifications from blocked addresses without user disruption.",
-        "Strogo filtriranje dolaznih poruka koje nečujno odbacuje SMS i MMS poruke i obaveštenja sa blokiranih adresa bez ometanja korisnika.",
+        "New SMS from blocked senders can be discarded before Txtura saves them; blocked MMS notifications are ignored and not downloaded. Turning this off does not recover discarded messages.",
+        "Nove SMS poruke blokiranih pošiljalaca mogu biti odbačene pre nego što ih Txtura sačuva; MMS obaveštenja se ignorišu i sadržaj se ne preuzima. Isključivanje opcije ne vraća odbačene poruke.",
     )
 
-    val securityStatusActive: String = s("Active", "Aktivno")
+    val securityStatusEnabled: String = s("Enabled in settings", "Uključeno u podešavanjima")
     val securityStatusDisabled: String = s("Disabled", "Isključeno")
     val securityStatusTapToConfigure: String = s("Tap to configure", "Dodirnite za podešavanje")
-    val securityStatusCompromised: String = s("Compromised (Root detected)", "Kompromitovano (Detektovan Root)")
+    val securityStatusConfigured: String = s("Built in · not live-tested", "Ugrađeno · nije provereno uživo")
+    val securityStatusCompromised: String = s("Root indicators found", "Pronađeni root indikatori")
     val systemSecuritySectionTitle: String = s("System & IPC Security Guard", "Sistemska i IPC zaštita")
     val rootDetectionActiveTitle: String = s(
-        "Active Root State & OS Integrity Monitoring",
-        "Aktivno praćenje Root stanja i integriteta sistema",
+        "On-demand Root Indicator Check",
+        "Provera root indikatora na zahtev",
     )
     val rootDetectionActiveSub: String = s(
-        "Continuous scanning for su binaries, test-keys and privilege escalation managers",
-        "Kontinuirano skeniranje su binarnih fajlova, test-keys potpisa i root menadžera",
+        "Checks common root binaries, test-keys and known root managers; a clean result is not proof of device integrity.",
+        "Traži uobičajene root fajlove, test-keys i poznate root menadžere; čist rezultat nije dokaz integriteta uređaja.",
     )
 
     // Security Analyzer
@@ -529,7 +557,7 @@ class AppStrings(val isSerbian: Boolean) {
         "Download and send MMS messages even when mobile data is off",
         "Preuzmi i pošalji MMS poruke čak i kada su mobilni podaci isključeni",
     )
-    val mmsDataDisabledNotRoaming: String = s("Not roaming", "Kad nije u romingua")
+    val mmsDataDisabledNotRoaming: String = s("Not roaming", "Kad nije u romingu")
     val mmsDataDisabledAlways: String = s("Always", "Uvek")
     val mmsDataDisabledNever: String = s("Never", "Nikada")
 
@@ -1050,6 +1078,17 @@ class AppStrings(val isSerbian: Boolean) {
         "This backup was encrypted with another device's hardware key. A password-protected backup is required to restore on a different device.",
         "Ova kopija je šifrovana hardverskim ključem drugog uređaja. Za prenos na novi telefon potrebno je kreirati kopiju sa lozinkom."
     )
+
+    // Selective Trash Management
+    val inspectTrashMessagesButton: String = s("Inspect messages", "Pregledaj poruke")
+    val inspectTrashDialogTitle: (String) -> String = { contact ->
+        if (isSerbian) "Obrisane poruke • $contact" else "Deleted messages • $contact"
+    }
+    val restoreSelectedMessagesButton: String = s("Restore selected", "Vrati izabrane")
+    val deleteSelectedMessagesButton: String = s("Delete selected", "Obriši izabrane")
+    val selectedCountLabel: (Int) -> String = { count ->
+        if (isSerbian) "$count izabrano" else "$count selected"
+    }
     val backupPasswordIncorrect: String = s(
         "Incorrect backup password or corrupted file.",
         "Pogrešna lozinka rezervne kopije ili oštećen fajl."
@@ -1121,8 +1160,8 @@ class AppStrings(val isSerbian: Boolean) {
         }
     }
     val settingsFooterPrivacyBadge: String = s(
-        "Protected SMS/MMS • 100% On-Device Storage • Zero Ads & Tracking",
-        "Zaštićena SMS/MMS aplikacija • 100% lokalni podaci • Bez oglasa i praćenja",
+        "Protected SMS/MMS • 100% On-Device Storage\nZero Ads & Tracking",
+        "Zaštićena SMS/MMS aplikacija • 100% lokalni podaci\nBez oglasa i praćenja",
     )
     val settingsFooterCopyright: String = s(
         "© 2026 Txtura • All rights reserved",

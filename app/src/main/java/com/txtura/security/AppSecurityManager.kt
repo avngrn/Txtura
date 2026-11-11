@@ -14,13 +14,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.SSLPeerUnverifiedException
 
 /**
  * Manages device-level privacy and security controls for Txtura:
  * 1. Root state detection & OS integrity scanning
  * 2. Local conversation cache encryption preference management
- * 3. Biometric & PIN / Passphrase app lock policies
+ * 3. Biometric & device credential app lock policies
  * 4. HTTPS & TLS/SSL certificate pinning enforcement
  * 5. Metadata minimization & Zero-telemetry policies
  */
@@ -30,15 +29,9 @@ object AppSecurityManager {
     private const val KEY_DB_ENCRYPTION = "pref_db_encryption_enabled"
     private const val KEY_BIOMETRIC_LOCK = "pref_biometric_lock_enabled"
     private const val KEY_LOCK_TIMEOUT = "pref_biometric_lock_timeout_mins"
-    private const val KEY_APP_PIN_HASH = "pref_app_pin_hash_v1"
     private const val KEY_SSL_PINNING = "pref_ssl_pinning_enabled"
     private const val KEY_METADATA_MINIMIZATION = "pref_metadata_minimization_enabled"
-    private const val KEY_INTENT_SANITIZER = "pref_intent_sanitizer_enabled"
-    private const val KEY_ZERO_PERM_PHOTO_PICKER = "pref_zero_perm_photo_picker_enabled"
-    private const val KEY_SENSITIVE_CLIPBOARD_COPY = "pref_sensitive_clipboard_copy_enabled"
-    private const val KEY_PROTECTED_RECEIVERS = "pref_protected_receivers_enabled"
     private const val KEY_ROOT_DETECTION = "pref_root_detection_enabled"
-    private const val KEY_BACKUP_ENCRYPTION = "pref_backup_encryption_enabled"
     private const val KEY_SPAM_FIREWALL = "pref_spam_firewall_enabled"
 
     data class RootCheckResult(
@@ -85,7 +78,7 @@ object AppSecurityManager {
     // SHA-256 SPKI Public Key Hashes for GitHub and security endpoints
     private val PINNED_SPKI_HASHES = mapOf(
         "api.github.com" to setOf(
-            "nTvjJtN51Jp5ounTgUohZxRsHH5DUHgGorVUZyBxrAM=", // *.github.com (active leaf)
+            "nTvjJtN51Jp5ounTgUohZxRsHH5DUHgGorVUZyBxrAM=", // *.gitHub.com (active leaf)
             "VqePxH3EcFwZuYK3CCOMz5HKMoeIZpZcEyBf4diPGSA=", // Sectigo Public Server Authentication CA DV E36 (active intermediate)
             "EdsvlytFf4a/O+hCPwBXFFi46RKXqivCAF+mO7s+5Ng=", // Sectigo Public Server Authentication Root E46 (active root)
             "WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=", // DigiCert High Assurance TLS Hybrid ECC
@@ -93,7 +86,7 @@ object AppSecurityManager {
             "4a3DemjEi9ahGUHuSafxSkPhcEiWS8NDfl2WFiPiJtE="  // DigiCert Global Root CA
         ),
         "github.com" to setOf(
-            "fn1BKnc6ZJaaPk6Amsualghpmf+/FjN+QGxEQoqHFI4=", // github.com (active leaf)
+            "fn1BKnc6ZJaaPk6Amsualghpmf+/FjN+QGxEQoqHFI4=", // gitHub.com (active leaf)
             "VqePxH3EcFwZuYK3CCOMz5HKMoeIZpZcEyBf4diPGSA=", // Sectigo Public Server Authentication CA DV E36 (active intermediate)
             "EdsvlytFf4a/O+hCPwBXFFi46RKXqivCAF+mO7s+5Ng=", // Sectigo Public Server Authentication Root E46 (active root)
             "WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=",
@@ -112,6 +105,15 @@ object AppSecurityManager {
      * Performs a deep scan of the device operating system for known root compromises.
      */
     fun checkRootStatus(context: Context): RootCheckResult {
+        if (!isRootDetectionEnabled(context)) {
+            return RootCheckResult(
+                isRooted = false,
+                suBinaryFound = false,
+                testKeysFound = false,
+                rootManagementAppFound = false,
+            )
+        }
+
         // 1. Check for test-keys in build tags
         val buildTags = Build.TAGS
         val testKeysFound = (buildTags != null) && buildTags.contains("test-keys")
@@ -184,23 +186,21 @@ object AppSecurityManager {
     // =========================================================================
 
     /**
-     * Opens an HTTP/HTTPS connection with strict SSL Pinning and HTTPS enforcement.
-     * Throws [SecurityException] if unencrypted HTTP is attempted while pinning is active.
-     * Throws [SSLPeerUnverifiedException] if the peer certificate SPKI does not match pinned keys.
+     * Opens an HTTPS connection. HTTPS is mandatory even when optional certificate pinning is off.
+     * Configured hosts additionally require a matching SPKI hash while pinning is enabled;
+     * other hosts still use Android's normal certificate-chain and hostname validation.
      */
-    fun openSecureConnection(url: URL, context: Context? = null): HttpURLConnection {
-        val pinningActive = context?.let { isSslPinningEnabled(it) } ?: true
-
-        if (pinningActive && url.protocol.equals("http", ignoreCase = true)) {
-            throw SecurityException("Insecure plaintext HTTP connection blocked by Txtura SSL Pinning policy ($url)")
+    fun openSecureConnection(url: URL, context: Context): HttpURLConnection {
+        if (!url.protocol.equals("https", ignoreCase = true)) {
+            throw SecurityException("Only HTTPS connections are allowed by Txtura ($url)")
         }
 
-        val conn = url.openConnection() as HttpURLConnection
-        if (conn is HttpsURLConnection && pinningActive) {
+        val conn = url.openConnection() as? HttpsURLConnection
+            ?: throw SecurityException("URL did not create an HTTPS connection ($url)")
+        if (isSslPinningEnabled(context)) {
             val host = url.host.lowercase()
             val pinnedHashes = PINNED_SPKI_HASHES[host]
             if (pinnedHashes != null) {
-                // Verify peer certificates post-connect
                 val originalHostnameVerifier = conn.hostnameVerifier
                 conn.hostnameVerifier = javax.net.ssl.HostnameVerifier { hostname, session ->
                     if (!originalHostnameVerifier.verify(hostname, session)) {
@@ -210,15 +210,10 @@ object AppSecurityManager {
                         val certs = session.peerCertificates
                         if (certs.isNullOrEmpty()) return@HostnameVerifier false
                         val md = MessageDigest.getInstance("SHA-256")
-                        var matched = false
-                        for (cert in certs) {
+                        certs.any { cert ->
                             val spkiHash = Base64.encodeToString(md.digest(cert.publicKey.encoded), Base64.NO_WRAP)
-                            if (spkiHash in pinnedHashes) {
-                                matched = true
-                                break
-                            }
+                            spkiHash in pinnedHashes
                         }
-                        matched
                     } catch (_: Exception) {
                         false
                     }
@@ -252,30 +247,6 @@ object AppSecurityManager {
         } catch (_: Exception) {
             sourceUri
         }
-    }
-
-    // =========================================================================
-    // In-App PIN Support
-    // =========================================================================
-
-    fun hasCustomAppPin(context: Context): Boolean {
-        return !getPrefs(context).getString(KEY_APP_PIN_HASH, null).isNullOrBlank()
-    }
-
-    fun setAppPin(context: Context, pin: String) {
-        val hash = hashPin(pin)
-        getPrefs(context).edit { putString(KEY_APP_PIN_HASH, hash) }
-    }
-
-    fun verifyAppPin(context: Context, pin: String): Boolean {
-        val storedHash = getPrefs(context).getString(KEY_APP_PIN_HASH, null) ?: return false
-        return storedHash == hashPin(pin)
-    }
-
-    private fun hashPin(pin: String): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        val bytes = md.digest("txtura_salt_${pin.trim()}".toByteArray(Charsets.UTF_8))
-        return Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 
     // =========================================================================
@@ -324,38 +295,6 @@ object AppSecurityManager {
         getPrefs(context).edit { putBoolean(KEY_METADATA_MINIMIZATION, enabled) }
     }
 
-    fun isIntentSanitizerEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_INTENT_SANITIZER, true)
-    }
-
-    fun setIntentSanitizerEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit { putBoolean(KEY_INTENT_SANITIZER, enabled) }
-    }
-
-    fun isZeroPermPhotoPickerEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_ZERO_PERM_PHOTO_PICKER, true)
-    }
-
-    fun setZeroPermPhotoPickerEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit { putBoolean(KEY_ZERO_PERM_PHOTO_PICKER, enabled) }
-    }
-
-    fun isSensitiveClipboardCopyEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_SENSITIVE_CLIPBOARD_COPY, true)
-    }
-
-    fun setSensitiveClipboardCopyEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit { putBoolean(KEY_SENSITIVE_CLIPBOARD_COPY, enabled) }
-    }
-
-    fun isProtectedReceiversEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_PROTECTED_RECEIVERS, true)
-    }
-
-    fun setProtectedReceiversEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit { putBoolean(KEY_PROTECTED_RECEIVERS, enabled) }
-    }
-
     fun isRootDetectionEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_ROOT_DETECTION, true)
     }
@@ -364,19 +303,12 @@ object AppSecurityManager {
         getPrefs(context).edit { putBoolean(KEY_ROOT_DETECTION, enabled) }
     }
 
-    fun isBackupEncryptionEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_BACKUP_ENCRYPTION, true)
-    }
-
-    fun setBackupEncryptionEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit { putBoolean(KEY_BACKUP_ENCRYPTION, enabled) }
-    }
-
     fun isSpamFirewallEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_SPAM_FIREWALL, true)
     }
 
     fun setSpamFirewallEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit { putBoolean(KEY_SPAM_FIREWALL, enabled) }
+        com.txtura.data.SmsMmsRepository.refreshSpamFirewallState(context)
     }
 }

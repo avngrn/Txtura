@@ -1,6 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Explicit package visibility for the best-effort root manager checks. -->
+    <queries>
+        <package android:name="com.noshufou.android.su" />
+        <package android:name="com.thirdparty.superuser" />
+        <package android:name="eu.chainfire.supersu" />
+        <package android:name="com.koushikdutta.superuser" />
+        <package android:name="com.topjohnwu.magisk" />
+        <package android:name="me.weishu.kernelsu" />
+        <package android:name="org.bnd.apatch" />
+        <package android:name="stericson.busybox" />
+    </queries>
+
     <!-- Optional telephony feature so app works on tablets/emulators too -->
     <uses-feature
         android:name="android.hardware.telephony"
@@ -34,7 +46,6 @@
 
     <!-- Hardened application config: allowBackup="false" prevents unencrypted ADB/cloud SMS leaks -->
     <application
-        android:name=".TxturaApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -117,11 +128,6 @@
                 <action android:name="com.txtura.action.MMS_DOWNLOADED" />
             </intent-filter>
         </receiver>
-
-        <!-- In-memory message cache retention service -->
-        <service
-            android:name=".telephony.TxturaMessageCacheService"
-            android:exported="false" />
 
         <!-- FileProvider for exporting/sharing local backup JSON files -->
         <provider
