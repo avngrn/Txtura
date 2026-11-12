@@ -132,9 +132,6 @@ object VoiceMessageManager {
     fun stopRecording(context: Context? = null): File? {
         val file = activeRecordFile
         stopRecordingInternal(delete = false)
-        if (file != null && file.exists() && context != null) {
-            AmrAudioConverter.ensureAmrFileInPlace(context, file)
-        }
         return file
     }
 

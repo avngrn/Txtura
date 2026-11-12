@@ -9,6 +9,7 @@ import android.app.role.RoleManager
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.biometrics.BiometricPrompt
@@ -77,6 +78,7 @@ import com.txtura.telephony.MmsImageCompressor
 import com.txtura.ui.components.GlassBackground
 import com.txtura.ui.i18n.TxturaStrings
 import com.txtura.ui.screens.AppLockScreen
+import com.txtura.i18n.OtaLocalizationManager
 import com.txtura.ui.screens.ConfirmMoveToTrashDialog
 import com.txtura.ui.screens.ConfirmRestoreDialog
 import com.txtura.ui.screens.ConversationDetailScreen
@@ -326,8 +328,7 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
             if (uri != null) {
                 lifecycleScope.launch(Dispatchers.IO) {
-                    val safeUri = AppSecurityManager.stripExifMetadata(this@MainActivity, uri)
-                    val compressedUri = MmsImageCompressor.compressImageIfNeeded(this@MainActivity, safeUri)
+                    val compressedUri = MmsImageCompressor.compressImageIfNeeded(this@MainActivity, uri)
                     withContext(Dispatchers.Main) {
                         pendingMmsUri = compressedUri
                     }
@@ -519,6 +520,11 @@ class MainActivity : ComponentActivity() {
         val deviceLockConfigured: Boolean,
         val biometricLockTimeoutMinutes: Int
     )
+
+    override fun attachBaseContext(newBase: Context) {
+        OtaLocalizationManager.initializeAsync(newBase)
+        super.attachBaseContext(newBase)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

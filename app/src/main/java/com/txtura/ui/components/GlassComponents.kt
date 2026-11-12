@@ -63,6 +63,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -949,6 +950,71 @@ fun DrawScope.drawTxturaTexture(
                         size = Size(rx * 2f, ry * 2f),
                         style = Stroke(width = strokeBase * 0.95f)
                     )
+                }
+            }
+        }
+
+        WallpaperTexture.LAVENDER_PETAL -> {
+            // Soft overlapping lavender petal arcs and stardust sparkles
+            val rows = if (isCompactPreview) 3 else 8
+            val cols = if (isCompactPreview) 3 else 6
+            val cellW = w / cols
+            val cellH = h / rows
+            for (r in 0 until rows) {
+                for (c in 0 until cols) {
+                    val cx = (c + 0.5f) * cellW
+                    val cy = (r + 0.5f) * cellH
+                    val rad = (if (cellW < cellH) cellW else cellH) * 0.38f
+                    val path = Path().apply {
+                        addArc(androidx.compose.ui.geometry.Rect(cx - rad, cy - rad, cx + rad, cy + rad), 45f, 180f)
+                    }
+                    drawPath(path, if ((r + c) % 2 == 0) accentColor else primaryColor, style = Stroke(width = strokeBase * 1.1f))
+                    if ((r + c) % 3 == 0) {
+                        drawCircle(accentColor, radius = strokeBase * 1.3f, center = Offset(cx, cy - rad * 0.4f))
+                    }
+                }
+            }
+        }
+
+        WallpaperTexture.COFFEE_BEANS -> {
+            // Scattered 3D coffee bean silhouettes with characteristic central curved crease seam
+            val cols = if (isCompactPreview) 3 else 6
+            val rows = if (isCompactPreview) 4 else 9
+            val cellW = w / cols
+            val cellH = h / rows
+            val rx = cellW * 0.28f
+            val ry = cellH * 0.38f
+
+            for (r in 0 until rows) {
+                for (c in 0 until cols) {
+                    val shiftX = if (r % 2 == 0) 0f else cellW * 0.4f
+                    val cx = c * cellW + shiftX + cellW * 0.3f
+                    val cy = r * cellH + cellH * 0.35f
+                    val degrees = ((r * 29 + c * 43) % 360).toFloat()
+
+                    rotate(degrees = degrees, pivot = Offset(cx, cy)) {
+                        // Outer coffee bean oval shell
+                        drawOval(
+                            color = if ((r + c) % 2 == 0) accentColor else primaryColor,
+                            topLeft = Offset(cx - rx, cy - ry),
+                            size = Size(rx * 2f, ry * 2f),
+                            style = Stroke(width = strokeBase * 1.15f)
+                        )
+                        // Central curved S-seam crease line
+                        val creasePath = Path().apply {
+                            moveTo(cx, cy - ry * 0.7f)
+                            cubicTo(
+                                cx - rx * 0.35f, cy - ry * 0.2f,
+                                cx + rx * 0.35f, cy + ry * 0.2f,
+                                cx, cy + ry * 0.7f
+                            )
+                        }
+                        drawPath(
+                            path = creasePath,
+                            color = secondaryColor,
+                            style = Stroke(width = strokeBase * 0.95f, cap = StrokeCap.Round)
+                        )
+                    }
                 }
             }
         }

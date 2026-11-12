@@ -252,19 +252,21 @@ object WallpaperHarmonyEngine {
             WallpaperPreset.BURGUNDY_ANITA -> if (isDark) Color(0xFFFB7185) else Color(0xFFBE123C)
             WallpaperPreset.ARCTIC_FROST -> if (isDark) Color(0xFFFDA4AF) else Color(0xFFE11D48)
             WallpaperPreset.OBSIDIAN_GOLD -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+            WallpaperPreset.LAVENDER_DREAM -> if (isDark) Color(0xFFC084FC) else Color(0xFF7C3AED)
+            WallpaperPreset.ESPRESSO_CREAM -> if (isDark) Color(0xFFE5C8A8) else Color(0xFF783D19)
 
-            // 10 Monochrome Themes: Light/Dark mode base + 1 distinct accent color
+            // Refined Monochrome Themes: Light/Dark mode base + 1 distinct accent color
             WallpaperPreset.MONO_SLATE -> if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
             WallpaperPreset.MONO_SAPPHIRE -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
             WallpaperPreset.MONO_SAGE -> if (isDark) Color(0xFF34D399) else Color(0xFF059669)
             WallpaperPreset.MONO_CHAMPAGNE -> if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
             WallpaperPreset.MONO_PLUM -> if (isDark) Color(0xFFC084FC) else Color(0xFF7C3AED)
             WallpaperPreset.MONO_GRAPHITE -> if (isDark) Color(0xFFE2E8F0) else Color(0xFF334155)
-            WallpaperPreset.MONO_ROSE -> if (isDark) Color(0xFFFB7185) else Color(0xFFE11D48)
             WallpaperPreset.MONO_BURGUNDY -> if (isDark) Color(0xFFFB7185) else Color(0xFF9F1239)
             WallpaperPreset.MONO_NAVY -> if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
             WallpaperPreset.MONO_SMOKE -> if (isDark) Color(0xFF2DD4BF) else Color(0xFF0D9488)
-            WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFFB923C) else Color(0xFFEA580C)
+            WallpaperPreset.MONO_ESPRESSO -> if (isDark) Color(0xFFC68A57) else Color(0xFF5C2D12)
+            WallpaperPreset.MONO_LAVENDER -> if (isDark) Color(0xFFC084FC) else Color(0xFF7C3AED)
             WallpaperPreset.ALL_BLACK -> Color.White
             WallpaperPreset.ALL_WHITE -> Color.Black
         }

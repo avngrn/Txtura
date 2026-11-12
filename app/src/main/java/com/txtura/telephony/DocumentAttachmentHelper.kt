@@ -72,12 +72,13 @@ object DocumentAttachmentHelper {
         val fileName = getFileName(context, uri)
         val reportedSize = getFileSize(context, uri)
 
-        if (reportedSize > MAX_DOCUMENT_MMS_BYTES) {
+        val validationError = MmsPayloadValidator.validateAttachment(context, uri)
+        if (validationError is MmsValidationError.FileTooLarge) {
             val sizeKb = (reportedSize / 1024.0).let { "%.1f".format(it) }
             val errorMsg = if (TxturaStrings.isSerbianLocale()) {
-                "Fajl premašuje limit od 299.9 kB za MMS (veličina: $sizeKb kB)."
+                "Fajl premašuje limit od 300 kB za MMS (veličina: $sizeKb kB)."
             } else {
-                "File exceeds 299.9 kB MMS limit (size: $sizeKb kB)."
+                "File exceeds 300 kB MMS limit (size: $sizeKb kB)."
             }
             return null to errorMsg
         }

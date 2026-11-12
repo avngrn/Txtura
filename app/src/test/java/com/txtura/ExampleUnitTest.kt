@@ -284,30 +284,7 @@ class ExampleUnitTest {
         assertEquals(8080, apn.mmsPort)
     }
 
-    @Test
-    fun testAmrAudioConverterFormatVerification() {
-        val amrHeader = byteArrayOf(0x23, 0x21, 0x41, 0x4D, 0x52, 0x0A)
-        val validAmr = amrHeader + byteArrayOf(0x01, 0x02, 0x03, 0x04)
 
-        val result = com.txtura.telephony.AmrAudioConverter.ensureAmrFormat(
-            context = null,
-            audioUri = null,
-            rawBytes = validAmr
-        )
 
-        assertNotNull(result)
-        assertTrue(result!!.size >= 6)
-        assertEquals(0x23.toByte(), result[0])
-        assertEquals(0x21.toByte(), result[1])
-        assertEquals(0x41.toByte(), result[2])
-        assertEquals(0x4D.toByte(), result[3])
-        assertEquals(0x52.toByte(), result[4])
-        assertEquals(0x0A.toByte(), result[5])
-    }
 
-    @Test
-    fun testPeriodicMmsSyncConstants() {
-        assertEquals("com.txtura.action.MMS_SYNC", com.txtura.telephony.MmsSyncReceiver.ACTION_MMS_SYNC)
-        assertEquals(99881, com.txtura.telephony.MmsSyncJobService.JOB_ID_MMS_SYNC)
-    }
 }

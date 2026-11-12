@@ -1,5 +1,24 @@
 # Txtura Changelog & Improvements
 
+## [v3.6] - 2026-11-12
+
+### SIM / eSIM & MMS Engine (SIM / eSIM i MMS motor)
+- **Multi-SIM & eSIM Subscription Routing (Preusmeravanje za više SIM kartica i eSIM):** Full `SubscriptionManager` integration utilizing `SmsManager.createForSubscriptionId(subId)` to dynamically send and receive SMS/MMS from the active physical SIM or eSIM slot.
+- **Pre-Flight MMS Payload Validation (Centralizovani MmsPayloadValidator do 300 KB):** Integrated central `MmsPayloadValidator` enforcing strict 300 KB (307,200 bytes) PDU payload limits with an 8 KB overhead allowance for OMA-SMIL headers and text.
+- **Lossless MIME Attachment Mapping (Potpuno IANA MIME mapiranje bez gubitka podataka):** Comprehensive IANA MIME type mapping for documents (`.docx`, `.doc`, `.pdf`, `.odt`), spreadsheets (`.xlsx`, `.xls`, `.csv`, `.ods`), presentations (`.pptx`, `.ppt`, `.ppsx`, `.odp`), notes (`.txt`, `.rtf`, `.md`), audio (`.amr`, `.aac`, `.ogg`, `.mp4`), and contacts/calendar (`.vcf`, `.ics`, `.vcs`). Oversized documents > 300 KB are gracefully rejected without lossy compression.
+- **Pre-Flight Connectivity Validation (Provera mobilne konekcije):** Network capabilities check (`NET_CAPABILITY_MMS` / `NET_CAPABILITY_INTERNET` & `TRANSPORT_CELLULAR`) prevents failed transaction loops when mobile data is disabled, gracefully setting message status to `DeliveryStatus.FAILED_NO_DATA`.
+
+### Architecture, Performance & Stability (Arhitektura, performanse i stabilnost)
+- **AOSP Telephony Cleanup (Čišćenje pozadinskih servisa):** Removed redundant 3-minute MMS polling services in favor of real-time `WAP_PUSH_DELIVER` broadcasts, and deprecated offline audio transcoding in favor of native direct AMR-NB microphone recording.
+- **EXIF Image Orientation Fix (Ispravka rotacije slika):** Eliminated duplicate EXIF stripping in `MainActivity` prior to `MmsImageCompressor`, ensuring portrait photos retain correct rotation.
+- **Jetpack Compose Stability & StrictMode (Stabilnost prikaza i StrictMode):** Annotated core UI models (`ChatMessage`, `ConversationThread`, `MmsAttachment`) with `@Immutable` to eliminate unnecessary recompositions, and configured `TxturaApplication` with `StrictMode` for debug builds.
+- **OTA Localization Engine & WorkManager Sync (Over-The-Air lokalizacija):** Integrated zero-blocking OTA localization architecture with strict English fallback and background `PendingLocaleWorker` (WorkManager) for automatic locale updates without APK re-releases.
+
+### UI, Themes & Animations (Interfejs, teme i animacije)
+- **Espresso & Lavender Themes with Custom Textures (Teme Espreso i Lavanda sa novim teksturama):** Added rich `ESPRESSO_CREAM` polychrome theme, `MONO_ESPRESSO` dark roasted brown monochrome theme, and `LAVENDER_DREAM` / `MONO_LAVENDER` purple themes with bespoke `COFFEE_BEANS` and `LAVENDER_PETAL` tactile procedural textures.
+- **Synchronized Send Countdown Cancel Animation (Glatko poništavanje slanja poruka):** Refactored composer send/cancel countdown action slot using `AnimatedContent` with scale and fade transitions. Delayed draft text restoration by 250ms until exit animations completely finish, eliminating icon glitches, text jumping, and card layout resizing.
+- **Settings Streamlining & SMSC Readonly Display (Pojednostavljanje podešavanja mrežnih servisa):** Removed redundant carrier APN configuration cards and obsolete mobile data toggles, replacing the SMSC card with an automatic system/carrier detected number display.
+
 ## [v3.5] - 2026-11-12
 
 ### MMS Telephony & Background Sync (MMS telefonija i pozadinska sinhronizacija)

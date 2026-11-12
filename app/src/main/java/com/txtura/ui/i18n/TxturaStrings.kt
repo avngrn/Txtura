@@ -858,17 +858,19 @@ class AppStrings(val isSerbian: Boolean) {
     val wpBurgundyAnita: String = s("Burgundy Anita", "Burgundi Anita")
     val wpArcticFrost: String = s("Arctic Frost", "Arktički led")
     val wpObsidianGold: String = s("Obsidian & Gold", "Obsidijan i zlato")
+    val wpLavenderDream: String = s("Lavender Dream", "Lavanda san")
+    val wpEspressoCream: String = s("Espresso Cream", "Espreso sa kremom")
     val wpMonoSlate: String = s("With Titanium Accent", "Sa titanijumskim akcentom")
     val wpMonoSapphire: String = s("With Sapphire Accent", "Sa safirnim akcentom")
     val wpMonoSage: String = s("With Emerald Accent", "Sa smaragdnim akcentom")
     val wpMonoChampagne: String = s("With Gold Accent", "Sa zlatnim akcentom")
     val wpMonoPlum: String = s("With Amethyst Accent", "Sa ametistnim akcentom")
     val wpMonoGraphite: String = s("With Silver Accent", "Sa srebrnim akcentom")
-    val wpMonoRose: String = s("With Rose Accent", "Sa ružičastim akcentom")
     val wpMonoBurgundy: String = s("With Burgundy Accent", "Sa burgundi akcentom")
     val wpMonoNavy: String = s("With Indigo Accent", "Sa indigo akcentom")
     val wpMonoSmoke: String = s("With Teal Accent", "Sa tirkiznim akcentom")
-    val wpMonoEspresso: String = s("With Copper Accent", "Sa bakarnim akcentom")
+    val wpMonoEspresso: String = s("With Dark Espresso Accent", "Sa espreso braon akcentom")
+    val wpMonoLavender: String = s("With Lavender Accent", "Sa lavanda akcentom")
     val wpAllBlack: String = s("All Black", "All Black")
     val wpAllWhite: String = s("All White", "All White")
 
@@ -920,6 +922,14 @@ class AppStrings(val isSerbian: Boolean) {
         "Volcanic black & gold veins",
         "Vulkanska crna i zlatne niti",
     )
+    val wpLavenderDreamDesc: String = s(
+        "Soft lavender purple & violet mist",
+        "Nežna lavanda ljubičasta i magličasta ljubičica",
+    )
+    val wpEspressoCreamDesc: String = s(
+        "Dark roasted espresso & coffee milk cream",
+        "Tamno pečeni espreso i mlečni krem",
+    )
     val wpMonoSlateDesc: String = s(
         "Cool brushed titanium tone",
         "Hladni ton brušenog titanijuma",
@@ -944,10 +954,6 @@ class AppStrings(val isSerbian: Boolean) {
         "Pure graphite & metallic silver",
         "Čisti grafit i metalik srebrna",
     )
-    val wpMonoRoseDesc: String = s(
-        "Velvet rose & crimson tone",
-        "Baršunasta ružičasta i grimiz",
-    )
     val wpMonoBurgundyDesc: String = s(
         "Deep burgundy wine & velvety crimson",
         "Duboki burgundac boje vina i baršunasti rubin",
@@ -961,8 +967,12 @@ class AppStrings(val isSerbian: Boolean) {
         "Moderna okeanska tirkizna",
     )
     val wpMonoEspressoDesc: String = s(
-        "Warm copper & bronze",
-        "Topli ton bakra i bronze",
+        "Rich dark espresso coffee brown",
+        "Raskošna tamna espreso braon",
+    )
+    val wpMonoLavenderDesc: String = s(
+        "Soft lavender purple accent",
+        "Nežni lavanda ljubičasti akcenat",
     )
     val wpAllBlackDesc: String = s(
         "True AMOLED pitch-black with white text",
@@ -1001,6 +1011,8 @@ class AppStrings(val isSerbian: Boolean) {
     val texHerringboneTwill: String = s("Herringbone Weave", "Riblja kost")
     val texTopographicContour: String = s("Topographic Relief", "Topografski reljef")
     val texPebbledLeather: String = s("Pebbled Leather", "Zrnasta koža")
+    val texLavenderPetal: String = s("Lavender Petals", "Latice lavande")
+    val texCoffeeBeans: String = s("Coffee Beans", "Zrna kafe")
     val texNone: String = s("No Txture", "Bez txture")
 
     // UI Color Mode

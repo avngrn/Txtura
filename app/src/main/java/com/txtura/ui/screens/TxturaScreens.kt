@@ -38,6 +38,8 @@ import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
@@ -2939,62 +2941,7 @@ fun SettingsScreen(
                                             }
                                         )
 
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(0.8.dp)
-                                                .background(palette.glassBorderTop.copy(alpha = 0.28f))
-                                        )
 
-                                        // Download and send MMS
-                                        val dataDisabledLabel = when (mmsDataDisabledMode) {
-                                            MmsDataDisabledMode.NOT_ROAMING -> strings.mmsDataDisabledNotRoaming
-                                            MmsDataDisabledMode.ALWAYS -> strings.mmsDataDisabledAlways
-                                            MmsDataDisabledMode.NEVER -> strings.mmsDataDisabledNever
-                                        }
-                                        SettingsSelectorRow(
-                                            title = strings.mmsDataDisabledTitle,
-                                            subtitle = strings.mmsDataDisabledSub,
-                                            currentValueLabel = dataDisabledLabel,
-                                            options = listOf(
-                                                MmsDataDisabledMode.NOT_ROAMING to strings.mmsDataDisabledNotRoaming,
-                                                MmsDataDisabledMode.ALWAYS to strings.mmsDataDisabledAlways,
-                                                MmsDataDisabledMode.NEVER to strings.mmsDataDisabledNever
-                                            ),
-                                            selectedOption = mmsDataDisabledMode,
-                                            onSelect = { mode ->
-                                                mmsDataDisabledMode = mode
-                                                SmsMmsRepository.setMmsDataDisabledMode(context, mode)
-                                            }
-                                        )
-
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(0.8.dp)
-                                                .background(palette.glassBorderTop.copy(alpha = 0.28f))
-                                        )
-
-                                        // Creation mode
-                                        val creationModeLabel = when (mmsCreationMode) {
-                                            MmsCreationMode.FREE -> strings.mmsCreationModeFree
-                                            MmsCreationMode.WARNING -> strings.mmsCreationModeWarning
-                                            MmsCreationMode.RESTRICTED -> strings.mmsCreationModeRestricted
-                                        }
-                                        SettingsSelectorRow(
-                                            title = strings.mmsCreationModeTitle,
-                                            currentValueLabel = creationModeLabel,
-                                            options = listOf(
-                                                MmsCreationMode.FREE to strings.mmsCreationModeFree,
-                                                MmsCreationMode.WARNING to strings.mmsCreationModeWarning,
-                                                MmsCreationMode.RESTRICTED to strings.mmsCreationModeRestricted
-                                            ),
-                                            selectedOption = mmsCreationMode,
-                                            onSelect = { mode ->
-                                                mmsCreationMode = mode
-                                                SmsMmsRepository.setMmsCreationMode(context, mode)
-                                            }
-                                        )
                                     }
                                 }
 
@@ -3016,149 +2963,13 @@ fun SettingsScreen(
                                         )
 
                                         // SMS center number
+                                        val displaySmsc = smscAddress.ifBlank { SmsMmsRepository.getSmscAddress(context) }.ifBlank { strings.smscNotSet }
                                         SettingsActionRow(
                                             title = strings.smscNumberTitle,
-                                            subtitle = smscAddress.ifBlank { strings.smscNotSet },
-                                            trailingLabel = smscAddress.ifBlank { null },
-                                            onClick = { showSmscDialog = true }
+                                            subtitle = displaySmsc,
+                                            showChevron = false,
+                                            onClick = null
                                         )
-
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(0.8.dp)
-                                                .background(palette.glassBorderTop.copy(alpha = 0.28f))
-                                        )
-
-                                        // Carrier MMS APN settings
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Column(modifier = Modifier.fillMaxWidth()) {
-                                                Text(
-                                                    text = strings.mmsApnSettingsTitle,
-                                                    style = MaterialTheme.typography.bodyLarge,
-                                                    color = palette.textPrimary,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    maxLines = 1,
-                                                    softWrap = false,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                                Spacer(modifier = Modifier.height(2.dp))
-                                                Text(
-                                                    text = if (currentMmsApn.mmscUrl.isNotBlank()) {
-                                                        "${currentMmsApn.carrierName} • ${currentMmsApn.source}"
-                                                    } else {
-                                                        "${currentMmsApn.carrierName} • ${strings.mmsApnNotConfigured}"
-                                                    },
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = palette.textSecondary,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
-
-                                            if (currentMmsApn.mmscUrl.isNotBlank()) {
-                                                Column(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .clip(RoundedCornerShape(12.dp))
-                                                        .background(palette.glassSurfaceElevated.copy(alpha = 0.6f))
-                                                        .border(0.8.dp, palette.glassBorderTop.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
-                                                        .padding(12.dp),
-                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                                ) {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        modifier = Modifier.fillMaxWidth()
-                                                    ) {
-                                                        Text(
-                                                            text = "${strings.mmsApnMmscLabel}: ",
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = palette.textSecondary,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                        Text(
-                                                            text = currentMmsApn.mmscUrl,
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = palette.textPrimary,
-                                                            fontWeight = FontWeight.Medium,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-                                                    }
-
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        modifier = Modifier.fillMaxWidth()
-                                                    ) {
-                                                        Text(
-                                                            text = "${strings.mmsApnProxyLabel}: ",
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = palette.textSecondary,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                        Text(
-                                                            text = if (currentMmsApn.mmsProxy.isNotBlank()) {
-                                                                "${currentMmsApn.mmsProxy}:${currentMmsApn.mmsPort}"
-                                                            } else {
-                                                                strings.mmsApnDirectConnection
-                                                            },
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = palette.textPrimary,
-                                                            fontWeight = FontWeight.Medium,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-                                                    }
-                                                }
-                                            }
-
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                GlassCard(
-                                                    modifier = Modifier.weight(1f),
-                                                    shape = RoundedCornerShape(12.dp),
-                                                    contentPadding = PaddingValues(vertical = 10.dp, horizontal = 8.dp),
-                                                    onClick = {
-                                                        currentMmsApn = SmsMmsRepository.detectAndSaveMmsApnFromSmsc(context, smscAddress)
-                                                        Toast.makeText(context, strings.mmsApnPullSuccess, Toast.LENGTH_SHORT).show()
-                                                    }
-                                                ) {
-                                                    Text(
-                                                        text = strings.mmsApnPullFromSimOrPhoneButton,
-                                                        style = MaterialTheme.typography.labelMedium,
-                                                        color = palette.accentPrimary,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        textAlign = TextAlign.Center,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                        modifier = Modifier.fillMaxWidth()
-                                                    )
-                                                }
-
-                                                GlassCard(
-                                                    modifier = Modifier.weight(1f),
-                                                    shape = RoundedCornerShape(12.dp),
-                                                    contentPadding = PaddingValues(vertical = 10.dp, horizontal = 8.dp),
-                                                    onClick = { showMmsApnManualDialog = true }
-                                                ) {
-                                                    Text(
-                                                        text = strings.mmsApnManualSetupButton,
-                                                        style = MaterialTheme.typography.labelMedium,
-                                                        color = palette.textPrimary,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        textAlign = TextAlign.Center,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                        modifier = Modifier.fillMaxWidth()
-                                                    )
-                                                }
-                                            }
-                                        }
 
                                         Box(
                                             modifier = Modifier
@@ -4976,7 +4787,8 @@ private fun SettingsActionRow(
     title: String,
     subtitle: String? = null,
     trailingLabel: String? = null,
-    onClick: () -> Unit
+    showChevron: Boolean = true,
+    onClick: (() -> Unit)? = null
 ) {
     val palette = LocalGlassPalette.current
     GlassCard(
@@ -5010,25 +4822,31 @@ private fun SettingsActionRow(
                     )
                 }
             }
-            Spacer(modifier = Modifier.width(10.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (!trailingLabel.isNullOrBlank()) {
-                    Text(
-                        text = trailingLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = palette.textSecondary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
+            if (!trailingLabel.isNullOrBlank() || showChevron) {
+                Spacer(modifier = Modifier.width(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (!trailingLabel.isNullOrBlank()) {
+                        Text(
+                            text = trailingLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.textSecondary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (showChevron) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                    }
+                    if (showChevron) {
+                        Icon(
+                            imageVector = TxturaIcons.ChevronRight,
+                            contentDescription = null,
+                            tint = palette.textSecondary.copy(alpha = 0.7f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
-                Icon(
-                    imageVector = TxturaIcons.ChevronRight,
-                    contentDescription = null,
-                    tint = palette.textSecondary.copy(alpha = 0.7f),
-                    modifier = Modifier.size(16.dp)
-                )
             }
         }
     }
@@ -9196,19 +9014,18 @@ fun ConversationDetailScreen(
                             val canSend = draftText.isNotBlank() || pendingAttachmentUri != null
                             val isCountingDown = pendingDelayedSend != null
 
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                // 6-second countdown timer badge placed in a fixed-size 42.dp slot directly LEFT of the Send/Cancel button
-                                Box(
-                                    modifier = Modifier.size(42.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    androidx.compose.animation.AnimatedVisibility(
-                                        visible = isCountingDown,
-                                        enter = fadeIn(tween(150)),
-                                        exit = fadeOut(tween(150))
+                            AnimatedContent(
+                                targetState = isCountingDown,
+                                transitionSpec = {
+                                    (fadeIn(tween(180)) + scaleIn(initialScale = 0.92f))
+                                        .togetherWith(fadeOut(tween(180)) + scaleOut(targetScale = 0.92f))
+                                },
+                                label = "send_action_slot"
+                            ) { countingDown ->
+                                if (countingDown) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         val activeDelayed = pendingDelayedSend
                                         val totalMs = activeDelayed?.durationMillis ?: 6_000L
@@ -9220,23 +9037,20 @@ fun ConversationDetailScreen(
                                             progressFraction = fraction,
                                             contentDescription = "${secondsLeft}s"
                                         )
-                                    }
-                                }
 
-                                // Send button: replaced by Red "X" (Close) during countdown to cancel sending
-                                GlassIconButton(
-                                    icon = if (isCountingDown) TxturaIcons.Close else TxturaIcons.Send,
-                                    contentDescription = if (isCountingDown) strings.cancelDelayedSendTooltip else strings.send,
-                                    tint = if (isCountingDown) palette.dangerColor else if (canSend) palette.sendButtonColor else palette.textSecondary,
-                                    accentHighlight = if (isCountingDown) palette.dangerColor else if (canSend) palette.accentPrimary else null,
-                                    onClick = {
-                                        if (isCountingDown) {
-                                            TxturaHaptics.reject(view, context)
-                                            val cancelled = pendingDelayedSend
-                                            pendingDelayedSend = null
-                                            delayedRemainingMillis = 0L
-                                            if (cancelled != null) {
-                                                if (cancelled.attachmentUri != null) {
+                                        // Red "X" (Close) button to cancel sending
+                                        GlassIconButton(
+                                            icon = TxturaIcons.Close,
+                                            contentDescription = strings.cancelDelayedSendTooltip,
+                                            tint = palette.dangerColor,
+                                            accentHighlight = palette.dangerColor,
+                                            onClick = {
+                                                TxturaHaptics.reject(view, context)
+                                                val cancelled = pendingDelayedSend
+                                                pendingDelayedSend = null
+                                                delayedRemainingMillis = 0L
+
+                                                if (cancelled?.attachmentUri != null) {
                                                     try {
                                                         val path = cancelled.attachmentUri.path
                                                         if (path != null && path.contains("voice_msg")) {
@@ -9244,65 +9058,78 @@ fun ConversationDetailScreen(
                                                         }
                                                     } catch (_: Exception) {}
                                                 }
-                                                if (cancelled.body.isNotEmpty() && cancelled.attachmentUri == null) {
-                                                    draftText = if (draftText.isEmpty()) {
-                                                        cancelled.body
-                                                    } else {
-                                                        "${cancelled.body} $draftText"
+
+                                                if (inAppSoundsEnabled) {
+                                                    SmsMmsRepository.playInAppMessageCancelledSound(context)
+                                                }
+
+                                                // Wait for exit animations (countdown badge & icons) to 100% finish before restoring draft text
+                                                coroutineScope.launch {
+                                                    delay(250.milliseconds)
+                                                    if (cancelled != null && cancelled.body.isNotEmpty() && cancelled.attachmentUri == null) {
+                                                        draftText = if (draftText.isEmpty()) {
+                                                            cancelled.body
+                                                        } else {
+                                                            "${cancelled.body} $draftText"
+                                                        }
                                                     }
+                                                    try {
+                                                        inputFocusRequester.requestFocus()
+                                                        keyboardController?.show()
+                                                    } catch (_: Exception) { }
+                                                    Toast.makeText(
+                                                        context,
+                                                        strings.messageSendCancelledToast,
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                            },
+                                            size = 42.dp
+                                        )
+                                    }
+                                } else {
+                                    // Normal Send button
+                                    GlassIconButton(
+                                        icon = TxturaIcons.Send,
+                                        contentDescription = strings.send,
+                                        tint = if (canSend) palette.sendButtonColor else palette.textSecondary,
+                                        accentHighlight = if (canSend) palette.accentPrimary else null,
+                                        onClick = {
+                                            if (canSend) {
+                                                TxturaHaptics.confirm(view, context)
+                                                // Flush any already-counting message before handling the new message
+                                                pendingDelayedSend?.let { prev ->
+                                                    onSendMessage(prev.body, prev.attachmentUri)
+                                                    pendingDelayedSend = null
+                                                    delayedRemainingMillis = 0L
+                                                }
+                                                val msgBodyToSend = draftText
+                                                draftText = ""
+                                                SmsMmsRepository.clearDraftForThread(context, thread.id)
+                                                if (pendingAttachmentUri != null) {
+                                                    onClearAttachment()
+                                                }
+                                                if (recallMessagesEnabled) {
+                                                    delayedRemainingMillis = 6_000L
+                                                    pendingDelayedSend = PendingDelayedMessage(
+                                                        id = System.nanoTime(),
+                                                        body = msgBodyToSend,
+                                                        attachmentUri = pendingAttachmentUri,
+                                                        startedAtMillis = System.currentTimeMillis(),
+                                                        durationMillis = 6_000L
+                                                    )
+                                                } else {
+                                                    onSendMessage(msgBodyToSend, pendingAttachmentUri)
                                                 }
                                             }
-                                            if (inAppSoundsEnabled) {
-                                                SmsMmsRepository.playInAppMessageCancelledSound(context)
-                                            }
-                                            coroutineScope.launch {
-                                                delay(100.milliseconds)
-                                                try {
-                                                    inputFocusRequester.requestFocus()
-                                                    keyboardController?.show()
-                                                } catch (_: Exception) { }
-                                            }
-                                            Toast.makeText(
-                                                context,
-                                                strings.messageSendCancelledToast,
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        } else if (canSend) {
-                                            TxturaHaptics.confirm(view, context)
-                                            // Flush any already-counting message before handling the new message
-                                            pendingDelayedSend?.let { prev ->
-                                                onSendMessage(prev.body, prev.attachmentUri)
-                                                pendingDelayedSend = null
-                                                delayedRemainingMillis = 0L
-                                            }
-                                            val msgBodyToSend = draftText
-                                            draftText = ""
-                                            SmsMmsRepository.clearDraftForThread(context, thread.id)
-                                            if (pendingAttachmentUri != null) {
-                                                onClearAttachment()
-                                            }
-                                            if (recallMessagesEnabled) {
-                                                delayedRemainingMillis = 6_000L
-                                                pendingDelayedSend = PendingDelayedMessage(
-                                                    id = System.nanoTime(),
-                                                    body = msgBodyToSend,
-                                                    attachmentUri = pendingAttachmentUri,
-                                                    startedAtMillis = System.currentTimeMillis(),
-                                                    durationMillis = 6_000L
-                                                )
-                                            } else {
-                                                onSendMessage(msgBodyToSend, pendingAttachmentUri)
-                                            }
-                                        }
-                                    },
-                                    onLongClick = if (!isCountingDown) {
-                                        {
+                                        },
+                                        onLongClick = {
                                             TxturaHaptics.longPress(view, context)
                                             showScheduleMessageDialog = true
-                                        }
-                                    } else null,
-                                    size = 42.dp
-                                )
+                                        },
+                                        size = 42.dp
+                                    )
+                                }
                             }
                         }
 
@@ -15489,17 +15316,19 @@ private fun wallpaperPresetTitle(preset: WallpaperPreset, strings: AppStrings): 
         WallpaperPreset.BURGUNDY_ANITA -> strings.wpBurgundyAnita
         WallpaperPreset.ARCTIC_FROST -> strings.wpArcticFrost
         WallpaperPreset.OBSIDIAN_GOLD -> strings.wpObsidianGold
+        WallpaperPreset.LAVENDER_DREAM -> strings.wpLavenderDream
+        WallpaperPreset.ESPRESSO_CREAM -> strings.wpEspressoCream
         WallpaperPreset.MONO_SLATE -> strings.wpMonoSlate
         WallpaperPreset.MONO_SAPPHIRE -> strings.wpMonoSapphire
         WallpaperPreset.MONO_SAGE -> strings.wpMonoSage
         WallpaperPreset.MONO_CHAMPAGNE -> strings.wpMonoChampagne
         WallpaperPreset.MONO_PLUM -> strings.wpMonoPlum
         WallpaperPreset.MONO_GRAPHITE -> strings.wpMonoGraphite
-        WallpaperPreset.MONO_ROSE -> strings.wpMonoRose
         WallpaperPreset.MONO_BURGUNDY -> strings.wpMonoBurgundy
         WallpaperPreset.MONO_NAVY -> strings.wpMonoNavy
         WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmoke
         WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspresso
+        WallpaperPreset.MONO_LAVENDER -> strings.wpMonoLavender
         WallpaperPreset.ALL_BLACK -> strings.wpAllBlack
         WallpaperPreset.ALL_WHITE -> strings.wpAllWhite
     }
@@ -15519,17 +15348,19 @@ private fun wallpaperPresetDescription(preset: WallpaperPreset, strings: AppStri
         WallpaperPreset.BURGUNDY_ANITA -> strings.wpBurgundyAnitaDesc
         WallpaperPreset.ARCTIC_FROST -> strings.wpArcticFrostDesc
         WallpaperPreset.OBSIDIAN_GOLD -> strings.wpObsidianGoldDesc
+        WallpaperPreset.LAVENDER_DREAM -> strings.wpLavenderDreamDesc
+        WallpaperPreset.ESPRESSO_CREAM -> strings.wpEspressoCreamDesc
         WallpaperPreset.MONO_SLATE -> strings.wpMonoSlateDesc
         WallpaperPreset.MONO_SAPPHIRE -> strings.wpMonoSapphireDesc
         WallpaperPreset.MONO_SAGE -> strings.wpMonoSageDesc
         WallpaperPreset.MONO_CHAMPAGNE -> strings.wpMonoChampagneDesc
         WallpaperPreset.MONO_PLUM -> strings.wpMonoPlumDesc
         WallpaperPreset.MONO_GRAPHITE -> strings.wpMonoGraphiteDesc
-        WallpaperPreset.MONO_ROSE -> strings.wpMonoRoseDesc
         WallpaperPreset.MONO_BURGUNDY -> strings.wpMonoBurgundyDesc
         WallpaperPreset.MONO_NAVY -> strings.wpMonoNavyDesc
         WallpaperPreset.MONO_SMOKE -> strings.wpMonoSmokeDesc
         WallpaperPreset.MONO_ESPRESSO -> strings.wpMonoEspressoDesc
+        WallpaperPreset.MONO_LAVENDER -> strings.wpMonoLavenderDesc
         WallpaperPreset.ALL_BLACK -> strings.wpAllBlackDesc
         WallpaperPreset.ALL_WHITE -> strings.wpAllWhiteDesc
     }
@@ -15559,6 +15390,8 @@ private fun wallpaperTextureTitle(texture: WallpaperTexture, strings: AppStrings
         WallpaperTexture.HERRINGBONE_TWILL -> strings.texHerringboneTwill
         WallpaperTexture.TOPOGRAPHIC_CONTOUR -> strings.texTopographicContour
         WallpaperTexture.PEBBLED_LEATHER -> strings.texPebbledLeather
+        WallpaperTexture.LAVENDER_PETAL -> strings.texLavenderPetal
+        WallpaperTexture.COFFEE_BEANS -> strings.texCoffeeBeans
         WallpaperTexture.NONE -> strings.texNone
     }
 }

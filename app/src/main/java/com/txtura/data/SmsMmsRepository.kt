@@ -232,9 +232,8 @@ object SmsMmsRepository {
                     detectAndSaveMmsApnFromSmsc(appCtx)
                 }
                 ioScope.launch {
-                    com.txtura.telephony.MmsSyncReceiver.scheduleNextSyncAlarm(appCtx)
-                    com.txtura.telephony.MmsSyncJobService.scheduleJob(appCtx)
-                    startPeriodicMmsSyncLoop(appCtx)
+
+
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Background repository initialization failed", e)
@@ -1400,10 +1399,35 @@ object SmsMmsRepository {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 val sm = context.getSystemService(SmsManager::class.java)
-                val smsc = sm?.smscAddress
-                if (!smsc.isNullOrBlank()) return smsc
+                val rawSmsc = sm?.smscAddress
+                if (!rawSmsc.isNullOrBlank()) {
+                    val cleanNumber = rawSmsc.substringBefore(',').replace("\"", "").trim()
+                    if (cleanNumber.isNotBlank()) return cleanNumber
+                }
             } catch (_: Exception) { }
         }
+
+        try {
+            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+            val op = tm?.simOperator.orEmpty()
+            val opName = tm?.simOperatorName.orEmpty().lowercase(java.util.Locale.ROOT)
+            val carrierSmsc = when {
+                op == "22001" || opName.contains("yettel") || opName.contains("telenor") -> "+38163100100"
+                op == "22003" || opName.contains("mts") || opName.contains("telekom srbija") -> "+38164100100"
+                op == "22005" || opName.contains("a1") || opName.contains("vip") -> "+38160100100"
+                op == "22011" || opName.contains("globaltel") -> "+381677000000"
+                op == "21890" || opName.contains("bh telecom") -> "+38761000001"
+                op == "21805" || opName.contains("m:tel") || opName.contains("mtel") -> "+38765000001"
+                op == "21803" || opName.contains("eronet") -> "+38763000001"
+                op == "21901" || opName.contains("hrvatski telekom") -> "+38598091001"
+                op == "21910" || opName.contains("a1 hr") -> "+38591000001"
+                op == "21902" || opName.contains("telemach") -> "+385951000001"
+                op == "29341" || opName.contains("telekom slovenije") -> "+38641100100"
+                else -> ""
+            }
+            if (carrierSmsc.isNotBlank()) return carrierSmsc
+        } catch (_: Exception) { }
+
         return ""
     }
 
@@ -3067,7 +3091,8 @@ object SmsMmsRepository {
         context: Context,
         recipientAddress: String,
         rawBody: String,
-        attachmentUri: Uri? = null
+        attachmentUri: Uri? = null,
+        subId: Int = -1
     ): Long {
         val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(recipientAddress)
             .ifBlank { recipientAddress.trim().take(24) }
@@ -3090,7 +3115,21 @@ object SmsMmsRepository {
 
         if (!isMms && cleanBody.isNotBlank() && hasSendSmsPermission(context)) {
             try {
-                val smsManager = context.getSystemService(SmsManager::class.java)
+                val smsManager = if (subId >= 0) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        context.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        SmsManager.getSmsManagerForSubscriptionId(subId)
+                    }
+                } else {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        context.getSystemService(SmsManager::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        SmsManager.getDefault()
+                    }
+                }
                 if (smsManager != null && cleanAddress.any { it.isDigit() }) {
                     val sentIntent = Intent(ACTION_SMS_SENT).apply {
                         setPackage(context.packageName)
@@ -3160,7 +3199,7 @@ object SmsMmsRepository {
                     deliveryStatus = DeliveryStatus.FAILED
                 } else if (!isDataAllowedForMms(context)) {
                     Log.w(TAG, "Cellular MMS send blocked: mobile data disabled for MMS according to user settings")
-                    deliveryStatus = DeliveryStatus.FAILED
+                    deliveryStatus = DeliveryStatus.FAILED_NO_DATA
                 } else {
                     val requestReadReport = isMmsRequestReadReports(context)
                     val creationMode = getMmsCreationMode(context)
@@ -3203,9 +3242,7 @@ object SmsMmsRepository {
                         }
                     } else null
 
-                    val audioBytes = if (rawAudioBytes != null) {
-                        com.txtura.telephony.AmrAudioConverter.ensureAmrFormat(context, attachmentUri, rawAudioBytes)
-                    } else null
+                    val audioBytes = rawAudioBytes
 
                     val otherBytes = if (isCalendarAttachment || isDocumentAttachment) {
                         try {
@@ -3268,11 +3305,20 @@ object SmsMmsRepository {
                         )
                     } catch (_: Exception) {}
 
-                    val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        context.getSystemService(SmsManager::class.java)
+                    val smsManager = if (subId >= 0) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            context.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            SmsManager.getSmsManagerForSubscriptionId(subId)
+                        }
                     } else {
-                        @Suppress("DEPRECATION")
-                        SmsManager.getDefault()
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            context.getSystemService(SmsManager::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            SmsManager.getDefault()
+                        }
                     }
 
                     val sentIntent = Intent(ACTION_MMS_SENT).apply {
@@ -3613,6 +3659,18 @@ object SmsMmsRepository {
      * Checks if data access is allowed for MMS transactions under the user's [MmsDataDisabledMode].
      */
     fun isDataAllowedForMms(context: Context): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+        val activeNet = cm?.activeNetwork
+        val caps = if (activeNet != null) cm.getNetworkCapabilities(activeNet) else null
+        
+        val hasMmsCap = caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_MMS) == true
+        val hasInternetCap = caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        val isCellular = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true
+        
+        if (!hasMmsCap && (!hasInternetCap || !isCellular) && !isWifiConnected(context)) {
+            return false
+        }
+
         val mode = getMmsDataDisabledMode(context)
         val telephonyManager = context.getSystemService(TelephonyManager::class.java)
         val isRoaming = telephonyManager?.isNetworkRoaming == true
@@ -3684,91 +3742,9 @@ object SmsMmsRepository {
         }
     }
 
-    private fun startPeriodicMmsSyncLoop(context: Context) {
-        ioScope.launch {
-            while (isActive) {
-                delay(3 * 60 * 1000L)
-                try {
-                    performBackgroundMmsSync(context)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Periodic in-process MMS sync iteration failed", e)
-                }
-            }
-        }
-    }
 
-    /**
-     * Background MMS synchronization triggered periodically (every ~3 minutes) via AlarmManager,
-     * JobScheduler, and in-process timer loop.
-     * 1. Retries downloading any pending incoming MMS messages.
-     * 2. Retries sending any stuck outgoing MMS messages in SENDING, PENDING, or FAILED status.
-     * 3. Reconciles new MMS messages received by modem/system Telephony provider.
-     */
-    fun performBackgroundMmsSync(context: Context) {
-        initializePersistedState(context)
-        ioScope.launch {
-            try {
-                Log.i(TAG, "Executing background MMS sync & retry loop...")
-                val now = System.currentTimeMillis()
 
-                if (hasReadSmsPermission(context)) {
-                    syncDeviceMessages(context)
-                }
 
-                val activeThreads = _threads.value
-                for (thread in activeThreads) {
-                    for (msg in thread.messages) {
-                        if (msg.isIncoming && msg.type == MessageType.MMS) {
-                            val isPending = msg.status == DeliveryStatus.PENDING ||
-                                    msg.status == DeliveryStatus.FAILED ||
-                                    msg.status == DeliveryStatus.DOWNLOADING
-                            val locationUrl = msg.attachment?.uri?.toString()
-
-                            if (isPending && !locationUrl.isNullOrBlank() && locationUrl.startsWith("http", ignoreCase = true)) {
-                                Log.i(TAG, "Retrying pending incoming MMS download for msg ID ${msg.id} at $locationUrl")
-                                downloadMms(
-                                    context = context,
-                                    contentLocation = locationUrl,
-                                    senderAddress = msg.address,
-                                    subId = -1,
-                                    existingMessageId = msg.id
-                                )
-                            }
-                        }
-                    }
-                }
-
-                for (thread in activeThreads) {
-                    for (msg in thread.messages) {
-                        if (!msg.isIncoming && msg.type == MessageType.MMS) {
-                            val isStuck = msg.status == DeliveryStatus.SENDING ||
-                                    msg.status == DeliveryStatus.PENDING ||
-                                    msg.status == DeliveryStatus.FAILED
-                            val isRecent = (now - msg.timestampMillis) < 24 * 3600 * 1000L
-
-                            if (isStuck && isRecent && msg.attachment?.uri != null) {
-                                Log.i(TAG, "Retrying stuck outgoing MMS for msg ID ${msg.id}")
-                                resendStuckMms(context, msg)
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Background MMS sync loop failed", e)
-            }
-        }
-    }
-
-    private fun resendStuckMms(context: Context, msg: ChatMessage) {
-        val attachmentUri = msg.attachment?.uri ?: return
-        updateMessageDeliveryStatus(msg.id, DeliveryStatus.SENDING, context)
-        sendMessage(
-            context = context,
-            recipientAddress = msg.address,
-            rawBody = msg.body,
-            attachmentUri = attachmentUri
-        )
-    }
 
     /**
      * Downloads an MMS message from the carrier's MMSC via [SmsManager.downloadMultimediaMessage].

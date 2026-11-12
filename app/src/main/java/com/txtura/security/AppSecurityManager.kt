@@ -227,27 +227,7 @@ object AppSecurityManager {
     // Metadata Minimization (EXIF & Telemetry Stripping)
     // =========================================================================
 
-    /**
-     * Strips all EXIF metadata (GPS coordinates, camera model, timestamp, serials)
-     * by decoding the image bitmap and re-encoding it into a clean local file.
-     */
-    fun stripExifMetadata(context: Context, sourceUri: Uri): Uri {
-        if (!isMetadataMinimizationEnabled(context)) return sourceUri
-        return try {
-            val bitmap = context.contentResolver.openInputStream(sourceUri)?.use { stream ->
-                BitmapFactory.decodeStream(stream)
-            } ?: return sourceUri
 
-            val cleanFile = File(context.cacheDir, "mms_clean_${System.currentTimeMillis()}.jpg")
-            cleanFile.outputStream().use { outStream ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 92, outStream)
-            }
-            bitmap.recycle()
-            Uri.fromFile(cleanFile)
-        } catch (_: Exception) {
-            sourceUri
-        }
-    }
 
     // =========================================================================
     // Security Preferences Accessors

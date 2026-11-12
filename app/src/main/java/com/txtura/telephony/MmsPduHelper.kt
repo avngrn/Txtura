@@ -219,9 +219,11 @@ object MmsPduHelper {
 
         if (otherBytes != null && otherBytes.isNotEmpty()) {
             val fName = otherFileName?.ifBlank { "attachment.dat" } ?: "attachment.dat"
+            val resolvedMime = otherMimeType?.takeIf { it.isNotBlank() && it != "application/octet-stream" }
+                ?: MmsPayloadValidator.getMimeTypeFromExtension(fName)
             parts.add(
                 MmsPart(
-                    contentType = otherMimeType ?: "application/octet-stream",
+                    contentType = resolvedMime,
                     contentLocation = fName,
                     contentId = "<attachment_01>",
                     data = otherBytes
@@ -253,7 +255,11 @@ object MmsPduHelper {
             out.write(data)
         }
 
-        return out.toByteArray()
+        val pduBytes = out.toByteArray()
+        if (pduBytes.size > MmsPayloadValidator.MAX_MMS_PDU_SIZE) {
+            Log.w(TAG, "Generated PDU size (${pduBytes.size} bytes) exceeds strict limit of ${MmsPayloadValidator.MAX_MMS_PDU_SIZE} bytes")
+        }
+        return pduBytes
     }
 
     /**

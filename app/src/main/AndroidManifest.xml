@@ -47,6 +47,7 @@
 
     <!-- Hardened application config: allowBackup="false" prevents unencrypted ADB/cloud SMS leaks -->
     <application
+        android:name=".TxturaApplication"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -130,23 +131,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- Receiver for periodic background MMS sync (retries stuck outgoing MMS & downloads pending incoming MMS every 3 minutes) -->
-        <receiver
-            android:name=".telephony.MmsSyncReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.txtura.action.MMS_SYNC" />
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
-            </intent-filter>
-        </receiver>
 
-        <!-- JobService for background periodic MMS sync via JobScheduler -->
-        <service
-            android:name=".telephony.MmsSyncJobService"
-            android:permission="android.permission.BIND_JOB_SERVICE"
-            android:exported="false" />
 
         <!-- FileProvider for exporting/sharing local backup JSON files -->
         <provider

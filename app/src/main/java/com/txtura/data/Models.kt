@@ -15,6 +15,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -57,7 +59,8 @@ enum class DeliveryStatus {
     DELIVERED,
     FAILED,
     PENDING,
-    DOWNLOADING
+    DOWNLOADING,
+    FAILED_NO_DATA
 }
 
 enum class MmsAutoRetrieveMode {
@@ -256,6 +259,8 @@ enum class WallpaperTexture {
     HERRINGBONE_TWILL,
     TOPOGRAPHIC_CONTOUR,
     PEBBLED_LEATHER,
+    LAVENDER_PETAL,
+    COFFEE_BEANS,
     NONE
 }
 
@@ -272,7 +277,7 @@ enum class WallpaperPreset(
     val defaultTexture: WallpaperTexture = WallpaperTexture.SILK_WEAVE,
     val isMinimalist: Boolean = false,
 ) {
-    // 10 Curated Colorful Presets + Default (with bespoke matching textures)
+    // Curated Colorful Presets + Default (with bespoke matching textures)
     DEFAULT(0xFF070A12, 0xFF1D4ED8, 0xFF4338CA, 0xFF38BDF8, false, WallpaperTexture.SILK_WEAVE),
     AURORA_BOREALIS(0xFF041416, 0xFF0D9488, 0xFF0284C7, 0xFF14B8A6, false, WallpaperTexture.AURORA_RIBBONS),
     VELVET_PLUM(0xFF120616, 0xFF7E22CE, 0xFF9333EA, 0xFFA855F7, false, WallpaperTexture.VELVET_NAP),
@@ -285,19 +290,21 @@ enum class WallpaperPreset(
     BURGUNDY_ANITA(0xFF15040A, 0xFF881337, 0xFFBE185D, 0xFFF43F5E, false, WallpaperTexture.VELVET_NAP),
     ARCTIC_FROST(0xFF05131C, 0xFF0284C7, 0xFF0369A1, 0xFF38BDF8, false, WallpaperTexture.FROST_CRYSTALS),
     OBSIDIAN_GOLD(0xFF110C04, 0xFFB45309, 0xFF92400E, 0xFFD97706, false, WallpaperTexture.KINTSUGI_MARBLE),
+    LAVENDER_DREAM(0xFF0F0C1B, 0xFF7C3AED, 0xFF8B5CF6, 0xFFA78BFA, false, WallpaperTexture.LAVENDER_PETAL),
+    ESPRESSO_CREAM(0xFF120A06, 0xFF4A2810, 0xFF783D19, 0xFFD7B999, false, WallpaperTexture.COFFEE_BEANS),
 
-    // 10 Refined Monochrome Presets (Light/Dark base + 1 distinct accent color + bespoke tactile texture)
+    // Refined Monochrome Presets (Light/Dark base + 1 distinct accent color + bespoke tactile texture)
     MONO_SLATE(0xFF0B0F17, 0xFF334155, 0xFF475569, 0xFF64748B, true, WallpaperTexture.SLATE_STRATA),
     MONO_SAPPHIRE(0xFF050B18, 0xFF1E3A8A, 0xFF1D4ED8, 0xFF2563EB, true, WallpaperTexture.BRUSHED_METAL),
     MONO_SAGE(0xFF06120D, 0xFF14532D, 0xFF166534, 0xFF15803D, true, WallpaperTexture.LINEN_CANVAS),
     MONO_CHAMPAGNE(0xFF131008, 0xFF785E2F, 0xFF8C713B, 0xFFA1824A, true, WallpaperTexture.FLUTED_GLASS),
     MONO_PLUM(0xFF140714, 0xFF581C87, 0xFF6B21A8, 0xFF7E22CE, true, WallpaperTexture.SUEDE_MICROFIBER),
     MONO_GRAPHITE(0xFF0A0A0A, 0xFF262626, 0xFF404040, 0xFF525252, true, WallpaperTexture.CARBON_TWILL),
-    MONO_ROSE(0xFF15080C, 0xFF831843, 0xFF9D174D, 0xFFBE185D, true, WallpaperTexture.COTTON_PAPER),
     MONO_BURGUNDY(0xFF140508, 0xFF6B0E23, 0xFF80102A, 0xFF991B38, true, WallpaperTexture.DAMASK_JACQUARD),
     MONO_NAVY(0xFF040915, 0xFF172554, 0xFF1E3A8A, 0xFF1E40AF, true, WallpaperTexture.HERRINGBONE_TWILL),
     MONO_SMOKE(0xFF0F0E0E, 0xFF0D9488, 0xFF0F766E, 0xFF14B8A6, true, WallpaperTexture.TOPOGRAPHIC_CONTOUR),
-    MONO_ESPRESSO(0xFF110A06, 0xFF9A3412, 0xFFC2410C, 0xFFEA580C, true, WallpaperTexture.PEBBLED_LEATHER),
+    MONO_ESPRESSO(0xFF100804, 0xFF5C2D12, 0xFF7C3E1D, 0xFFA05A2C, true, WallpaperTexture.COFFEE_BEANS),
+    MONO_LAVENDER(0xFF0C0816, 0xFF6D28D9, 0xFF7C3AED, 0xFFA78BFA, true, WallpaperTexture.LAVENDER_PETAL),
 
     // 2 Minimalist Themes (True AMOLED pitch-black & Pure clean white, zero decorative accent colors)
     ALL_BLACK(0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, isMonochrome = true, defaultTexture = WallpaperTexture.NONE, isMinimalist = true),
@@ -406,6 +413,7 @@ data class WallpaperConfig(
     }
 }
 
+@Immutable
 data class MmsAttachment(
     val uri: Uri,
     val mimeType: String = "image/jpeg",
@@ -427,6 +435,7 @@ data class MmsAttachment(
     val isDocument: Boolean get() = !isAudio && !isImage && !isCalendar
 }
 
+@Immutable
 data class ChatMessage(
     val id: Long,
     val threadId: Long,
@@ -467,6 +476,7 @@ fun deduplicateMessageList(messages: List<ChatMessage>): List<ChatMessage> {
     return result
 }
 
+@Immutable
 data class ConversationThread(
     val id: Long,
     val contactName: String,
