@@ -51,6 +51,10 @@ object FlashNotificationManager {
 
     private val wavRhythmCache = ConcurrentHashMap<Int, List<FlashPulse>>()
 
+    fun clearRhythmCache() {
+        wavRhythmCache.clear()
+    }
+
     fun isFlashAlertEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
         return prefs.getBoolean(KEY_FLASH_ALERT_ENABLED, true)

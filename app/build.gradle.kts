@@ -14,8 +14,8 @@ android {
         applicationId = "com.txtura"
         minSdk = 29
         targetSdk = 36
-        versionCode = 15
-        versionName = "3.6"
+        versionCode = 16
+        versionName = "3.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

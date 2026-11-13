@@ -200,6 +200,7 @@ class MainActivity : ComponentActivity() {
     private var showRestorePasswordPrompt by mutableStateOf(false)
 
     private var activeThreadId by mutableStateOf<Long?>(null)
+    private var activeTargetMessageId by mutableStateOf<Long?>(null)
     private var activeThreadAddress by mutableStateOf<String?>(null)
     private var showSettingsScreen by mutableStateOf(value = false)
     private var focusUpdateSectionOnSettings by mutableStateOf(value = false)
@@ -1171,6 +1172,7 @@ class MainActivity : ComponentActivity() {
                             BackHandler {
                                 activeThreadId = null
                                 activeThreadAddress = null
+                                activeTargetMessageId = null
                                 pendingMmsUri = null
                             }
                             val contactKey = contactWallpaperKey(activeDetailThread.address)
@@ -1181,6 +1183,7 @@ class MainActivity : ComponentActivity() {
 
                             ConversationDetailScreen(
                                 thread = activeDetailThread,
+                                initialTargetMessageId = activeTargetMessageId,
                                 showContactPhotos = showContactPhotos,
                                 recallMessagesEnabled = recallMessagesEnabled,
                                 bubbleZoomScale = bubbleZoomScale,
@@ -1200,6 +1203,7 @@ class MainActivity : ComponentActivity() {
                             onBack = {
                                 activeThreadId = null
                                 activeThreadAddress = null
+                                activeTargetMessageId = null
                                 pendingMmsUri = null
                             },
                             onTogglePinThread = {
@@ -1359,7 +1363,14 @@ class MainActivity : ComponentActivity() {
                             onOpenThread = { id ->
                                 SmsMmsRepository.markThreadRead(this@MainActivity, id)
                                 activeThreadAddress = threads.find { (tId) -> tId == id }?.address
+                                activeTargetMessageId = null
                                 activeThreadId = id
+                            },
+                            onOpenThreadWithMessage = { threadId, msgId ->
+                                SmsMmsRepository.markThreadRead(this@MainActivity, threadId)
+                                activeThreadAddress = threads.find { (tId) -> tId == threadId }?.address
+                                activeTargetMessageId = msgId
+                                activeThreadId = threadId
                             },
                             onTogglePin = { id ->
                                 SmsMmsRepository.togglePinThread(this@MainActivity, id)

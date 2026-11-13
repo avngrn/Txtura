@@ -223,7 +223,7 @@ object SmsMmsRepository {
                 loadDiskCache(appCtx)
                 isInitialized = true
                 ioScope.launch {
-                    preloadInAppSounds(appCtx)
+                    preloadInAppSounds(appCtx, forceReload = true)
                 }
                 ioScope.launch {
                     scanAllThreadsForMaliciousWebsitesOnline(appCtx)
@@ -1978,10 +1978,24 @@ object SmsMmsRepository {
         }
     }
 
-    fun preloadInAppSounds(context: Context) {
+    fun preloadInAppSounds(context: Context, forceReload: Boolean = false) {
         try {
             FlashNotificationManager.preloadRhythms(context.applicationContext)
-            if (sentSoundPool != null) return
+            if (sentSoundPool != null && !forceReload) return
+
+            if (sentSoundPool != null && forceReload) {
+                try {
+                    sentSoundPool?.release()
+                } catch (_: Exception) {}
+                sentSoundPool = null
+                actionSoundMap.clear()
+                loadedSoundIds.clear()
+                sentSoundLoaded = false
+                receivedSoundLoaded = false
+                cancelSoundLoaded = false
+                FlashNotificationManager.clearRhythmCache()
+            }
+
             val appContext = context.applicationContext
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -2085,58 +2099,7 @@ object SmsMmsRepository {
     fun playVoiceRecordCancelSound(context: Context) = playRawSound(context, R.raw.glasovna_ponisti_ispumpani_pop)
 
     fun playInAppMessageSentSound(context: Context) {
-        try {
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
-            // Respect device silent/vibration modes
-            if (audioManager != null && audioManager.ringerMode != android.media.AudioManager.RINGER_MODE_NORMAL) {
-                return
-            }
-
-            // Ensure sound pool is initialized
-            if (sentSoundPool == null) {
-                preloadInAppSounds(context)
-            }
-
-            // If loaded in SoundPool, play instantly with zero latency
-            if (sentSoundLoaded && sentSoundId != 0) {
-                val streamId = sentSoundPool?.play(sentSoundId, 1.0f, 1.0f, 1, 0, 1.0f) ?: 0
-                if (streamId != 0) return
-            }
-
-            // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
-            val audioAttributes = AudioAttributes.Builder()
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                .build()
-
-            val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.odlazna, audioAttributes, 0)
-                ?: android.media.MediaPlayer.create(context.applicationContext, R.raw.odlazna)
-
-            if (mediaPlayer != null) {
-                mediaPlayer.setOnCompletionListener { mp ->
-                    try {
-                        mp.reset()
-                        mp.release()
-                    } catch (_: Exception) { }
-                }
-                mediaPlayer.setOnErrorListener { mp, _, _ ->
-                    try {
-                        mp.reset()
-                        mp.release()
-                    } catch (_: Exception) { }
-                    true
-                }
-                mediaPlayer.start()
-                return
-            }
-
-            audioManager?.playSoundEffect(android.media.AudioManager.FX_KEYPRESS_STANDARD, 0.75f)
-        } catch (_: Exception) {
-            try {
-                android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 65)
-                    .startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 70)
-            } catch (_: Exception) { }
-        }
+        playRawSound(context, R.raw.odlazna)
     }
 
     fun playInAppMessageReceivedSound(context: Context) {
@@ -2144,121 +2107,12 @@ object SmsMmsRepository {
             FlashNotificationManager.triggerFlashNotification(context)
         }
         val sound = getSmsNotificationSound(context)
-        val customResId = sound.rawResId
-        if (customResId != null) {
-            playRawSound(context, customResId)
-            return
-        }
-
-        try {
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
-            // Respect device silent/vibration modes
-            if (audioManager != null && audioManager.ringerMode != android.media.AudioManager.RINGER_MODE_NORMAL) {
-                return
-            }
-
-            // Ensure sound pool is initialized
-            if (sentSoundPool == null) {
-                preloadInAppSounds(context)
-            }
-
-            // If loaded in SoundPool, play instantly with zero latency
-            if (receivedSoundLoaded && receivedSoundId != 0) {
-                val streamId = sentSoundPool?.play(receivedSoundId, 1.0f, 1.0f, 1, 0, 1.0f) ?: 0
-                if (streamId != 0) return
-            }
-
-            // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
-            val audioAttributes = AudioAttributes.Builder()
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                .build()
-
-            val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.dolazna, audioAttributes, 0)
-                ?: android.media.MediaPlayer.create(context.applicationContext, R.raw.dolazna)
-
-            if (mediaPlayer != null) {
-                mediaPlayer.setOnCompletionListener { mp ->
-                    try {
-                        mp.reset()
-                        mp.release()
-                    } catch (_: Exception) { }
-                }
-                mediaPlayer.setOnErrorListener { mp, _, _ ->
-                    try {
-                        mp.reset()
-                        mp.release()
-                    } catch (_: Exception) { }
-                    true
-                }
-                mediaPlayer.start()
-                return
-            }
-
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            val ringtone = RingtoneManager.getRingtone(context, uri)
-            ringtone?.play()
-        } catch (_: Exception) {
-            try {
-                android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 65)
-                    .startTone(android.media.ToneGenerator.TONE_PROP_ACK, 80)
-            } catch (_: Exception) { }
-        }
+        val customResId = sound.rawResId ?: R.raw.dolazna
+        playRawSound(context, customResId)
     }
 
     fun playInAppMessageCancelledSound(context: Context) {
-        try {
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
-            // Respect device silent/vibration modes
-            if (audioManager != null && audioManager.ringerMode != android.media.AudioManager.RINGER_MODE_NORMAL) {
-                return
-            }
-
-            // Ensure sound pool is initialized
-            if (sentSoundPool == null) {
-                preloadInAppSounds(context)
-            }
-
-            // If loaded in SoundPool, play instantly with zero latency
-            if (cancelSoundLoaded && cancelSoundId != 0) {
-                val streamId = sentSoundPool?.play(cancelSoundId, 1.0f, 1.0f, 1, 0, 1.0f) ?: 0
-                if (streamId != 0) return
-            }
-
-            // Fallback: MediaPlayer if SoundPool hasn't finished loading yet or failed
-            val audioAttributes = AudioAttributes.Builder()
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                .build()
-
-            val mediaPlayer = android.media.MediaPlayer.create(context.applicationContext, R.raw.cancel, audioAttributes, 0)
-                ?: android.media.MediaPlayer.create(context.applicationContext, R.raw.cancel)
-
-            if (mediaPlayer != null) {
-                mediaPlayer.setOnCompletionListener { mp ->
-                    try {
-                        mp.reset()
-                        mp.release()
-                    } catch (_: Exception) { }
-                }
-                mediaPlayer.setOnErrorListener { mp, _, _ ->
-                    try {
-                        mp.reset()
-                        mp.release()
-                    } catch (_: Exception) { }
-                    true
-                }
-                mediaPlayer.start()
-                return
-            }
-
-            audioManager?.playSoundEffect(android.media.AudioManager.FX_KEY_CLICK, 0.75f)
-        } catch (_: Exception) {
-            try {
-                android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 65)
-                    .startTone(android.media.ToneGenerator.TONE_PROP_NACK, 70)
-            } catch (_: Exception) { }
-        }
+        playRawSound(context, R.raw.cancel)
     }
 
     fun isWifiConnected(context: Context): Boolean {

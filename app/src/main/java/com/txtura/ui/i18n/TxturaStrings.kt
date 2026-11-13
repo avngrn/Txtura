@@ -858,7 +858,7 @@ class AppStrings(val isSerbian: Boolean) {
     val wpBurgundyAnita: String = s("Burgundy Anita", "Burgundi Anita")
     val wpArcticFrost: String = s("Arctic Frost", "Arktički led")
     val wpObsidianGold: String = s("Obsidian & Gold", "Obsidijan i zlato")
-    val wpLavenderDream: String = s("Lavender Dream", "Lavanda san")
+    val wpLavenderDream: String = s("Lavender Dream", "Lavanda sanja")
     val wpEspressoCream: String = s("Espresso Cream", "Espreso sa kremom")
     val wpMonoSlate: String = s("With Titanium Accent", "Sa titanijumskim akcentom")
     val wpMonoSapphire: String = s("With Sapphire Accent", "Sa safirnim akcentom")

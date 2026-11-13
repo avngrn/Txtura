@@ -1,5 +1,19 @@
 # Txtura Changelog & Improvements
 
+## [v3.7] - 2026-11-12
+
+### Composer & UI Stability (Inpu polje i stabilnost interfejsa)
+- **Input Composer Layout Fixes (Fiksiran raspored polja za unos):** Eliminated icon jumping and vertical column stacking in the chat input bar. Left action icons (`+`, attachments, search) now remain strictly in a horizontal row regardless of message length or line count.
+- **Text Box & Mic Alignment Fix (Stabilno tekstualno polje i mikrofon):** Constrained bounded text field height and right padding to prevent the input box from expanding over or overlapping the microphone button during multi-line message entry.
+
+### Dialogs & Typography Refinements (Dijalozi i naslovi)
+- **Single-Line Dialog Titles (Prikaz naslova dijaloga u jednom redu):** Refactored modal confirmation dialogs (*"Mark all messages as read?"*, *"Premesti u obrisane poruke?"*, *"Podrazumevana SMS i MMS aplikacija"*) with `maxLines = 1` and `Ellipsis` overflow handling to ensure titles display on a single row next to action icons.
+- **Horizontal Single-Row Dialog Buttons (Poravnanje dugmadi dijaloga u isti red):** Enforced horizontal single-row button alignment (`Row`) for role prompt and confirmation dialog actions (*"Podesi kao podrazumevanu"* and *"Ne sada"*) to eliminate vertical stacking and layout shifts.
+
+### Security Navigation & Audio Engine (Navigacija sa štita i zvučni motor)
+- **Security Shield Deep Navigation (Navigacija i skrolovanje sa upozorenja štita):** Tapping on the red security warning banner (*"Štit: Sumnjiv phishing link blokiran"*) below conversation cards directly opens the thread, auto-scrolls to, and highlights the specific suspicious message with a glowing animation.
+- **Sound Engine Reloading & SoundPool Preload (Reimplementiran zvučni motor):** Upgraded `SmsMmsRepository` in-app sound engine with `forceReload` capability. Automatically preloads all 19 custom `.wav` sound effects in `res/raw` into `SoundPool` for zero-latency playback and clears PCM rhythm caches in `FlashNotificationManager`.
+
 ## [v3.6] - 2026-11-12
 
 ### SIM / eSIM & MMS Engine (SIM / eSIM i MMS motor)
@@ -15,7 +29,7 @@
 - **OTA Localization Engine & WorkManager Sync (Over-The-Air lokalizacija):** Integrated zero-blocking OTA localization architecture with strict English fallback and background `PendingLocaleWorker` (WorkManager) for automatic locale updates without APK re-releases.
 
 ### UI, Themes & Animations (Interfejs, teme i animacije)
-- **Espresso & Lavender Themes with Custom Textures (Teme Espreso i Lavanda sa novim teksturama):** Added rich `ESPRESSO_CREAM` polychrome theme, `MONO_ESPRESSO` dark roasted brown monochrome theme, and `LAVENDER_DREAM` / `MONO_LAVENDER` purple themes with bespoke `COFFEE_BEANS` and `LAVENDER_PETAL` tactile procedural textures.
+- **Espresso & Lavender Themes with Custom Textures (Teme Espreso i Lavanda sa novim teksturama):** Added rich `ESPRESSO_CREAM` polychrome theme, `MONO_ESPRESSO` dark roasted brown monochrome theme, and `LAVENDER_DREAM` ("Lavanda sanja") / `MONO_LAVENDER` purple themes with bespoke `COFFEE_BEANS` and `LAVENDER_PETAL` tactile procedural textures.
 - **Synchronized Send Countdown Cancel Animation (Glatko poništavanje slanja poruka):** Refactored composer send/cancel countdown action slot using `AnimatedContent` with scale and fade transitions. Delayed draft text restoration by 250ms until exit animations completely finish, eliminating icon glitches, text jumping, and card layout resizing.
 - **Settings Streamlining & SMSC Readonly Display (Pojednostavljanje podešavanja mrežnih servisa):** Removed redundant carrier APN configuration cards and obsolete mobile data toggles, replacing the SMSC card with an automatic system/carrier detected number display.
 
