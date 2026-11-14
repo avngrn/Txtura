@@ -50,6 +50,32 @@ data class DetectedBankAccount(
     val formattedNumber: String get() = formattedAccountNumber
 }
 
+data class DetectedPaymentReference(
+    val rawText: String,
+    val referenceNumber: String,
+    val model: String? = null,
+)
+
+data class DetectedPaymentAmount(
+    val rawText: String,
+    val displayAmount: String,
+    val normalizedValue: String,
+    val currency: String,
+)
+
+data class DetectedDateEvent(
+    val rawText: String,
+    val displayDate: String,
+    val startEpochMillis: Long,
+    val isPaymentDeadline: Boolean = false,
+)
+
+data class DetectedPackageTracking(
+    val rawText: String,
+    val trackingCode: String,
+    val courierName: String? = null,
+)
+
 /**
  * Multi-layer on-device SMS/MMS Threat & Phishing Intelligence Engine:
  * Inspired by OWASP Phishing/URL Heuristics, Google Safe Browsing URL canonicalization,
@@ -75,8 +101,28 @@ object MessageSecurityAnalyzer {
         val checkedAtMillis: Long = System.currentTimeMillis(),
     )
 
-    // Thread-safe cache of online URL threat intelligence verdicts (host/url -> verdict)
+    private const val MAX_VERDICT_CACHE_SIZE = 500
+
+    // Thread-safe bounded cache of online URL threat intelligence verdicts (host/url -> verdict)
     private val onlineVerdictCache = ConcurrentHashMap<String, OnlineUrlVerdict>()
+
+    private fun cacheOnlineVerdict(key: String, verdict: OnlineUrlVerdict) {
+        if (onlineVerdictCache.size >= MAX_VERDICT_CACHE_SIZE) {
+            val now = System.currentTimeMillis()
+            val expiredKeys = onlineVerdictCache.entries
+                .filter { (now - it.value.checkedAtMillis) >= 1_800_000L }
+                .map { it.key }
+            if (expiredKeys.isNotEmpty()) {
+                expiredKeys.forEach { onlineVerdictCache.remove(it) }
+            } else {
+                val oldestKey = onlineVerdictCache.entries.minByOrNull { it.value.checkedAtMillis }?.key
+                if (oldestKey != null) {
+                    onlineVerdictCache.remove(oldestKey)
+                }
+            }
+        }
+        onlineVerdictCache[key] = verdict
+    }
 
     @Volatile
     var isOnlineMaliciousWebsiteCheckEnabled: Boolean = true
@@ -395,6 +441,50 @@ object MessageSecurityAnalyzer {
         return null
     }
 
+    private val nonUrlAbbreviationPrefixes = setOf(
+        "br", "broj", "ul", "dr", "mr", "prof", "sv", "st", "god", "str",
+        "tel", "mob", "din", "rsd", "eur", "racun", "račun", "ugovor",
+        "paket", "posiljka", "pošiljka", "iznos", "model", "dana", "kod"
+    )
+
+    private val validCcTlds = setOf(
+        "ac", "ad", "ae", "af", "ag", "ai", "al", "am", "ao", "aq", "ar", "as", "at", "au", "aw", "ax", "az",
+        "ba", "bb", "bd", "be", "bf", "bg", "bh", "bi", "bj", "bm", "bn", "bo", "br", "bs", "bt", "bw", "by", "bz",
+        "ca", "cc", "cd", "cf", "cg", "ch", "ci", "ck", "cl", "cm", "cn", "co", "cr", "cu", "cv", "cw", "cx", "cy", "cz",
+        "de", "dj", "dk", "dm", "do", "dz", "ec", "ee", "eg", "er", "es", "et", "eu", "fi", "fj", "fk", "fm", "fo", "fr",
+        "ga", "gb", "gd", "ge", "gf", "gg", "gh", "gi", "gl", "gm", "gn", "gp", "gq", "gr", "gs", "gt", "gu", "gw", "gy",
+        "hk", "hm", "hn", "hr", "ht", "hu", "id", "ie", "il", "im", "in", "io", "iq", "ir", "is", "it", "je", "jm", "jo", "jp",
+        "ke", "kg", "kh", "ki", "km", "kn", "kp", "kr", "kw", "ky", "kz", "la", "lb", "lc", "li", "lk", "lr", "ls", "lt", "lu", "lv", "ly",
+        "ma", "mc", "md", "me", "mg", "mh", "mk", "ml", "mm", "mn", "mo", "mp", "mq", "mr", "ms", "mt", "mu", "mv", "mw", "mx", "my", "mz",
+        "na", "nc", "ne", "nf", "ng", "ni", "nl", "no", "np", "nr", "nu", "nz", "om", "pa", "pe", "pf", "pg", "ph", "pk", "pl", "pm", "pn", "pr", "ps", "pt", "pw", "py",
+        "qa", "re", "ro", "rs", "ru", "rw", "sa", "sb", "sc", "sd", "se", "sg", "sh", "si", "sk", "sl", "sm", "sn", "so", "sr", "ss", "st", "su", "sv", "sx", "sy", "sz",
+        "tc", "td", "tf", "tg", "th", "tj", "tk", "tl", "tm", "tn", "to", "tr", "tt", "tv", "tw", "tz", "ua", "ug", "uk", "us", "uy", "uz",
+        "va", "vc", "ve", "vg", "vi", "vn", "vu", "wf", "ws", "ye", "yt", "za", "zm", "zw"
+    )
+
+    private val validGenericTlds = setOf(
+        ".com", ".org", ".net", ".edu", ".gov", ".mil", ".int", ".info", ".biz",
+        ".app", ".dev", ".online", ".site", ".store", ".shop", ".tech", ".cloud",
+        ".bank", ".pay", ".page", ".link", ".live", ".news", ".media", ".world",
+        ".digital", ".finance", ".money", ".plus", ".pro", ".mobi", ".name",
+        ".aero", ".coop", ".museum", ".travel", ".jobs", ".cat", ".tel", ".post",
+        ".asia", ".xxx", ".arpa", ".one", ".network", ".systems", ".solutions",
+        ".services", ".support", ".center", ".company", ".group", ".team",
+        ".agency", ".studio", ".design", ".art", ".games", ".game", ".play",
+        ".video", ".music", ".audio", ".photo", ".photos", ".pics", ".today",
+        ".life", ".lifestyle", ".health", ".care", ".clinic", ".dental",
+        ".legal", ".law", ".tax", ".cash", ".fund", ".investments", ".credit",
+        ".exchange", ".market", ".markets", ".trading", ".crypto", ".wallet",
+        ".express", ".delivery", ".auto", ".car", ".cars", ".taxi",
+        ".hotel", ".hotels", ".flights", ".tours", ".vacation", ".holiday",
+        ".house", ".homes", ".estate", ".property", ".rent", ".apartments",
+        ".school", ".academy", ".university", ".college", ".courses", ".training",
+        ".guide", ".wiki", ".blog", ".forum", ".chat", ".social", ".community",
+        ".club", ".fans", ".events", ".party", ".tickets", ".deals", ".sale",
+        ".discount", ".coupons", ".Promo", ".gift", ".gifts", ".free", ".best",
+        ".win", ".vip", ".top", ".xyz", ".click", ".work", ".icu", ".buzz"
+    )
+
     /**
      * Extracts safe URLs with their exact character offsets in [body] so the UI can render
      * clickable links that open in the default browser while refusing to linkify suspicious URLs.
@@ -408,6 +498,12 @@ object MessageSecurityAnalyzer {
         if (riskLevel == SecurityRiskLevel.SUSPICIOUS) return emptyList()
 
         return urlExtractRegex.findAll(body).mapNotNull { match ->
+            val matchStart = match.range.first
+            val matchEndExclusive = (match.range.last + 1).coerceAtMost(body.length)
+            // Ignore abbreviations attached to masked card numbers like "br.kartice*5431"
+            if (matchStart > 0 && body[matchStart - 1] == '*') return@mapNotNull null
+            if (matchEndExclusive < body.length && body[matchEndExclusive] == '*') return@mapNotNull null
+
             val raw = match.value.trimEnd('.', ',', ';', ')', ']', '!', '?')
             if (raw.isBlank()) return@mapNotNull null
             if (raw.contains('@') && !raw.contains("://") && !raw.contains('/')) {
@@ -467,6 +563,11 @@ object MessageSecurityAnalyzer {
 
     private fun extractAndParseUrls(text: String): List<ParsedUrl> {
         return urlExtractRegex.findAll(text).mapNotNull { match ->
+            val matchStart = match.range.first
+            val matchEndExclusive = (match.range.last + 1).coerceAtMost(text.length)
+            if (matchStart > 0 && text[matchStart - 1] == '*') return@mapNotNull null
+            if (matchEndExclusive < text.length && text[matchEndExclusive] == '*') return@mapNotNull null
+
             val raw = match.value.trimEnd('.', ',', ';', ')', ']', '!', '?')
             // Avoid matching plain email addresses or version numbers like "v1.2.3"
             if (raw.contains('@') && !raw.contains("://") && !raw.contains('/')) {
@@ -478,6 +579,9 @@ object MessageSecurityAnalyzer {
 
     private fun parseSingleUrl(rawUrl: String): ParsedUrl? {
         val lower = rawUrl.lowercase()
+        val hasExplicitSchemeOrWww = lower.startsWith("http://") ||
+            lower.startsWith("https://") ||
+            lower.startsWith("www.")
         val scheme = when {
             lower.startsWith("http://") -> "http"
             lower.startsWith("https://") -> "https"
@@ -500,10 +604,26 @@ object MessageSecurityAnalyzer {
         val hostParts = host.split('.').filter { it.isNotBlank() }
         if (hostParts.size < 2) return null
 
-        val tld = "." + hostParts.last()
-        // Ignore common file names in prose like "photo.jpg" when no scheme or slash is present
-        if (!lower.startsWith("http") && !lower.startsWith("www.") && pathAndQuery.isEmpty()) {
-            if (tld in setOf(".jpg", ".jpeg", ".png", ".pdf", ".txt", ".doc", ".mp4", ".mp3")) {
+        val lastPart = hostParts.last()
+        val tld = ".$lastPart"
+
+        // When no http(s):// or www. is present, strictly validate TLD and reject prose abbreviations like "br.kartice"
+        if (!hasExplicitSchemeOrWww) {
+            if (pathAndQuery.isEmpty() && hostParts.first() in nonUrlAbbreviationPrefixes) {
+                return null
+            }
+            if (tld in setOf(".jpg", ".jpeg", ".png", ".pdf", ".txt", ".doc", ".docx", ".xls", ".xlsx", ".mp4", ".mp3")) {
+                return null
+            }
+            val isValidTld = (lastPart.length == 2 && lastPart in validCcTlds) ||
+                (tld in validGenericTlds) ||
+                (tld in highRiskTlds) ||
+                host.endsWith(".gov.rs") ||
+                host.endsWith(".ac.rs") ||
+                host.endsWith(".edu.rs") ||
+                host.endsWith(".co.rs") ||
+                host.endsWith(".org.rs")
+            if (!isValidTld) {
                 return null
             }
         }
@@ -616,8 +736,8 @@ object MessageSecurityAnalyzer {
                 if (blockedBySecurityDns) {
                     val reason = strings.reasonMaliciousWebsiteOnline(url.host)
                     val verdict = OnlineUrlVerdict(isMalicious = true, reason = reason)
-                    onlineVerdictCache[hostKey] = verdict
-                    onlineVerdictCache[rawKey] = verdict
+                    cacheOnlineVerdict(hostKey, verdict)
+                    cacheOnlineVerdict(rawKey, verdict)
                     newlyFlagged = true
                     continue
                 }
@@ -626,17 +746,17 @@ object MessageSecurityAnalyzer {
             // 2. Inspect redirect chain, TLS validity, and landing page for shorteners or untrusted links
             if (!isTrusted || (url.registeredDomain in urlShorteners) || (url.host in urlShorteners)) {
                 val redirectVerdict = inspectUrlRedirectAndLandingOnline(url, strings, context)
-                onlineVerdictCache[rawKey] = redirectVerdict
+                cacheOnlineVerdict(rawKey, redirectVerdict)
                 if (redirectVerdict.isMalicious) {
                     if (url.registeredDomain !in urlShorteners) {
-                        onlineVerdictCache[hostKey] = redirectVerdict
+                        cacheOnlineVerdict(hostKey, redirectVerdict)
                     }
                     newlyFlagged = true
                     continue
                 }
             }
 
-            onlineVerdictCache[rawKey] = OnlineUrlVerdict(isMalicious = false, reason = null)
+            cacheOnlineVerdict(rawKey, OnlineUrlVerdict(isMalicious = false, reason = null))
         }
 
         if (newlyFlagged) {
@@ -920,28 +1040,373 @@ object MessageSecurityAnalyzer {
         }
     }
 
+    private val emailRegex = Regex("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}")
+
+    // Matches "model 97, poziv na broj 25600281895057" or "model: 97 poziv na br. 97-123456"
+    private val modelAndPozivRegex = Regex(
+        pattern = """(?i)\bmodel\s*:?\s*(\d{2})\s*[,;/\-]?\s*poziv\s+na\s+(?:broj|br\.?)\s*:?\s*([0-9][0-9\-/]{3,24}[0-9])"""
+    )
+
+    // Matches "poziv na broj (model 97): 25600281895057" or "poziv na broj: 25600281895057"
+    private val pozivNaBrojRegex = Regex(
+        pattern = """(?i)\bpoziv\s+na\s+(?:broj|br\.?)(?:\s*\(\s*model\s*(\d{2})\s*\))?\s*:?\s*(?:model\s*(\d{2})\s*[,;\-]?\s*)?([0-9][0-9\-/]{3,24}[0-9])"""
+    )
+
+    // Matches dates and date+time timestamps (e.g. 05/10/2026 17:42:27, 01.12.2026., 2026-11-14 12:00)
+    private val dateTimeSpanRegex = Regex(
+        pattern = """\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\.?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?|\b\d{4}[./-]\d{1,2}[./-]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?|\b\d{1,2}/\d{4}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b"""
+    )
+
+    // Matches masked card numbers like "br.kartice*5431 **** **** 6652" or "**6652"
+    private val maskedCardSpanRegex = Regex(
+        pattern = """(?i)(?:\bbr\.?\s*kartice\s*)?\*+\s*\d{4}(?:[\s*]+\d{4})*|\b\d{4}[\s*]+\*+[\s*]+\d{4}\b"""
+    )
+
+    // Matches currency amounts like "3628.99 RSD", "937,99 RSD", "42475,30RSD", "1.450,00 din"
+    private val currencyAmountSpanRegex = Regex(
+        pattern = """(?i)\b\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?\s*(?:RSD|din(?:ara|\.)?|EUR|€|USD|\$|CHF|GBP|KM|BAM)\b"""
+    )
+
+    // Matches contextual payment/bill/transaction amounts (excluding "Raspoloživo" / available balance)
+    private val paymentAmountContextRegex = Regex(
+        pattern = """(?i)\b(?:iznosi|iznos(?:\s+računa|\s+racuna|\s+transakcije|\s+za\s+uplatu)?|u\s+iznosu\s+od|za\s+uplatu|za\s+naplatu|otkupnina|ukupno(?:\s+za\s+uplatu)?|dug(?:ovanje)?(?:\s+iznosi)?|uplati(?:te|ti)?)\s*:?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(RSD|din(?:ara|\.)?|EUR|€|USD|\$|CHF|GBP|KM|BAM)\b"""
+    )
+
+    // Matches UPU / Post Express / Pošta Srbije tracking numbers (e.g. PE123456789RS, CC123456789RS)
+    private val upuTrackingRegex = Regex(
+        pattern = """\b([A-Z]{2}\s*\d{9}\s*[A-Z]{2})\b"""
+    )
+
+    // Matches courier tracking numbers preceded by pošiljka/paket/tracking context
+    private val contextualTrackingRegex = Regex(
+        pattern = """(?i)\b(?:pošiljk[ae]\s+(?:broj|br\.?)|posiljk[ae]\s+(?:broj|br\.?)|broj\s+pošiljke|broj\s+posiljke|paket\s+(?:broj|br\.?)|tracking(?:\s+number|\s+no\.?|\s+code)?|awb)\s*:?\s*([A-Z0-9][A-Z0-9\-]{5,22}[A-Z0-9])\b"""
+    )
+
+    // Matches actionable payment deadlines or scheduled appointments (e.g. "do 01.12.2026.", "zakazano za 18.11.2026. u 14:30")
+    private val actionableDateRegex = Regex(
+        pattern = """(?i)\b(do|rok(?:\s+za\s+uplatu|\s+plaćanja|\s+placanja)?|najkasnije\s+do|dospeva|važi\s+do|vazi\s+do|ističe|istice|zakazano\s+za|termin(?:\s+je)?|pregled(?:\s+je)?|isporuka(?:\s+je)?)\s*:?\s*(\d{1,2})[./-](\d{1,2})[./-](\d{4})\.?(?:\s+u\s+(\d{1,2}):(\d{2}))?"""
+    )
+
+    private val phoneCandidateRegex = Regex(
+        pattern = """(?<![A-Za-z0-9/:._=*?-])(?:\+|00)?\d[\d\s\-()/]{5,17}\d(?![A-Za-z0-9/:._=*])"""
+    )
+
+    private val phoneContextPrecedingRegex = Regex(
+        pattern = """(?i)(?:tel(?:efon)?|kontakt(?:\s+centar)?|pozovite|poziv|call|mob(?:ilni)?|phone|centar|kurir|info|podršk[ae]|podrsk[ae]|servis|broj)\s*:?\s*$"""
+    )
+
+    private val nonPhonePrecedingRegex = Regex(
+        pattern = """(?i)(?:poziv\s+na\s+(?:broj|br\.?)|model\s*\d{0,2}|račun\w*|racun\w*|partij\w*|ugovor\w*|faktur\w*|invoice|transakcij\w*|pošiljk\w*|posiljk\w*|paket\w*|iznos\w*|raspoloživ\w*|raspoloziv\w*|kod|code|otp|pin|id|ref)\s*:?\s*$"""
+    )
+
     /**
      * Extracts email addresses from an incoming SMS/MMS message body.
      */
     fun extractEmailAddresses(body: String): List<String> {
         if (body.isBlank() || !body.contains('@')) return emptyList()
-        val pattern = Regex("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}")
-        return pattern.findAll(body).map { it.value.trim().trimEnd('.', ',', ';', ':') }.distinct().toList()
+        return emailRegex.findAll(body).map { it.value.trim().trimEnd('.', ',', ';', ':') }.distinct().toList()
     }
 
     /**
-     * Extracts phone numbers from an incoming SMS/MMS message body, filtering out dates and short codes.
+     * Extracts Serbian and international payment reference numbers ("Poziv na broj" & "Model")
+     * from bill and banking SMS messages so the user can copy them with a single tap.
+     */
+    fun extractPaymentReferences(body: String): List<DetectedPaymentReference> {
+        if (body.isBlank()) return emptyList()
+        val results = mutableListOf<DetectedPaymentReference>()
+        val occupiedRanges = mutableListOf<IntRange>()
+
+        for (match in modelAndPozivRegex.findAll(body)) {
+            val model = match.groupValues[1].trim().takeIf { it.isNotEmpty() }
+            val refRaw = match.groupValues[2].trim().trimEnd('.', ',', ';', ':')
+            if (refRaw.count(Char::isDigit) >= 4) {
+                results.add(
+                    DetectedPaymentReference(
+                        rawText = match.value.trim(),
+                        referenceNumber = refRaw,
+                        model = model
+                    )
+                )
+                occupiedRanges.add(match.range)
+            }
+        }
+
+        for (match in pozivNaBrojRegex.findAll(body)) {
+            if (occupiedRanges.any { rangesOverlap(it, match.range) }) continue
+            val model = match.groupValues[1].ifBlank { match.groupValues[2] }.trim().takeIf { it.isNotEmpty() }
+            val refRaw = match.groupValues[3].trim().trimEnd('.', ',', ';', ':')
+            if (refRaw.count(Char::isDigit) >= 4 && results.none { it.referenceNumber == refRaw }) {
+                results.add(
+                    DetectedPaymentReference(
+                        rawText = match.value.trim(),
+                        referenceNumber = refRaw,
+                        model = model
+                    )
+                )
+            }
+        }
+
+        return results
+    }
+
+    /**
+     * Extracts bill or transaction payment amounts (e.g. "3628.99 RSD", "937,99 RSD") so the user
+     * can copy the exact numeric value for m-banking without copying "Raspoloživo" balance.
+     */
+    fun extractPaymentAmounts(body: String): List<DetectedPaymentAmount> {
+        if (body.isBlank()) return emptyList()
+        val results = mutableListOf<DetectedPaymentAmount>()
+
+        for (match in paymentAmountContextRegex.findAll(body)) {
+            val rawNum = match.groupValues[1].trim()
+            val rawCur = match.groupValues[2].trim()
+            val normalized = normalizeMonetaryNumber(rawNum) ?: continue
+            val currency = when {
+                rawCur.equals("rsd", ignoreCase = true) || rawCur.startsWith("din", ignoreCase = true) -> "RSD"
+                rawCur.equals("eur", ignoreCase = true) || rawCur == "€" -> "EUR"
+                rawCur.equals("usd", ignoreCase = true) || rawCur == "$" -> "USD"
+                else -> rawCur.uppercase()
+            }
+            if (results.none { it.normalizedValue == normalized && it.currency == currency }) {
+                results.add(
+                    DetectedPaymentAmount(
+                        rawText = match.value.trim(),
+                        displayAmount = "$rawNum $currency",
+                        normalizedValue = normalized,
+                        currency = currency
+                    )
+                )
+            }
+        }
+
+        return results
+    }
+
+    private fun normalizeMonetaryNumber(rawNum: String): String? {
+        val cleaned = rawNum.trim()
+        if (cleaned.isEmpty()) return null
+        val normalized = when {
+            cleaned.contains('.') && cleaned.contains(',') -> {
+                if (cleaned.lastIndexOf(',') > cleaned.lastIndexOf('.')) {
+                    // European format: 1.833,80 -> 1833.80
+                    cleaned.replace(".", "").replace(',', '.')
+                } else {
+                    // US format: 1,833.80 -> 1833.80
+                    cleaned.replace(",", "")
+                }
+            }
+            cleaned.contains(',') -> {
+                // e.g. 937,99 -> 937.99
+                cleaned.replace(',', '.')
+            }
+            else -> cleaned
+        }
+        val asDouble = normalized.toDoubleOrNull() ?: return null
+        if (asDouble <= 0.0) return null
+        return normalized
+    }
+
+    /**
+     * Extracts actionable dates (payment due dates like "do 01.12.2026." or scheduled appointments
+     * like "zakazano za 18.11.2026. u 14:30") so the user can add a Calendar reminder in one tap.
+     * Does NOT trigger on automated past card-swipe timestamps (e.g. "10/11/2026 22:46:31 PLACANJE MC").
+     */
+    fun extractActionableDates(body: String): List<DetectedDateEvent> {
+        if (body.isBlank()) return emptyList()
+        val results = mutableListOf<DetectedDateEvent>()
+
+        for (match in actionableDateRegex.findAll(body)) {
+            val triggerWord = match.groupValues[1].lowercase()
+            val day = match.groupValues[2].toIntOrNull() ?: continue
+            val month = match.groupValues[3].toIntOrNull() ?: continue
+            val year = match.groupValues[4].toIntOrNull() ?: continue
+            val hour = match.groupValues.getOrNull(5)?.toIntOrNull() ?: 9
+            val minute = match.groupValues.getOrNull(6)?.toIntOrNull() ?: 0
+
+            if (day !in 1..31 || month !in 1..12 || year !in 2024..2100) continue
+            if (hour !in 0..23 || minute !in 0..59) continue
+
+            val cal = java.util.Calendar.getInstance().apply {
+                set(java.util.Calendar.YEAR, year)
+                set(java.util.Calendar.MONTH, month - 1)
+                set(java.util.Calendar.DAY_OF_MONTH, day)
+                set(java.util.Calendar.HOUR_OF_DAY, hour)
+                set(java.util.Calendar.MINUTE, minute)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }
+
+            val dayStr = day.toString().padStart(2, '0')
+            val monthStr = month.toString().padStart(2, '0')
+            val timeSuffix = if (match.groupValues.getOrNull(5).isNullOrBlank()) {
+                ""
+            } else {
+                " ${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}"
+            }
+            val displayDate = "$dayStr.$monthStr.$year.$timeSuffix"
+            val isDeadline = triggerWord.contains("do") ||
+                triggerWord.contains("rok") ||
+                triggerWord.contains("dospeva") ||
+                triggerWord.contains("ističe") ||
+                triggerWord.contains("istice") ||
+                triggerWord.contains("važi") ||
+                triggerWord.contains("vazi")
+
+            if (results.none { it.displayDate == displayDate }) {
+                results.add(
+                    DetectedDateEvent(
+                        rawText = match.value.trim(),
+                        displayDate = displayDate,
+                        startEpochMillis = cal.timeInMillis,
+                        isPaymentDeadline = isDeadline
+                    )
+                )
+            }
+        }
+
+        return results
+    }
+
+    /**
+     * Extracts postal and courier package tracking numbers (Post Express, Pošta Srbije, DExpress,
+     * Bex, Aks, City Express, DHL, international UPU codes) from delivery SMS messages.
+     */
+    fun extractPackageTrackingNumbers(body: String): List<DetectedPackageTracking> {
+        if (body.isBlank()) return emptyList()
+        val results = mutableListOf<DetectedPackageTracking>()
+        val lowerBody = body.lowercase()
+
+        val detectedCourier = when {
+            lowerBody.contains("post express") || lowerBody.contains("postexpress") || lowerBody.contains("pošta") || lowerBody.contains("posta.rs") -> "Post Express"
+            lowerBody.contains("d express") || lowerBody.contains("dexpress") -> "D Express"
+            lowerBody.contains("bex") -> "BEX"
+            lowerBody.contains("aks ") || lowerBody.contains("aks-") || lowerBody.contains("aks express") -> "AKS"
+            lowerBody.contains("city express") || lowerBody.contains("cityexpress") -> "City Express"
+            lowerBody.contains("dhl") -> "DHL"
+            else -> null
+        }
+
+        for (match in upuTrackingRegex.findAll(body)) {
+            val code = match.groupValues[1].replace(" ", "")
+            val prefix = code.take(2)
+            if (prefix == "RS" && code.length != 13) continue
+            val courier = detectedCourier ?: if (code.endsWith("RS")) "Pošta / Post Express" else null
+            results.add(
+                DetectedPackageTracking(
+                    rawText = match.value.trim(),
+                    trackingCode = code,
+                    courierName = courier
+                )
+            )
+        }
+
+        for (match in contextualTrackingRegex.findAll(body)) {
+            val code = match.groupValues[1].trim().trimEnd('.', ',', ';')
+            if (code.count(Char::isDigit) >= 5 && results.none { it.trackingCode.equals(code, ignoreCase = true) }) {
+                results.add(
+                    DetectedPackageTracking(
+                        rawText = match.value.trim(),
+                        trackingCode = code,
+                        courierName = detectedCourier
+                    )
+                )
+            }
+        }
+
+        return results
+    }
+
+    private fun rangesOverlap(a: IntRange, b: IntRange): Boolean {
+        return a.first <= b.last && b.first <= a.last
+    }
+
+    /**
+     * Extracts phone numbers from an incoming SMS/MMS message body, strictly filtering out:
+     * - Substrings inside URLs/links (e.g. hex invoice hashes)
+     * - Dates and date+time timestamps (e.g. `05/10/2026 17:42:27`, `01.12.2026.`)
+     * - Payment reference numbers ("Poziv na broj" & "Model", e.g. `25600281895057`)
+     * - Bank account numbers and IBANs
+     * - Masked payment card numbers, monetary amounts, OTP codes, and package tracking codes.
      */
     fun extractPhoneNumbers(body: String): List<String> {
         if (body.isBlank()) return emptyList()
-        val pattern = Regex("(?:\\+|00)?[0-9][0-9\\s\\-()./]{5,18}[0-9]")
-        val datePattern = Regex("^\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4}$")
+
+        val excludedRanges = mutableListOf<IntRange>()
+
+        // 1. Exclude all URL matches (including full query strings and hashes)
+        urlExtractRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+
+        // 2. Exclude all email matches
+        emailRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+
+        // 3. Exclude all date, date+time, month/year, and time-of-day spans
+        dateTimeSpanRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+
+        // 4. Exclude all payment reference ("Poziv na broj") spans
+        modelAndPozivRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+        pozivNaBrojRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+
+        // 5. Exclude all bank account spans
+        ibanPattern.findAll(body).forEach { excludedRanges.add(it.range) }
+        domesticHyphenPattern.findAll(body).forEach {
+            val bankCode = it.groupValues[1]
+            val accPart = it.groupValues[2].padStart(13, '0')
+            val ctrlPart = it.groupValues[3]
+            if (isValidModulo97("$bankCode$accPart$ctrlPart")) {
+                excludedRanges.add(it.range)
+            }
+        }
+        continuousBankPattern.findAll(body).forEach {
+            val candidate = it.value
+            if (SERBIAN_BANKS.containsKey(candidate.substring(0, 3)) && isValidModulo97(candidate)) {
+                excludedRanges.add(it.range)
+            }
+        }
+
+        // 6. Exclude masked card spans, currency amounts, and tracking numbers
+        maskedCardSpanRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+        currencyAmountSpanRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+        upuTrackingRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+        contextualTrackingRegex.findAll(body).forEach { excludedRanges.add(it.range) }
+
+        val otpCode = extractOtpOrVerificationCode(body, body.lowercase())
+
         val matches = mutableListOf<String>()
-        for (match in pattern.findAll(body)) {
-            val raw = match.value.trim().trimEnd('.', ',', ';', ':', '!', '?', ')')
-            if (datePattern.matches(raw)) continue
+        for (match in phoneCandidateRegex.findAll(body)) {
+            if (excludedRanges.any { rangesOverlap(it, match.range) }) continue
+
+            val raw = match.value.trim().trimEnd('.', ',', ';', ':', '!', '?', ')', '-', '/')
+            if (raw.isBlank()) continue
+            if (raw.contains('.')) continue
+
+            val slashCount = raw.count { it == '/' }
+            if (slashCount > 1) continue
+            if (slashCount == 1) {
+                val beforeSlash = raw.substringBefore('/').filter(Char::isDigit)
+                // In valid phone numbers (e.g. 011/3777-888 or +38164/123456), the prefix before '/' starts with 0 or +
+                if (beforeSlash.length !in 3..6 || (!raw.startsWith('+') && !beforeSlash.startsWith('0'))) {
+                    continue
+                }
+            }
+
             val digits = raw.filter(Char::isDigit)
-            if (digits.length in 7..15) {
+            if (digits.length !in 7..15) continue
+            if (otpCode != null && digits == otpCode) continue
+
+            // Inspect preceding text (up to 32 characters before the match)
+            val prefixStart = (match.range.first - 32).coerceAtLeast(0)
+            val precedingText = body.substring(prefixStart, match.range.first)
+            if (nonPhonePrecedingRegex.containsMatchIn(precedingText)) {
+                continue
+            }
+
+            val startsWithPlusOrDoubleZero = raw.startsWith('+') || digits.startsWith("00")
+            val startsWithValidNationalZero = digits.startsWith("0") &&
+                digits.length in 8..11 &&
+                digits.getOrNull(1) in setOf('1', '2', '3', '6', '7', '8', '9')
+            val hasExplicitPhoneContext = phoneContextPrecedingRegex.containsMatchIn(precedingText)
+
+            if (startsWithPlusOrDoubleZero || startsWithValidNationalZero || hasExplicitPhoneContext) {
                 matches.add(raw)
             }
         }
@@ -974,6 +1439,10 @@ object MessageSecurityAnalyzer {
         "908" to "Narodna banka Srbije"
     )
 
+    private val ibanPattern = Regex("\\b(RS\\s*[0-9]{2}\\s*[0-9\\s]{16,20})\\b", RegexOption.IGNORE_CASE)
+    private val domesticHyphenPattern = Regex("\\b([0-9]{3})\\s*-\\s*([0-9]{1,13})\\s*-\\s*([0-9]{2})\\b")
+    private val continuousBankPattern = Regex("\\b([0-9]{18})\\b")
+
     /**
      * Extracts and validates domestic Serbian bank accounts (18 digits, Modulo 97 verified)
      * as well as IBAN formatted accounts from message text.
@@ -983,7 +1452,6 @@ object MessageSecurityAnalyzer {
         val results = mutableListOf<DetectedBankAccount>()
 
         // 1. Serbian IBAN format: RS35... (22 chars)
-        val ibanPattern = Regex("\\b(RS\\s*[0-9]{2}\\s*[0-9\\s]{16,20})\\b", RegexOption.IGNORE_CASE)
         for (match in ibanPattern.findAll(body)) {
             val raw = match.value.trim()
             val digitsOnly = raw.filter(Char::isDigit)
@@ -1005,7 +1473,6 @@ object MessageSecurityAnalyzer {
 
         // 2. Domestic Serbian bank accounts: 3 digits - 1 to 13 digits - 2 digits
         // e.g. 160-555555-55, 160-0000000555555-55, 265-1100300-22
-        val domesticHyphenPattern = Regex("\\b([0-9]{3})\\s*-\\s*([0-9]{1,13})\\s*-\\s*([0-9]{2})\\b")
         for (match in domesticHyphenPattern.findAll(body)) {
             val bankCode = match.groupValues[1]
             val accPart = match.groupValues[2]
@@ -1028,8 +1495,7 @@ object MessageSecurityAnalyzer {
         }
 
         // 3. Continuous 18-digit accounts: e.g. 16000000055555555
-        val continuousPattern = Regex("\\b([0-9]{18})\\b")
-        for (match in continuousPattern.findAll(body)) {
+        for (match in continuousBankPattern.findAll(body)) {
             val candidate = match.value
             val bankCode = candidate.substring(0, 3)
             if (SERBIAN_BANKS.containsKey(bankCode) && isValidModulo97(candidate)) {

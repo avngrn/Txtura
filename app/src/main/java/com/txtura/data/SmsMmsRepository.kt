@@ -49,7 +49,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -91,6 +90,7 @@ object SmsMmsRepository {
     private const val KEY_PINNED_ADDRS = "pinned_addresses"
     private const val KEY_PINNED_MSGS = "pinned_message_ids"
     private const val KEY_HIGHLIGHTED_MSGS = "highlighted_message_ids"
+    private const val KEY_SAFE_OVERRIDE_MSGS = "safe_override_message_ids"
     private const val KEY_SMS_NOTIFICATION_SOUND = "sms_notification_sound_v1"
     private const val KEY_BLOCKED_ADDRS = "blocked_sender_addresses"
     private const val KEY_DELETED_THREADS = "deleted_threads_meta"
@@ -102,7 +102,8 @@ object SmsMmsRepository {
     const val KEY_MMS_SEND_READ_REPORTS = "mms_send_read_reports"
     const val KEY_MMS_AUTO_RETRIEVE = "mms_auto_retrieve"
     const val KEY_MMS_DATA_DISABLED_MODE = "mms_data_disabled_mode"
-    const val KEY_MMS_CREATION_MODE = "mms_creation_mode"
+    const val KEY_MMS_CREATION_MODE = "mms_creation_mode_v2"
+    private const val KEY_SCHEDULED_MSGS = "scheduled_messages_v1"
     const val KEY_SMSC_NUMBER = "smsc_number"
     const val KEY_MMS_APN_CARRIER = "mms_apn_carrier"
     const val KEY_MMS_APN_MMSC = "mms_apn_mmsc"
@@ -129,6 +130,8 @@ object SmsMmsRepository {
     private val pinnedMessageIds: MutableSet<Long> =
         Collections.synchronizedSet(mutableSetOf())
     private val highlightedMessageIds: MutableSet<Long> =
+        Collections.synchronizedSet(mutableSetOf())
+    private val safeOverrideMessageIds: MutableSet<Long> =
         Collections.synchronizedSet(mutableSetOf())
     private val blockedAddresses: MutableSet<String> =
         Collections.synchronizedSet(mutableSetOf())
@@ -161,6 +164,7 @@ object SmsMmsRepository {
     private val _scheduledMessages = MutableStateFlow<List<ScheduledSmsMessage>>(emptyList())
     val scheduledMessages: StateFlow<List<ScheduledSmsMessage>> = _scheduledMessages.asStateFlow()
     private val scheduledJobs: MutableMap<Long, Job> = Collections.synchronizedMap(mutableMapOf())
+    private val pendingMmsSubIds = java.util.concurrent.ConcurrentHashMap<Long, Int>()
 
     /**
      * Dynamically checks if READ_SMS is granted at invocation time (never cached in fields).
@@ -221,6 +225,7 @@ object SmsMmsRepository {
             try {
                 ensureNotificationChannel(appCtx)
                 loadDiskCache(appCtx)
+                restorePersistedScheduledMessages(appCtx)
                 isInitialized = true
                 ioScope.launch {
                     preloadInAppSounds(appCtx, forceReload = true)
@@ -232,8 +237,7 @@ object SmsMmsRepository {
                     detectAndSaveMmsApnFromSmsc(appCtx)
                 }
                 ioScope.launch {
-
-
+                    cleanupStaleTempCacheFiles(appCtx)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Background repository initialization failed", e)
@@ -242,6 +246,37 @@ object SmsMmsRepository {
                     isInitializing = false
                 }
             }
+        }
+    }
+
+    private fun cleanupStaleTempCacheFiles(context: Context) {
+        try {
+            val now = System.currentTimeMillis()
+            val maxTempAgeMillis = 24L * 60L * 60L * 1000L
+            val tempDirs = listOf(
+                File(context.cacheDir, "mms_open"),
+                File(context.cacheDir, "mms_pdu"),
+                File(context.cacheDir, "voice_playback_cache"),
+                File(context.cacheDir, "voice_messages"),
+                File(context.cacheDir, "updates")
+            )
+            for (dir in tempDirs) {
+                if (dir.exists() && dir.isDirectory) {
+                    dir.listFiles()?.forEach { f ->
+                        if ((now - f.lastModified()) > maxTempAgeMillis) {
+                            runCatching { f.delete() }
+                        }
+                    }
+                }
+            }
+            context.cacheDir.listFiles()?.forEach { f ->
+                if (f.isFile && (f.name.startsWith("mms_send_") || f.name.startsWith("mms_recv_") || f.name.startsWith("mms_view_"))) {
+                    if ((now - f.lastModified()) > maxTempAgeMillis) {
+                        runCatching { f.delete() }
+                    }
+                }
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -256,7 +291,7 @@ object SmsMmsRepository {
     suspend fun syncDeviceMessagesIfStale(context: Context, retentionDays: Int = 30) {
         val lastSyncAt = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getLong(KEY_LAST_DEVICE_SYNC_AT, 0L)
-        if (System.currentTimeMillis() - lastSyncAt >= DEVICE_SYNC_MAX_AGE_MILLIS) {
+        if ((System.currentTimeMillis() - lastSyncAt) >= DEVICE_SYNC_MAX_AGE_MILLIS) {
             syncDeviceMessages(context, retentionDays)
         }
     }
@@ -264,6 +299,18 @@ object SmsMmsRepository {
     private fun recordDeviceMessageSync(context: Context) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
             putLong(KEY_LAST_DEVICE_SYNC_AT, System.currentTimeMillis())
+        }
+    }
+
+    private fun analyzeMessageWithUserSafeOverride(
+        messageId: Long,
+        body: String,
+    ): SecurityAnalysisResult {
+        val raw = MessageSecurityAnalyzer.analyzeMessage(body)
+        return if (messageId in safeOverrideMessageIds && raw.riskLevel == SecurityRiskLevel.SUSPICIOUS) {
+            raw.copy(riskLevel = SecurityRiskLevel.SAFE, reasons = emptyList())
+        } else {
+            raw
         }
     }
 
@@ -278,11 +325,13 @@ object SmsMmsRepository {
         body: String,
     ) {
         if (!MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled) return
+        if (messageId in safeOverrideMessageIds) return
         if (!MessageSecurityAnalyzer.hasUrlsToInspect(body)) return
         val appCtx = context.applicationContext
         ioScope.launch {
             val updatedAnalysis = MessageSecurityAnalyzer.inspectMessageUrlsOnline(appCtx, body)
                 ?: return@launch
+            if (messageId in safeOverrideMessageIds) return@launch
             _threads.update { current ->
                 current.map { thread ->
                     if (thread.id == threadId) {
@@ -313,8 +362,10 @@ object SmsMmsRepository {
             val snapshot = _threads.value
             for ((threadId, _, _, _, _, _, messages) in snapshot) {
                 for ((msgId, _, _, body, _, _, _, _, _, _, _, securityAnalysis) in messages) {
+                    if (msgId in safeOverrideMessageIds) continue
                     if (MessageSecurityAnalyzer.hasUrlsToInspect(body)) {
                         val updatedAnalysis = MessageSecurityAnalyzer.inspectMessageUrlsOnline(appCtx, body)
+                        if (msgId in safeOverrideMessageIds) continue
                         if ((updatedAnalysis != null) && (updatedAnalysis != securityAnalysis)) {
                             _threads.update { current ->
                                 current.map { t ->
@@ -439,6 +490,10 @@ object SmsMmsRepository {
             highlightedMessageIds.clear()
             saved.mapNotNull { it.toLongOrNull() }.forEach { highlightedMessageIds.add(it) }
         }
+        prefs.getStringSet(KEY_SAFE_OVERRIDE_MSGS, null)?.let { saved ->
+            safeOverrideMessageIds.clear()
+            saved.mapNotNull { it.toLongOrNull() }.forEach { safeOverrideMessageIds.add(it) }
+        }
         prefs.getStringSet(KEY_BLOCKED_ADDRS, null)?.let { saved ->
             blockedAddresses.clear()
             blockedAddresses.addAll(saved)
@@ -532,6 +587,7 @@ object SmsMmsRepository {
             putStringSet(KEY_PINNED_ADDRS, synchronized(pinnedAddresses) { pinnedAddresses.toSet() })
             putStringSet(KEY_PINNED_MSGS, synchronized(pinnedMessageIds) { pinnedMessageIds.asSequence().map { it.toString() }.toSet() })
             putStringSet(KEY_HIGHLIGHTED_MSGS, synchronized(highlightedMessageIds) { highlightedMessageIds.asSequence().map { it.toString() }.toSet() })
+            putStringSet(KEY_SAFE_OVERRIDE_MSGS, synchronized(safeOverrideMessageIds) { safeOverrideMessageIds.asSequence().map { it.toString() }.toSet() })
             putStringSet(KEY_BLOCKED_ADDRS, synchronized(blockedAddresses) { blockedAddresses.toSet() })
             putStringSet(KEY_FORCED_SERVICE_ADDRS, synchronized(forcedServiceAddresses) { forcedServiceAddresses.toSet() })
             putStringSet(KEY_FORCED_PERSON_ADDRS, synchronized(forcedPersonAddresses) { forcedPersonAddresses.toSet() })
@@ -759,7 +815,7 @@ object SmsMmsRepository {
     }
 
     suspend fun loadAllCachedThreadHistories(context: Context) {
-        val activeIds = _threads.value.filterNot { it.isHistoryLoaded }.map { it.id }
+        val activeIds = _threads.value.asSequence().filterNot { it.isHistoryLoaded }.map { it.id }.toList()
         val activeIdSet = _threads.value.mapTo(mutableSetOf()) { it.id }
         val deletedIds = _deletedThreads.value
             .asSequence()
@@ -1038,13 +1094,28 @@ object SmsMmsRepository {
                 }
 
                 val riskStr = mObj.optString("securityRiskLevel", SecurityRiskLevel.SAFE.name)
-                val riskLevel = SecurityRiskLevel.entries.find { it.name == riskStr } ?: SecurityRiskLevel.SAFE
+                val cachedRiskLevel = SecurityRiskLevel.entries.find { it.name == riskStr } ?: SecurityRiskLevel.SAFE
                 val otpCode = mObj.optString("otpCode").takeIf { it.isNotBlank() }
-                val secResult = SecurityAnalysisResult(
-                    riskLevel = riskLevel,
-                    reasons = emptyList(),
-                    extractedOtpCode = otpCode
-                )
+                val secResult = if (mId in safeOverrideMessageIds) {
+                    SecurityAnalysisResult(
+                        riskLevel = SecurityRiskLevel.SAFE,
+                        reasons = emptyList(),
+                        extractedOtpCode = otpCode,
+                    )
+                } else if (cachedRiskLevel == SecurityRiskLevel.SUSPICIOUS) {
+                    val freshAnalysis = MessageSecurityAnalyzer.analyzeMessage(mBody)
+                    SecurityAnalysisResult(
+                        riskLevel = SecurityRiskLevel.SUSPICIOUS,
+                        reasons = freshAnalysis.reasons,
+                        extractedOtpCode = otpCode ?: freshAnalysis.extractedOtpCode,
+                    )
+                } else {
+                    SecurityAnalysisResult(
+                        riskLevel = cachedRiskLevel,
+                        reasons = emptyList(),
+                        extractedOtpCode = otpCode,
+                    )
+                }
 
                 messages.add(
                     ChatMessage(
@@ -1134,14 +1205,10 @@ object SmsMmsRepository {
     }
 
     /**
-     * Checks if a sender address is currently blocked.
+     * Checks if a sender address is currently blocked by the user.
+     * Manually blocked contacts/numbers are always blocked regardless of the optional Spam Firewall toggle.
      */
     fun isSenderBlocked(address: String): Boolean {
-        appContext?.let {
-            if (!AppSecurityManager.isSpamFirewallEnabled(it)) {
-                return false
-            }
-        }
         val clean = address.trim()
         if (clean.isBlank()) return false
         val normKey = normalizeAddressKey(clean)
@@ -1332,6 +1399,30 @@ object SmsMmsRepository {
         }
     }
 
+    fun getMessageSwipeRightAction(context: Context): MessageSwipeAction {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString("message_swipe_right_action", MessageSwipeAction.PIN.name)
+        return MessageSwipeAction.entries.find { it.name == raw } ?: MessageSwipeAction.PIN
+    }
+
+    fun setMessageSwipeRightAction(context: Context, action: MessageSwipeAction) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putString("message_swipe_right_action", action.name)
+        }
+    }
+
+    fun getMessageSwipeLeftAction(context: Context): MessageSwipeAction {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString("message_swipe_left_action", MessageSwipeAction.HIGHLIGHT.name)
+        return MessageSwipeAction.entries.find { it.name == raw } ?: MessageSwipeAction.HIGHLIGHT
+    }
+
+    fun setMessageSwipeLeftAction(context: Context, action: MessageSwipeAction) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putString("message_swipe_left_action", action.name)
+        }
+    }
+
     fun isMmsRequestReadReports(context: Context): Boolean {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_MMS_REQUEST_READ_REPORTS, false)
@@ -1380,8 +1471,8 @@ object SmsMmsRepository {
 
     fun getMmsCreationMode(context: Context): MmsCreationMode {
         val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_MMS_CREATION_MODE, MmsCreationMode.RESTRICTED.name)
-        return MmsCreationMode.entries.find { it.name == raw } ?: MmsCreationMode.RESTRICTED
+            .getString(KEY_MMS_CREATION_MODE, MmsCreationMode.FREE.name)
+        return MmsCreationMode.entries.find { it.name == raw } ?: MmsCreationMode.FREE
     }
 
     fun setMmsCreationMode(context: Context, mode: MmsCreationMode) {
@@ -1410,7 +1501,7 @@ object SmsMmsRepository {
         try {
             val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
             val op = tm?.simOperator.orEmpty()
-            val opName = tm?.simOperatorName.orEmpty().lowercase(java.util.Locale.ROOT)
+            val opName = tm?.simOperatorName.orEmpty().lowercase(Locale.ROOT)
             val carrierSmsc = when {
                 op == "22001" || opName.contains("yettel") || opName.contains("telenor") -> "+38163100100"
                 op == "22003" || opName.contains("mts") || opName.contains("telekom srbija") -> "+38164100100"
@@ -1826,22 +1917,6 @@ object SmsMmsRepository {
         }
     }
 
-    fun openEmergencyAlerts(context: Context) {
-        val intents = listOf(
-            Intent("android.provider.Telephony.ACTION_MANAGE_EMERGENCY_ALERTS"),
-            Intent("android.settings.EMERGENCY_BROADCAST_SETTINGS"),
-            Intent(Settings.ACTION_WIRELESS_SETTINGS),
-            Intent(Settings.ACTION_SETTINGS)
-        )
-        for (intent in intents) {
-            try {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
-                return
-            } catch (_: Exception) { }
-        }
-    }
-
     fun openMessageSoundSettings(context: Context) {
         try {
             ensureNotificationChannel(context)
@@ -1901,7 +1976,8 @@ object SmsMmsRepository {
                 if (imageUri.scheme == "content" && imageUri.authority == "${context.packageName}.fileprovider") {
                     imageUri
                 } else {
-                    val cacheFile = File(context.cacheDir, "mms_view_${imageUri.hashCode().toLong() and 0xFFFFFFFFL}.jpg")
+                    val openDir = File(context.cacheDir, "mms_open").apply { mkdirs() }
+                    val cacheFile = File(openDir, "mms_view_${imageUri.hashCode().toLong() and 0xFFFFFFFFL}.jpg")
                     context.contentResolver.openInputStream(imageUri)?.use { input ->
                         cacheFile.outputStream().use { output ->
                             input.copyTo(output)
@@ -1967,8 +2043,6 @@ object SmsMmsRepository {
         activeForegroundThreadId = threadId
     }
 
-    fun getActiveForegroundThread(): Long? = activeForegroundThreadId
-
     fun isInAppSoundsEnabled(context: Context): Boolean {
         return try {
             context.getSharedPreferences("txtura_app_prefs", Context.MODE_PRIVATE)
@@ -2022,7 +2096,7 @@ object SmsMmsRepository {
                 return id
             }
 
-            sentSoundId = load(R.raw.odlazna)
+            sentSoundId = load(R.raw.poslato)
             receivedSoundId = load(R.raw.dolazna)
             cancelSoundId = load(R.raw.cancel)
             load(R.raw.highlight_poruke)
@@ -2099,16 +2173,14 @@ object SmsMmsRepository {
     fun playVoiceRecordCancelSound(context: Context) = playRawSound(context, R.raw.glasovna_ponisti_ispumpani_pop)
 
     fun playInAppMessageSentSound(context: Context) {
-        playRawSound(context, R.raw.odlazna)
+        playRawSound(context, R.raw.poslato)
     }
 
     fun playInAppMessageReceivedSound(context: Context) {
-        if (FlashNotificationManager.isFlashAlertEnabled(context)) {
-            FlashNotificationManager.triggerFlashNotification(context)
+        if (FlashNotificationManager.shouldTriggerFlashAlert(context)) {
+            FlashNotificationManager.triggerFlashNotification(context, R.raw.dolazna)
         }
-        val sound = getSmsNotificationSound(context)
-        val customResId = sound.rawResId ?: R.raw.dolazna
-        playRawSound(context, customResId)
+        playRawSound(context, R.raw.dolazna)
     }
 
     fun playInAppMessageCancelledSound(context: Context) {
@@ -2271,7 +2343,7 @@ object SmsMmsRepository {
                             status = deliveryStatus,
                             isPinned = id in pinnedMessageIds,
                             isHighlighted = id in highlightedMessageIds,
-                            securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(cleanBody)
+                            securityAnalysis = analyzeMessageWithUserSafeOverride(id, cleanBody)
                         )
                     )
                 }
@@ -2484,6 +2556,7 @@ object SmsMmsRepository {
             Telephony.Mms.READ
         )
         try {
+            val batchedPartsByMmsId = queryAllMmsPartsBatch(context)
             context.contentResolver.query(
                 Telephony.Mms.CONTENT_URI,
                 mmsProjection,
@@ -2511,7 +2584,7 @@ object SmsMmsRepository {
                     }
 
                     val address = queryMmsAddressSafely(context, mmsId) ?: "Unknown"
-                    val (mmsText, mmsAttachment) = queryMmsPartsSafely(context, mmsId)
+                    val (mmsText, mmsAttachment) = batchedPartsByMmsId[mmsId] ?: queryMmsPartsSafely(context, mmsId)
                     val isSr = TxturaStrings.isSerbianLocale()
                     val fallbackBody = if (isSr) "MMS Poruka" else "MMS Message"
                     val cleanBody = MessageSecurityAnalyzer.sanitizeMessageText(
@@ -2532,7 +2605,7 @@ object SmsMmsRepository {
                             isPinned = uniqueMsgId in pinnedMessageIds,
                             isHighlighted = uniqueMsgId in highlightedMessageIds,
                             attachment = mmsAttachment,
-                            securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(cleanBody)
+                            securityAnalysis = analyzeMessageWithUserSafeOverride(uniqueMsgId, cleanBody)
                         )
                     )
                 }
@@ -2568,6 +2641,133 @@ object SmsMmsRepository {
         }
     }
 
+    private fun queryAllMmsPartsBatch(
+        context: Context,
+    ): Map<Long, Pair<String, MmsAttachment?>> {
+        val partUri = "content://mms/part".toUri()
+        val textsByMmsId = HashMap<Long, String>()
+        val attachmentsByMmsId = HashMap<Long, MmsAttachment>()
+        val mmsIdsSeen = HashSet<Long>()
+        val isSr = TxturaStrings.isSerbianLocale()
+
+        try {
+            context.contentResolver.query(
+                partUri,
+                arrayOf("_id", "mid", "ct", "text", "cl"),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val partId = cursor.getLong(0)
+                    val mmsId = cursor.getLong(1)
+                    val contentType = cursor.getString(2).orEmpty()
+                    val inlineText = cursor.getString(3).orEmpty()
+                    val contentLocation = cursor.getString(4).orEmpty()
+                    mmsIdsSeen.add(mmsId)
+
+                    val parsed = parseSingleMmsPartRow(partId, contentType, inlineText, contentLocation, isSr)
+                    if (parsed.first.isNotBlank()) {
+                        val prev = textsByMmsId[mmsId]
+                        textsByMmsId[mmsId] = if (prev.isNullOrBlank()) parsed.first else "$prev\n${parsed.first}"
+                    }
+                    if (parsed.second != null && attachmentsByMmsId[mmsId] == null) {
+                        attachmentsByMmsId[mmsId] = parsed.second!!
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        val result = HashMap<Long, Pair<String, MmsAttachment?>>(mmsIdsSeen.size)
+        for (mid in mmsIdsSeen) {
+            result[mid] = (textsByMmsId[mid].orEmpty()) to attachmentsByMmsId[mid]
+        }
+        return result
+    }
+
+    private fun parseSingleMmsPartRow(
+        partId: Long,
+        contentType: String,
+        inlineText: String,
+        contentLocation: String,
+        isSr: Boolean,
+    ): Pair<String, MmsAttachment?> {
+        val cleanMime = contentType.substringBefore(';').trim()
+        val cleanLoc = contentLocation.substringAfterLast('/').trim()
+        val specificPartUri = "content://mms/part/$partId".toUri()
+
+        return when {
+            cleanMime.equals("application/smil", ignoreCase = true) ||
+                cleanMime.startsWith("text/vnd.wap.wml", ignoreCase = true) ||
+                cleanLoc.endsWith(".smil", ignoreCase = true) ||
+                cleanLoc.equals("smil.xml", ignoreCase = true) -> {
+                "" to null
+            }
+            cleanMime.equals("text/plain", ignoreCase = true) -> {
+                val isDefaultSlide = cleanLoc.isBlank() ||
+                    cleanLoc.equals("text_01.txt", ignoreCase = true) ||
+                    cleanLoc.equals("text_0.txt", ignoreCase = true) ||
+                    cleanLoc.equals("text.txt", ignoreCase = true) ||
+                    cleanLoc.equals("body.txt", ignoreCase = true)
+                if (!isDefaultSlide && cleanLoc.endsWith(".txt", ignoreCase = true)) {
+                    inlineText.take(120) to MmsAttachment(
+                        uri = specificPartUri,
+                        mimeType = "text/plain",
+                        caption = cleanLoc
+                    )
+                } else {
+                    inlineText to null
+                }
+            }
+            cleanMime.startsWith("image/", ignoreCase = true) -> {
+                "" to MmsAttachment(
+                    uri = specificPartUri,
+                    mimeType = cleanMime,
+                    caption = cleanLoc.ifBlank { "MMS Photo" }
+                )
+            }
+            cleanMime.startsWith("audio/", ignoreCase = true) ||
+                cleanMime.equals("application/ogg", ignoreCase = true) ||
+                cleanLoc.endsWith(".amr", ignoreCase = true) ||
+                cleanLoc.endsWith(".3gp", ignoreCase = true) ||
+                cleanLoc.endsWith(".3gpp", ignoreCase = true) ||
+                cleanLoc.endsWith(".m4a", ignoreCase = true) ||
+                cleanLoc.endsWith(".aac", ignoreCase = true) ||
+                cleanLoc.endsWith(".mp3", ignoreCase = true) ||
+                cleanLoc.endsWith(".ogg", ignoreCase = true) ||
+                cleanLoc.endsWith(".wav", ignoreCase = true) -> {
+                "" to MmsAttachment(
+                    uri = specificPartUri,
+                    mimeType = if (cleanMime.startsWith("audio/", ignoreCase = true)) cleanMime else "audio/amr",
+                    caption = cleanLoc.ifBlank { if (isSr) "Govorna poruka" else "Voice message" }
+                )
+            }
+            cleanMime.contains("calendar", ignoreCase = true) ||
+                cleanLoc.endsWith(".ics", ignoreCase = true) ||
+                cleanLoc.endsWith(".vcs", ignoreCase = true) -> {
+                "" to MmsAttachment(
+                    uri = specificPartUri,
+                    mimeType = cleanMime.ifBlank { "text/calendar" },
+                    caption = cleanLoc.ifBlank { if (isSr) "Kalendarski događaj" else "Calendar event" }
+                )
+            }
+            cleanMime.isNotBlank() -> {
+                val resolvedDocMime = if (cleanMime == "application/octet-stream" && cleanLoc.isNotBlank()) {
+                    com.txtura.telephony.MmsPayloadValidator.getMimeTypeFromExtension(cleanLoc)
+                } else {
+                    cleanMime
+                }
+                "" to MmsAttachment(
+                    uri = specificPartUri,
+                    mimeType = resolvedDocMime,
+                    caption = cleanLoc.ifBlank { if (isSr) "Dokument" else "Document" }
+                )
+            }
+            else -> "" to null
+        }
+    }
+
     private fun queryMmsPartsSafely(
         context: Context,
         mmsId: Long,
@@ -2575,6 +2775,7 @@ object SmsMmsRepository {
         val partUri = "content://mms/part".toUri()
         var textBody = ""
         var attachment: MmsAttachment? = null
+        val isSr = TxturaStrings.isSerbianLocale()
 
         try {
             context.contentResolver.query(
@@ -2590,51 +2791,12 @@ object SmsMmsRepository {
                     val inlineText = cursor.getString(2).orEmpty()
                     val contentLocation = cursor.getString(3).orEmpty()
 
-                    when {
-                        contentType == "text/plain" -> {
-                            if (inlineText.isNotBlank()) {
-                                textBody = inlineText
-                            }
-                        }
-                        contentType.startsWith("image/") -> {
-                            val specificPartUri = "content://mms/part/$partId".toUri()
-                            attachment = MmsAttachment(
-                                uri = specificPartUri,
-                                mimeType = contentType,
-                                caption = contentLocation.ifBlank { "MMS Photo" }
-                            )
-                        }
-                        contentType.startsWith("audio/", ignoreCase = true) ||
-                        contentLocation.endsWith(".amr", ignoreCase = true) ||
-                        contentLocation.endsWith(".3gp", ignoreCase = true) ||
-                        contentLocation.endsWith(".m4a", ignoreCase = true) ||
-                        contentLocation.endsWith(".aac", ignoreCase = true) ||
-                        contentType.equals("application/ogg", ignoreCase = true) -> {
-                            val specificPartUri = "content://mms/part/$partId".toUri()
-                            attachment = MmsAttachment(
-                                uri = specificPartUri,
-                                mimeType = if (contentType.startsWith("audio/", ignoreCase = true)) contentType else "audio/amr",
-                                caption = contentLocation.ifBlank { if (TxturaStrings.isSerbianLocale()) "Govorna poruka" else "Voice message" }
-                            )
-                        }
-                        contentType.contains("calendar", ignoreCase = true) ||
-                        contentLocation.endsWith(".ics", ignoreCase = true) ||
-                        contentLocation.endsWith(".vcs", ignoreCase = true) -> {
-                            val specificPartUri = "content://mms/part/$partId".toUri()
-                            attachment = MmsAttachment(
-                                uri = specificPartUri,
-                                mimeType = contentType.ifBlank { "text/calendar" },
-                                caption = contentLocation.ifBlank { if (TxturaStrings.isSerbianLocale()) "Kalendarski događaj" else "Calendar event" }
-                            )
-                        }
-                        contentType != "application/smil" && !contentType.startsWith("text/vnd.wap.wml") && contentType.isNotBlank() -> {
-                            val specificPartUri = "content://mms/part/$partId".toUri()
-                            attachment = MmsAttachment(
-                                uri = specificPartUri,
-                                mimeType = contentType,
-                                caption = contentLocation.ifBlank { if (TxturaStrings.isSerbianLocale()) "Dokument" else "Document" }
-                            )
-                        }
+                    val (partText, partAtt) = parseSingleMmsPartRow(partId, contentType, inlineText, contentLocation, isSr)
+                    if (partText.isNotBlank()) {
+                        textBody = if (textBody.isBlank()) partText else "$textBody\n$partText"
+                    }
+                    if (partAtt != null && attachment == null) {
+                        attachment = partAtt
                     }
                 }
             }
@@ -2948,6 +3110,7 @@ object SmsMmsRepository {
         attachmentUri: Uri? = null,
         subId: Int = -1
     ): Long {
+        val appCtx = context.applicationContext
         val cleanAddress = MessageSecurityAnalyzer.sanitizePhoneNumber(recipientAddress)
             .ifBlank { recipientAddress.trim().take(24) }
         val cleanBody = MessageSecurityAnalyzer.sanitizeMessageText(rawBody)
@@ -2963,321 +3126,43 @@ object SmsMmsRepository {
         }
         val threadId = existingThread?.id ?: nextId.incrementAndGet()
 
-        val requestDeliveryReport = isDeliveryReportsEnabled(context)
-        val scAddress = getSmscAddress(context).takeIf { it.isNotBlank() }
-        var deliveryStatus = if (requestDeliveryReport) DeliveryStatus.SENT else DeliveryStatus.DELIVERED
+        val requestDeliveryReport = isDeliveryReportsEnabled(appCtx)
+        val initialDeliveryStatus = if (requestDeliveryReport) DeliveryStatus.SENT else DeliveryStatus.DELIVERED
 
-        if (!isMms && cleanBody.isNotBlank() && hasSendSmsPermission(context)) {
-            try {
-                val smsManager = if (subId >= 0) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        context.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        SmsManager.getSmsManagerForSubscriptionId(subId)
-                    }
-                } else {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        context.getSystemService(SmsManager::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        SmsManager.getDefault()
-                    }
-                }
-                if (smsManager != null && cleanAddress.any { it.isDigit() }) {
-                    val sentIntent = Intent(ACTION_SMS_SENT).apply {
-                        setPackage(context.packageName)
-                        putExtra("message_id", msgId)
-                    }
-                    val sentPi = PendingIntent.getBroadcast(
-                        context,
-                        msgId.toInt(),
-                        sentIntent,
-                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                    )
-                    val deliveredPi = if (requestDeliveryReport) {
-                        val deliveredIntent = Intent(ACTION_SMS_DELIVERED).apply {
-                            setPackage(context.packageName)
-                            putExtra("message_id", msgId)
-                        }
-                        PendingIntent.getBroadcast(
-                            context,
-                            (msgId + 1).toInt(),
-                            deliveredIntent,
-                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                        )
-                    } else null
+        val cachedContactName: String = existingThread?.contactName ?: cleanAddress
+        val cachedPhotoUri: Uri? = existingThread?.contactPhotoUri
 
-                    val parts = smsManager.divideMessage(cleanBody)
-                    if (parts.size > 1) {
-                        val sentIntents = ArrayList(parts.map { sentPi })
-                        val deliveredIntents = if (deliveredPi != null) ArrayList(parts.map { deliveredPi }) else null
-                        smsManager.sendMultipartTextMessage(
-                            cleanAddress,
-                            scAddress,
-                            parts,
-                            sentIntents,
-                            deliveredIntents
-                        )
-                    } else {
-                        smsManager.sendTextMessage(
-                            cleanAddress,
-                            scAddress,
-                            cleanBody,
-                            sentPi,
-                            deliveredPi
-                        )
-                    }
-                    if (!requestDeliveryReport) {
-                        deliveryStatus = DeliveryStatus.DELIVERED
-                    }
-
-                    persistMessageToSystemProviderIfDefault(
-                        context = context,
-                        address = cleanAddress,
-                        body = cleanBody,
-                        timestampMillis = now,
-                        messageType = Telephony.Sms.MESSAGE_TYPE_SENT,
-                        read = 1
-                    )
-                }
-            } catch (e: SecurityException) {
-                Log.e(TAG, "SecurityException while sending SMS", e)
-            } catch (e: Exception) {
-                Log.w(TAG, "Hardware SMS send fallback to local thread", e)
-            }
-        } else if (isMms) {
-            try {
-                if (!hasSendSmsPermission(context)) {
-                    Log.w(TAG, "MMS send blocked: SEND_SMS permission is not granted")
-                    deliveryStatus = DeliveryStatus.FAILED
-                } else if (!isDataAllowedForMms(context)) {
-                    Log.w(TAG, "Cellular MMS send blocked: mobile data disabled for MMS according to user settings")
-                    deliveryStatus = DeliveryStatus.FAILED_NO_DATA
-                } else {
-                    val requestReadReport = isMmsRequestReadReports(context)
-                    val creationMode = getMmsCreationMode(context)
-
-                    val uriMime = try { context.contentResolver.getType(attachmentUri) } catch (_: Exception) { null }
-                    val isAudioAttachment = uriMime?.startsWith("audio/", ignoreCase = true) == true ||
-                        attachmentUri.path?.endsWith(".amr", ignoreCase = true) == true ||
-                        attachmentUri.path?.endsWith(".3gp", ignoreCase = true) == true ||
-                        attachmentUri.toString().contains("voice_msg") ||
-                        attachmentUri.toString().contains("mms_audio")
-
-                    val isCalendarAttachment = !isAudioAttachment && (
-                        uriMime?.contains("calendar", ignoreCase = true) == true ||
-                        attachmentUri.path?.endsWith(".ics", ignoreCase = true) == true ||
-                        attachmentUri.path?.endsWith(".vcs", ignoreCase = true) == true ||
-                        attachmentUri.toString().contains("mms_cal")
-                    )
-
-                    val isDocumentAttachment = !isAudioAttachment && !isCalendarAttachment && (
-                        uriMime?.startsWith("image/") != true &&
-                        attachmentUri.path?.endsWith(".jpg", ignoreCase = true) != true &&
-                        attachmentUri.path?.endsWith(".jpeg", ignoreCase = true) != true &&
-                        attachmentUri.path?.endsWith(".png", ignoreCase = true) != true &&
-                        attachmentUri.path?.endsWith(".webp", ignoreCase = true) != true &&
-                        attachmentUri.path?.endsWith(".gif", ignoreCase = true) != true
-                    )
-
-                    val isImageAttachment = !isAudioAttachment && !isCalendarAttachment && !isDocumentAttachment
-
-                    val imageBytes = if (isImageAttachment) {
-                        attachmentUri.let { MmsPduHelper.downscaleImageForMms(context, it, creationMode) }
-                    } else null
-
-                    val rawAudioBytes = if (isAudioAttachment) {
-                        try {
-                            context.contentResolver.openInputStream(attachmentUri)?.use { it.readBytes() }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to read audio attachment bytes", e)
-                            null
-                        }
-                    } else null
-
-                    val audioBytes = rawAudioBytes
-
-                    val otherBytes = if (isCalendarAttachment || isDocumentAttachment) {
-                        try {
-                            context.contentResolver.openInputStream(attachmentUri)?.use { it.readBytes() }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to read attachment bytes", e)
-                            null
-                        }
-                    } else null
-
-                    val otherMimeType = when {
-                        isCalendarAttachment -> "text/calendar"
-                        isDocumentAttachment -> uriMime ?: "application/octet-stream"
-                        else -> null
-                    }
-
-                    val otherFileName = when {
-                        isCalendarAttachment -> attachmentUri.lastPathSegment?.substringAfterLast('/')?.takeIf {
-                            it.endsWith(".ics", true) || it.endsWith(".vcs", true)
-                        } ?: "event.ics"
-                        isDocumentAttachment -> DocumentAttachmentHelper.getFileName(context, attachmentUri)
-                        else -> null
-                    }
-
-                    val pduBytes = MmsPduHelper.buildSendReqPdu(
-                        context = context,
-                        recipient = cleanAddress,
-                        bodyText = cleanBody.takeIf { it.isNotBlank() },
-                        imageBytes = imageBytes,
-                        audioBytes = audioBytes,
-                        audioMimeType = "audio/amr",
-                        otherBytes = otherBytes,
-                        otherMimeType = otherMimeType,
-                        otherFileName = otherFileName,
-                        requestDeliveryReport = requestDeliveryReport,
-                        requestReadReport = requestReadReport,
-                    )
-
-                    val pduFile = File(context.cacheDir, "mms_send_$msgId.pdu")
-                    pduFile.writeBytes(pduBytes)
-
-                    val pduUri = FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.fileprovider",
-                        pduFile
-                    )
-
-                    try {
-                        context.grantUriPermission(
-                            "com.android.mms.service",
-                            pduUri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        )
-                    } catch (_: Exception) {}
-                    try {
-                        context.grantUriPermission(
-                            "com.android.phone",
-                            pduUri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        )
-                    } catch (_: Exception) {}
-
-                    val smsManager = if (subId >= 0) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            context.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            SmsManager.getSmsManagerForSubscriptionId(subId)
-                        }
-                    } else {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            context.getSystemService(SmsManager::class.java)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            SmsManager.getDefault()
-                        }
-                    }
-
-                    val sentIntent = Intent(ACTION_MMS_SENT).apply {
-                        setPackage(context.packageName)
-                        putExtra("message_id", msgId)
-                        putExtra("pdu_path", pduFile.absolutePath)
-                    }
-                    val sentPi = PendingIntent.getBroadcast(
-                        context,
-                        msgId.toInt(),
-                        sentIntent,
-                        PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                    )
-
-                    val maxBytesLimit = when (creationMode) {
-                        MmsCreationMode.RESTRICTED -> 100 * 1024
-                        MmsCreationMode.WARNING -> 300 * 1024
-                        MmsCreationMode.FREE -> 600 * 1024
-                    }
-
-                    val mmsApn = getMmsApnSettings(context)
-                    val configOverrides = android.os.Bundle().apply {
-                        putBoolean(SmsManager.MMS_CONFIG_MMS_DELIVERY_REPORT_ENABLED, requestDeliveryReport)
-                        putBoolean(SmsManager.MMS_CONFIG_MMS_READ_REPORT_ENABLED, requestReadReport)
-                        putInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, maxBytesLimit)
-                        putBoolean(SmsManager.MMS_CONFIG_SUPPORT_MMS_CONTENT_DISPOSITION, true)
-                        if (mmsApn.mmscUrl.isNotBlank()) {
-                            putString("mmscUrl", mmsApn.mmscUrl)
-                        }
-                        if (mmsApn.mmsProxy.isNotBlank()) {
-                            putString("mmsProxy", mmsApn.mmsProxy)
-                        }
-                        if (mmsApn.mmsPort > 0) {
-                            putString("mmsPort", mmsApn.mmsPort.toString())
-                            putInt("mmsPort", mmsApn.mmsPort)
-                        }
-                    }
-
-                    val activeSmsManager = smsManager
-                        ?: throw IllegalStateException("SmsManager is unavailable for MMS sending")
-                    activeSmsManager.sendMultimediaMessage(
-                        context,
-                        pduUri,
-                        null,
-                        configOverrides,
-                        sentPi
-                    )
-                    deliveryStatus = if (requestDeliveryReport) DeliveryStatus.SENT else DeliveryStatus.DELIVERED
-
-                    // Persist outgoing sent MMS to system Telephony.Mms provider if default SMS app
-                    persistMmsToSystemProviderIfDefault(
-                        context = context,
-                        senderAddress = cleanAddress,
-                        bodyText = cleanBody,
-                        imageBytes = imageBytes,
-                        imageMimeType = "image/jpeg",
-                        timestampMillis = now,
-                        isIncoming = false,
-                        audioBytes = audioBytes,
-                        audioMimeType = "audio/amr",
-                        otherBytes = otherBytes,
-                        otherMimeType = otherMimeType,
-                        otherFileName = otherFileName
-                    )
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send MMS message over cellular network", e)
-                deliveryStatus = DeliveryStatus.FAILED
-            }
-        }
-
-        val resolvedContactName = resolveContactNameSafely(context, cleanAddress) ?: cleanAddress
-        val resolvedPhotoUri = resolveContactPhotoUriSafely(context, cleanAddress)
-
-        val uriMime = attachmentUri?.let { try { context.contentResolver.getType(it) } catch (_: Exception) { null } }
-        val isAudioAttachment = uriMime?.startsWith("audio/", ignoreCase = true) == true ||
-            attachmentUri?.path?.endsWith(".amr", ignoreCase = true) == true ||
-            attachmentUri?.path?.endsWith(".3gp", ignoreCase = true) == true ||
-            attachmentUri?.toString()?.contains("voice_msg") == true ||
-            attachmentUri?.toString()?.contains("mms_audio") == true
+        val uriStr = attachmentUri?.toString().orEmpty()
+        val uriPath = attachmentUri?.path.orEmpty()
+        val uriMime = attachmentUri?.let { try { appCtx.contentResolver.getType(it) } catch (_: Exception) { null } }
+        val isAudioAttachment = MmsPduHelper.isAudioContentType(uriMime, uriPath.ifBlank { uriStr }) ||
+            uriStr.contains("voice_msg") ||
+            uriStr.contains("mms_audio")
 
         val isCalendarAttachment = !isAudioAttachment && (
             uriMime?.contains("calendar", ignoreCase = true) == true ||
-            attachmentUri?.path?.endsWith(".ics", ignoreCase = true) == true ||
-            attachmentUri?.path?.endsWith(".vcs", ignoreCase = true) == true ||
-            attachmentUri?.toString()?.contains("mms_cal") == true
+            uriPath.endsWith(".ics", ignoreCase = true) ||
+            uriPath.endsWith(".vcs", ignoreCase = true) ||
+            uriStr.contains("mms_cal")
         )
 
         val isDocumentAttachment = !isAudioAttachment && !isCalendarAttachment && (
             uriMime?.startsWith("image/") != true &&
-            attachmentUri?.path?.endsWith(".jpg", ignoreCase = true) != true &&
-            attachmentUri?.path?.endsWith(".jpeg", ignoreCase = true) != true &&
-            attachmentUri?.path?.endsWith(".png", ignoreCase = true) != true &&
-            attachmentUri?.path?.endsWith(".webp", ignoreCase = true) != true &&
-            attachmentUri?.path?.endsWith(".gif", ignoreCase = true) != true
+            !uriPath.endsWith(".jpg", ignoreCase = true) &&
+            !uriPath.endsWith(".jpeg", ignoreCase = true) &&
+            !uriPath.endsWith(".png", ignoreCase = true) &&
+            !uriPath.endsWith(".webp", ignoreCase = true) &&
+            !uriPath.endsWith(".gif", ignoreCase = true)
         )
 
         val defaultMmsText = when {
             isAudioAttachment -> if (isSr) "Govorna poruka" else "Voice message"
             isCalendarAttachment -> if (isSr) "Kalendarski događaj" else "Calendar event"
-            isDocumentAttachment -> attachmentUri?.let { DocumentAttachmentHelper.getFileName(context, it) } ?: (if (isSr) "Dokument" else "Document")
+            isDocumentAttachment -> attachmentUri?.let { DocumentAttachmentHelper.getFileName(appCtx, it) } ?: (if (isSr) "Dokument" else "Document")
             else -> if (isSr) "MMS Fotografija" else "MMS Photo"
         }
         val attachmentMimeType = when {
-            isAudioAttachment -> "audio/amr"
+            isAudioAttachment -> uriMime?.takeIf { it.startsWith("audio/", ignoreCase = true) } ?: "audio/amr"
             isCalendarAttachment -> "text/calendar"
             isDocumentAttachment -> uriMime ?: "application/octet-stream"
             else -> "image/jpeg"
@@ -3291,7 +3176,7 @@ object SmsMmsRepository {
             timestampMillis = now,
             isIncoming = false,
             type = if (isMms) MessageType.MMS else MessageType.SMS,
-            status = deliveryStatus,
+            status = initialDeliveryStatus,
             attachment = attachmentUri?.let {
                 MmsAttachment(
                     uri = it,
@@ -3302,6 +3187,7 @@ object SmsMmsRepository {
             securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(cleanBody)
         )
 
+        // Optimistically insert the message into UI state immediately for zero-lag responsiveness
         _threads.update { current ->
             val updated = if (existingThread != null) {
                 current.map { thread ->
@@ -3317,29 +3203,309 @@ object SmsMmsRepository {
             } else {
                 val newThread = ConversationThread(
                     id = threadId,
-                    contactName = resolvedContactName,
+                    contactName = cachedContactName,
                     address = cleanAddress,
-                    avatarInitials = computeInitials(resolvedContactName),
+                    avatarInitials = computeInitials(cachedContactName),
                     avatarAccentColorHex = 0xFF00E5FF,
-                    contactPhotoUri = resolvedPhotoUri,
+                    contactPhotoUri = cachedPhotoUri,
                     messages = listOf(newMessage),
                     unreadCount = 0,
                     isPinned = isAddressPinned(cleanAddress),
-                    isService = isAddressService(cleanAddress, listOf(newMessage), resolvedContactName)
+                    isService = isAddressService(cleanAddress, listOf(newMessage), cachedContactName)
                 )
                 listOf(newThread) + current
             }
             sortThreads(updated)
         }
 
-        verifyMessageUrlsOnlineAsync(context, threadId, msgId, cleanBody)
-        saveDiskCacheAsync(context, immediate = true, historyThreadIds = setOf(threadId))
+        // Perform contact resolution, image compression, PDU building, and telephony dispatch off the main thread
+        ioScope.launch {
+            if (existingThread == null) {
+                val resolvedContactName = resolveContactNameSafely(appCtx, cleanAddress) ?: cleanAddress
+                val resolvedPhotoUri = resolveContactPhotoUriSafely(appCtx, cleanAddress)
+                if (resolvedContactName != cachedContactName || resolvedPhotoUri != cachedPhotoUri) {
+                    _threads.update { list ->
+                        list.map { thread ->
+                            if (thread.id == threadId) {
+                                thread.copy(
+                                    contactName = resolvedContactName,
+                                    avatarInitials = computeInitials(resolvedContactName),
+                                    contactPhotoUri = resolvedPhotoUri
+                                )
+                            } else {
+                                thread
+                            }
+                        }
+                    }
+                }
+            }
+
+            val scAddress = getSmscAddress(appCtx).takeIf { it.isNotBlank() }
+
+            if (!isMms && cleanBody.isNotBlank() && hasSendSmsPermission(appCtx)) {
+                try {
+                    val smsManager = if (subId >= 0) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            appCtx.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            SmsManager.getSmsManagerForSubscriptionId(subId)
+                        }
+                    } else {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            appCtx.getSystemService(SmsManager::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            SmsManager.getDefault()
+                        }
+                    }
+                    if (smsManager != null && cleanAddress.any { it.isDigit() }) {
+                        val sentIntent = Intent(appCtx, NotificationActionReceiver::class.java).apply {
+                            action = ACTION_SMS_SENT
+                            putExtra("message_id", msgId)
+                        }
+                        val sentPi = PendingIntent.getBroadcast(
+                            appCtx,
+                            msgId.toInt(),
+                            sentIntent,
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                        )
+                        val deliveredPi = if (requestDeliveryReport) {
+                            val deliveredIntent = Intent(appCtx, NotificationActionReceiver::class.java).apply {
+                                action = ACTION_SMS_DELIVERED
+                                putExtra("message_id", msgId)
+                            }
+                            PendingIntent.getBroadcast(
+                                appCtx,
+                                (msgId + 1).toInt(),
+                                deliveredIntent,
+                                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                            )
+                        } else null
+
+                        val parts = smsManager.divideMessage(cleanBody)
+                        if (parts.size > 1) {
+                            val sentIntents = ArrayList(parts.map { sentPi })
+                            val deliveredIntents = if (deliveredPi != null) ArrayList(parts.map { deliveredPi }) else null
+                            smsManager.sendMultipartTextMessage(
+                                cleanAddress,
+                                scAddress,
+                                parts,
+                                sentIntents,
+                                deliveredIntents
+                            )
+                        } else {
+                            smsManager.sendTextMessage(
+                                cleanAddress,
+                                scAddress,
+                                cleanBody,
+                                sentPi,
+                                deliveredPi
+                            )
+                        }
+
+                        persistMessageToSystemProviderIfDefault(
+                            context = appCtx,
+                            address = cleanAddress,
+                            body = cleanBody,
+                            timestampMillis = now,
+                            messageType = Telephony.Sms.MESSAGE_TYPE_SENT,
+                            read = 1
+                        )
+                    }
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "SecurityException while sending SMS", e)
+                    updateMessageDeliveryStatus(msgId, DeliveryStatus.FAILED, appCtx)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Hardware SMS send fallback to local thread", e)
+                }
+            } else if (isMms) {
+                try {
+                    if (!hasSendSmsPermission(appCtx)) {
+                        Log.w(TAG, "MMS send blocked: SEND_SMS permission is not granted")
+                        updateMessageDeliveryStatus(msgId, DeliveryStatus.FAILED, appCtx)
+                    } else if (!isDataAllowedForMms(appCtx)) {
+                        Log.w(TAG, "Cellular MMS send blocked: mobile data disabled for MMS according to user settings")
+                        updateMessageDeliveryStatus(msgId, DeliveryStatus.FAILED_NO_DATA, appCtx)
+                    } else {
+                        val requestReadReport = isMmsRequestReadReports(appCtx)
+                        val creationMode = getMmsCreationMode(appCtx)
+                        val isImageAttachment = !isAudioAttachment && !isCalendarAttachment && !isDocumentAttachment
+
+                        val imageBytes = if (isImageAttachment) {
+                            MmsPduHelper.downscaleImageForMms(appCtx, attachmentUri, creationMode)
+                        } else null
+
+                        val audioBytes = if (isAudioAttachment) {
+                            try {
+                                appCtx.contentResolver.openInputStream(attachmentUri)?.use { it.readBytes() }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to read audio attachment bytes", e)
+                                null
+                            }
+                        } else null
+
+                        val otherBytes = if (isCalendarAttachment || isDocumentAttachment) {
+                            try {
+                                appCtx.contentResolver.openInputStream(attachmentUri)?.use { it.readBytes() }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to read attachment bytes", e)
+                                null
+                            }
+                        } else null
+
+                        val otherMimeType = when {
+                            isCalendarAttachment -> "text/calendar"
+                            isDocumentAttachment -> uriMime ?: "application/octet-stream"
+                            else -> null
+                        }
+
+                        val otherFileName = when {
+                            isCalendarAttachment -> attachmentUri.lastPathSegment?.substringAfterLast('/')?.takeIf {
+                                it.endsWith(".ics", true) || it.endsWith(".vcs", true)
+                            } ?: "event.ics"
+                            isDocumentAttachment -> DocumentAttachmentHelper.getFileName(appCtx, attachmentUri)
+                            else -> null
+                        }
+
+                        val pduBytes = MmsPduHelper.buildSendReqPdu(
+                            context = appCtx,
+                            recipient = cleanAddress,
+                            bodyText = cleanBody.takeIf { it.isNotBlank() },
+                            imageBytes = imageBytes,
+                            audioBytes = audioBytes,
+                            audioMimeType = attachmentMimeType.takeIf { isAudioAttachment } ?: "audio/amr",
+                            otherBytes = otherBytes,
+                            otherMimeType = otherMimeType,
+                            otherFileName = otherFileName,
+                            requestDeliveryReport = requestDeliveryReport,
+                            requestReadReport = requestReadReport,
+                        )
+
+                        val pduDir = File(appCtx.cacheDir, "mms_pdu").apply { mkdirs() }
+                        val pduFile = File(pduDir, "mms_send_$msgId.pdu")
+                        pduFile.writeBytes(pduBytes)
+
+                        val pduUri = FileProvider.getUriForFile(
+                            appCtx,
+                            "${appCtx.packageName}.fileprovider",
+                            pduFile
+                        )
+
+                        try {
+                            appCtx.grantUriPermission(
+                                "com.android.mms.service",
+                                pduUri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (_: Exception) {}
+                        try {
+                            appCtx.grantUriPermission(
+                                "com.android.phone",
+                                pduUri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (_: Exception) {}
+
+                        val smsManager = if (subId >= 0) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                appCtx.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                SmsManager.getSmsManagerForSubscriptionId(subId)
+                            }
+                        } else {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                appCtx.getSystemService(SmsManager::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                SmsManager.getDefault()
+                            }
+                        }
+
+                        val sentIntent = Intent(appCtx, NotificationActionReceiver::class.java).apply {
+                            action = ACTION_MMS_SENT
+                            putExtra("message_id", msgId)
+                            putExtra("pdu_path", pduFile.absolutePath)
+                        }
+                        val sentPiFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                        } else {
+                            PendingIntent.FLAG_UPDATE_CURRENT
+                        }
+                        val sentPi = PendingIntent.getBroadcast(
+                            appCtx,
+                            msgId.toInt(),
+                            sentIntent,
+                            sentPiFlags
+                        )
+
+                        val maxBytesLimit = when (creationMode) {
+                            MmsCreationMode.RESTRICTED -> 100 * 1024
+                            MmsCreationMode.WARNING -> 300 * 1024
+                            MmsCreationMode.FREE -> 600 * 1024
+                        }
+
+                        val mmsApn = getMmsApnSettings(appCtx)
+                        val configOverrides = android.os.Bundle().apply {
+                            putBoolean(SmsManager.MMS_CONFIG_MMS_DELIVERY_REPORT_ENABLED, requestDeliveryReport)
+                            putBoolean(SmsManager.MMS_CONFIG_MMS_READ_REPORT_ENABLED, requestReadReport)
+                            putInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, maxBytesLimit)
+                            putBoolean(SmsManager.MMS_CONFIG_SUPPORT_MMS_CONTENT_DISPOSITION, true)
+                            if (mmsApn.mmscUrl.isNotBlank()) {
+                                putString("mmscUrl", mmsApn.mmscUrl)
+                            }
+                            if (mmsApn.mmsProxy.isNotBlank()) {
+                                putString("mmsProxy", mmsApn.mmsProxy)
+                            }
+                            if (mmsApn.mmsPort > 0) {
+                                putString("mmsPort", mmsApn.mmsPort.toString())
+                                putInt("mmsPort", mmsApn.mmsPort)
+                            }
+                        }
+
+                        val activeSmsManager = smsManager
+                            ?: throw IllegalStateException("SmsManager is unavailable for MMS sending")
+                        activeSmsManager.sendMultimediaMessage(
+                            appCtx,
+                            pduUri,
+                            null,
+                            configOverrides,
+                            sentPi
+                        )
+
+                        // Persist outgoing sent MMS to system Telephony.Mms provider if default SMS app
+                        persistMmsToSystemProviderIfDefault(
+                            context = appCtx,
+                            senderAddress = cleanAddress,
+                            bodyText = cleanBody,
+                            imageBytes = imageBytes,
+                            imageMimeType = "image/jpeg",
+                            timestampMillis = now,
+                            isIncoming = false,
+                            audioBytes = audioBytes,
+                            audioMimeType = attachmentMimeType.takeIf { isAudioAttachment } ?: "audio/amr",
+                            otherBytes = otherBytes,
+                            otherMimeType = otherMimeType,
+                            otherFileName = otherFileName
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send MMS message over cellular network", e)
+                    updateMessageDeliveryStatus(msgId, DeliveryStatus.FAILED, appCtx)
+                }
+            }
+
+            verifyMessageUrlsOnlineAsync(appCtx, threadId, msgId, cleanBody)
+            saveDiskCacheAsync(appCtx, immediate = true, historyThreadIds = setOf(threadId))
+        }
 
         return threadId
     }
 
     /**
      * Schedules an SMS/MMS message to be sent automatically at [scheduledAtMillis].
+     * Persists scheduled messages to encrypted/private preferences so they survive app restarts and device reboots.
      */
     fun scheduleMessage(
         context: Context,
@@ -3362,13 +3528,21 @@ object SmsMmsRepository {
         _scheduledMessages.update { current ->
             (current + entry).sortedBy { it.scheduledAtMillis }
         }
+        persistScheduledMessages(appContext)
+        enqueueScheduledMessageJob(appContext, entry)
+        return entry
+    }
+
+    private fun enqueueScheduledMessageJob(appContext: Context, entry: ScheduledSmsMessage) {
+        scheduledJobs.remove(entry.id)?.cancel()
         val job = ioScope.launch {
-            val waitMillis = (scheduledAtMillis - System.currentTimeMillis()).coerceAtLeast(0L)
+            val waitMillis = (entry.scheduledAtMillis - System.currentTimeMillis()).coerceAtLeast(0L)
             delay(waitMillis.milliseconds)
-            val stillScheduled = _scheduledMessages.value.any { it.id == scheduledId }
+            val stillScheduled = _scheduledMessages.value.any { it.id == entry.id }
             if (stillScheduled) {
-                _scheduledMessages.update { list -> list.filterNot { it.id == scheduledId } }
-                scheduledJobs.remove(scheduledId)
+                _scheduledMessages.update { list -> list.filterNot { it.id == entry.id } }
+                scheduledJobs.remove(entry.id)
+                persistScheduledMessages(appContext)
                 sendMessage(
                     context = appContext,
                     recipientAddress = entry.recipientAddress,
@@ -3377,16 +3551,77 @@ object SmsMmsRepository {
                 )
             }
         }
-        scheduledJobs[scheduledId] = job
-        return entry
+        scheduledJobs[entry.id] = job
     }
 
     /**
      * Cancels a previously scheduled SMS/MMS message before its scheduled time arrives.
      */
-    fun cancelScheduledMessage(scheduledId: Long) {
+    fun cancelScheduledMessage(scheduledId: Long, context: Context? = null) {
         scheduledJobs.remove(scheduledId)?.cancel()
         _scheduledMessages.update { list -> list.filterNot { it.id == scheduledId } }
+        context?.let { persistScheduledMessages(it.applicationContext) }
+    }
+
+    private fun persistScheduledMessages(context: Context) {
+        try {
+            val arr = JSONArray()
+            _scheduledMessages.value.forEach { msg ->
+                val obj = JSONObject().apply {
+                    put("id", msg.id)
+                    put("threadId", msg.threadId)
+                    put("recipientAddress", msg.recipientAddress)
+                    put("body", msg.body)
+                    put("attachmentUri", msg.attachmentUri?.toString().orEmpty())
+                    put("scheduledAtMillis", msg.scheduledAtMillis)
+                }
+                arr.put(obj)
+            }
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit {
+                    putString(KEY_SCHEDULED_MSGS, arr.toString())
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to persist scheduled messages", e)
+        }
+    }
+
+    private fun restorePersistedScheduledMessages(context: Context) {
+        try {
+            val appContext = context.applicationContext
+            val raw = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(KEY_SCHEDULED_MSGS, null)
+            if (raw.isNullOrBlank()) return
+            val arr = JSONArray(raw)
+            val restored = mutableListOf<ScheduledSmsMessage>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optLong("id", nextId.getAndIncrement())
+                val threadId = obj.optLong("threadId", 0L)
+                val addr = obj.optString("recipientAddress", "")
+                val body = obj.optString("body", "")
+                val attStr = obj.optString("attachmentUri", "")
+                val scheduledAt = obj.optLong("scheduledAtMillis", 0L)
+                if (addr.isNotBlank() && scheduledAt > 0L) {
+                    restored.add(
+                        ScheduledSmsMessage(
+                            id = id,
+                            threadId = threadId,
+                            recipientAddress = addr,
+                            body = body,
+                            attachmentUri = attStr.takeIf { it.isNotBlank() }?.toUri(),
+                            scheduledAtMillis = scheduledAt
+                        )
+                    )
+                }
+            }
+            if (restored.isNotEmpty()) {
+                _scheduledMessages.value = restored.sortedBy { it.scheduledAtMillis }
+                restored.forEach { enqueueScheduledMessageJob(appContext, it) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to restore persisted scheduled messages", e)
+        }
     }
 
     /**
@@ -3515,7 +3750,7 @@ object SmsMmsRepository {
     fun isDataAllowedForMms(context: Context): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
         val activeNet = cm?.activeNetwork
-        val caps = if (activeNet != null) cm.getNetworkCapabilities(activeNet) else null
+        val caps = activeNet?.let { cm.getNetworkCapabilities(it) }
         
         val hasMmsCap = caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_MMS) == true
         val hasInternetCap = caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
@@ -3611,7 +3846,8 @@ object SmsMmsRepository {
         existingMessageId: Long? = null
     ) {
         try {
-            val tempFile = File(context.cacheDir, "mms_recv_${System.currentTimeMillis()}_${(1000..9999).random()}.pdu")
+            val pduDir = File(context.cacheDir, "mms_pdu").apply { mkdirs() }
+            val tempFile = File(pduDir, "mms_recv_${System.currentTimeMillis()}_${(1000..9999).random()}.pdu")
             val contentUri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
@@ -3633,8 +3869,8 @@ object SmsMmsRepository {
                 )
             } catch (_: Exception) {}
 
-            val downloadIntent = Intent(ACTION_MMS_DOWNLOADED).apply {
-                setPackage(context.packageName)
+            val downloadIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = ACTION_MMS_DOWNLOADED
                 data = contentUri
                 putExtra("pdu_path", tempFile.absolutePath)
                 putExtra("content_location", contentLocation)
@@ -3645,11 +3881,16 @@ object SmsMmsRepository {
                 }
             }
 
+            val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
             val pendingIntent = PendingIntent.getBroadcast(
                 context,
                 contentLocation.hashCode(),
                 downloadIntent,
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                pendingFlags
             )
 
             val smsManager = if (subId >= 0) {
@@ -3668,8 +3909,7 @@ object SmsMmsRepository {
                 }
             }
 
-            val creationMode = getMmsCreationMode(context)
-            val maxBytesLimit = when (creationMode) {
+            val maxBytesLimit = when (getMmsCreationMode(context)) {
                 MmsCreationMode.RESTRICTED -> 100 * 1024
                 MmsCreationMode.WARNING -> 300 * 1024
                 MmsCreationMode.FREE -> 600 * 1024
@@ -3718,12 +3958,13 @@ object SmsMmsRepository {
         if (locationUrl.isNullOrBlank()) return
 
         updateMessageDeliveryStatus(messageId, DeliveryStatus.DOWNLOADING, context)
+        val savedSubId = pendingMmsSubIds[messageId] ?: -1
 
         downloadMms(
             context = context,
             contentLocation = locationUrl,
             senderAddress = targetMsg.address,
-            subId = -1,
+            subId = savedSubId,
             existingMessageId = messageId
         )
     }
@@ -3768,9 +4009,15 @@ object SmsMmsRepository {
             )
             val isSr = TxturaStrings.isSerbianLocale()
             val defaultPhotoText = if (isSr) "MMS Fotografija" else "MMS Photo"
+            val voiceText = if (isSr) "Govorna poruka" else "Voice message"
+            val fallbackMediaText = when {
+                downloaded.audioBytes != null && downloaded.audioBytes.isNotEmpty() -> voiceText
+                downloaded.otherBytes != null && downloaded.otherBytes.isNotEmpty() -> downloaded.otherFileName ?: (if (isSr) "Prilog" else "Attachment")
+                else -> defaultPhotoText
+            }
             val rawText = downloaded.bodyText.orEmpty().trim()
             val cleanBody = MessageSecurityAnalyzer.sanitizeMessageText(
-                rawText.ifBlank { downloaded.subject?.trim().orEmpty().ifBlank { defaultPhotoText } }
+                rawText.ifBlank { downloaded.subject?.trim().orEmpty().ifBlank { fallbackMediaText } }
             )
 
             var attachment: MmsAttachment? = null
@@ -3787,10 +4034,10 @@ object SmsMmsRepository {
                 )
             } else if (downloaded.audioBytes != null && downloaded.audioBytes.isNotEmpty()) {
                 val mediaDir = File(context.filesDir, "mms_media").apply { mkdirs() }
-                val audioFile = File(mediaDir, "mms_audio_${System.currentTimeMillis()}.amr")
+                val ext = MmsPduHelper.extensionForAudioMime(downloaded.audioMimeType)
+                val audioFile = File(mediaDir, "mms_audio_${System.currentTimeMillis()}.$ext")
                 audioFile.writeBytes(downloaded.audioBytes)
                 val audioUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", audioFile)
-                val voiceText = if (isSr) "Govorna poruka" else "Voice message"
                 attachment = MmsAttachment(
                     uri = audioUri,
                     mimeType = downloaded.audioMimeType ?: "audio/amr",
@@ -3872,14 +4119,19 @@ object SmsMmsRepository {
         val cleanAddress = sanitizeSenderOrRecipientAddress(senderAddress)
         val now = System.currentTimeMillis()
         val msgId = nextId.incrementAndGet()
+        if (subId >= 0) {
+            pendingMmsSubIds[msgId] = subId
+        }
+        val sizeKb = (messageSize / 1024L).coerceAtLeast(1L)
+        val captionWithSize = if (bodyText.contains("KB", ignoreCase = true)) bodyText else "$bodyText ($sizeKb KB)"
         val resolvedName = resolveContactNameSafely(context, cleanAddress) ?: cleanAddress
         val resolvedPhotoUri = resolveContactPhotoUriSafely(context, cleanAddress)
-        val securityResult = MessageSecurityAnalyzer.analyzeMessage(bodyText)
+        val securityResult = MessageSecurityAnalyzer.analyzeMessage(captionWithSize)
 
         val pendingAttachment = MmsAttachment(
             uri = contentLocation.toUri(),
             mimeType = "application/vnd.wap.mms-message",
-            caption = bodyText
+            caption = captionWithSize
         )
 
         var targetThreadId = 0L
@@ -4177,7 +4429,6 @@ object SmsMmsRepository {
         }
 
         val isSr = TxturaStrings.isSerbianLocale()
-        val titleText = senderName
 
         val expandedBody = buildString {
             append(messageBody)
@@ -4269,7 +4520,7 @@ object SmsMmsRepository {
         val soundUri = getActiveNotificationSoundUri(context)
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_stat_message)
-            .setContentTitle(titleText)
+            .setContentTitle(senderName)
             .setContentText(messageBody)
             .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -4345,7 +4596,7 @@ object SmsMmsRepository {
 
         val notification = builder.build()
 
-        if (FlashNotificationManager.isFlashAlertEnabled(context)) {
+        if (FlashNotificationManager.shouldTriggerFlashAlert(context)) {
             FlashNotificationManager.triggerFlashNotification(context)
         }
 
@@ -4448,16 +4699,30 @@ object SmsMmsRepository {
         }
         ioScope.launch {
             if (isDefaultSmsApp(appCtx)) {
+                val sendReadReports = isMmsSendReadReports(appCtx)
                 try {
-                    val values = ContentValues().apply {
+                    val smsValues = ContentValues().apply {
                         put(Telephony.Sms.READ, 1)
                         put(Telephony.Sms.SEEN, 1)
+                    }
+                    val mmsValues = ContentValues().apply {
+                        put(Telephony.Mms.READ, 1)
+                        put(Telephony.Mms.SEEN, 1)
+                        if (sendReadReports) {
+                            put(Telephony.Mms.READ_STATUS, 128)
+                        }
                     }
                     threadIds.forEach { tid ->
                         appCtx.contentResolver.update(
                             Telephony.Sms.CONTENT_URI,
-                            values,
+                            smsValues,
                             "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.READ} = ?",
+                            arrayOf(tid.toString(), "0")
+                        )
+                        appCtx.contentResolver.update(
+                            Telephony.Mms.CONTENT_URI,
+                            mmsValues,
+                            "${Telephony.Mms.THREAD_ID} = ? AND ${Telephony.Mms.READ} = ?",
                             arrayOf(tid.toString(), "0")
                         )
                     }
@@ -4582,6 +4847,46 @@ object SmsMmsRepository {
                                 playUnhighlightSound(context)
                             }
                             msg.copy(isHighlighted = newHighlighted)
+                        } else {
+                            msg
+                        }
+                    }
+                    thread.copy(messages = updatedMessages)
+                } else {
+                    thread
+                }
+            }
+        }
+        savePersistedPins(context, historyThreadIds = setOf(threadId))
+    }
+
+    /**
+     * Marks a harmful (suspicious) message as not harmful (SAFE) and persists the user override.
+     */
+    fun markMessageAsSafe(context: Context, threadId: Long, messageId: Long) {
+        markMessagesAsSafe(context, threadId, listOf(messageId))
+    }
+
+    /**
+     * Marks one or more harmful (suspicious) messages as not harmful (SAFE) and persists the user override.
+     */
+    fun markMessagesAsSafe(context: Context, threadId: Long, messageIds: Collection<Long>) {
+        if (messageIds.isEmpty()) return
+        val targetSet = messageIds.toSet()
+        synchronized(safeOverrideMessageIds) {
+            safeOverrideMessageIds.addAll(targetSet)
+        }
+        _threads.update { list ->
+            list.map { thread ->
+                if (thread.id == threadId) {
+                    val updatedMessages = thread.messages.map { msg ->
+                        if (msg.id in targetSet && msg.securityAnalysis.riskLevel == SecurityRiskLevel.SUSPICIOUS) {
+                            msg.copy(
+                                securityAnalysis = msg.securityAnalysis.copy(
+                                    riskLevel = SecurityRiskLevel.SAFE,
+                                    reasons = emptyList(),
+                                )
+                            )
                         } else {
                             msg
                         }
@@ -4965,7 +5270,6 @@ object SmsMmsRepository {
     private fun purgeExpiredDeletedThreadsInternal(context: Context, retentionDays: Int) {
         val now = System.currentTimeMillis()
         val maxAgeMillis = retentionDays.coerceAtLeast(1) * 86_400_000L
-        val activeThreadIds = _threads.value.map { it.id }.toSet()
 
         val expiredThreadIds = synchronized(deletedThreadTimestamps) {
             deletedThreadTimestamps.entries
@@ -5163,6 +5467,8 @@ object SmsMmsRepository {
                 val rawMmsId = if (msgId >= 1_000_000_000L) msgId - 1_000_000_000L else msgId
                 File(context.cacheDir, "mms_send_$msgId.pdu").delete()
                 File(context.cacheDir, "mms_send_$rawMmsId.pdu").delete()
+                File(context.cacheDir, "mms_pdu/mms_send_$msgId.pdu").delete()
+                File(context.cacheDir, "mms_pdu/mms_send_$rawMmsId.pdu").delete()
             }
         } catch (_: Exception) {
             // Ignore filesystem cleanup exceptions
@@ -5259,14 +5565,6 @@ object SmsMmsRepository {
                 }
             }
         }
-    }
-
-    private fun deleteFromSystemProviderIfDefault(context: Context, threadId: Long) {
-        deleteFromSystemProviderThoroughly(context = context, threadIds = setOf(threadId))
-    }
-
-    private fun deleteMessagesFromSystemProviderIfDefault(context: Context, messageIds: Collection<Long>) {
-        deleteFromSystemProviderThoroughly(context = context, messageIds = messageIds.toSet())
     }
 
     fun arePhoneNumbersEqual(a: String, b: String): Boolean {

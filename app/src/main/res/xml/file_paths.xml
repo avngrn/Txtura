@@ -4,9 +4,24 @@
         name="backups"
         path="backups/" />
     <files-path
-        name="internal_files"
-        path="." />
+        name="mms_media"
+        path="mms_media/" />
     <cache-path
-        name="cache_files"
-        path="." />
+        name="mms_attachments"
+        path="mms_attachments/" />
+    <cache-path
+        name="mms_open"
+        path="mms_open/" />
+    <cache-path
+        name="mms_pdu"
+        path="mms_pdu/" />
+    <cache-path
+        name="voice_messages"
+        path="voice_messages/" />
+    <cache-path
+        name="voice_playback_cache"
+        path="voice_playback_cache/" />
+    <cache-path
+        name="updates_cache"
+        path="updates/" />
 </paths>

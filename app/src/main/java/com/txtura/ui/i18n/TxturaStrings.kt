@@ -129,7 +129,7 @@ class AppStrings(val isSerbian: Boolean) {
     val copyMessageOption: String = s("Copy message", "Kopiraj poruku")
     val highlightMessageOption: String = s("Highlight message", "Hajlajtuj poruku")
     val unhighlightMessageOption: String = s("Remove highlight", "Ukloni hajlajt")
-    val confirmDeleteSingleMessageTitle: String = s("Delete message?", "Izbriši poruku?")
+    val confirmDeleteSingleMessageTitle: String = s("Move to Trash?", "Premesti u obrisane poruke?")
     val confirmDeleteSingleMessageBody: String = s(
         "Do you want to move this message to Deleted messages?",
         "Da li želite da premestite ovu poruku u obrisane poruke?",
@@ -485,8 +485,8 @@ class AppStrings(val isSerbian: Boolean) {
         else "Website ($host) identified online as malicious (malware or phishing)"
     }
     val reasonMaliciousRedirectOnline: (String, String) -> String = { fromHost, toHost ->
-        if (isSerbian) "Link ($fromHost) preusmerava na zlonameran ili fišing sajt ($toHost)"
-        else "Link ($fromHost) redirects to a malicious or phishing website ($toHost)"
+        if (isSerbian) "Link ($fromHost) preusmerava na potencijalno zlonameran ili fišing sajt ($toHost)"
+        else "Link ($fromHost) redirects to a potentially malicious or phishing website ($toHost)"
     }
     val reasonInvalidTlsCertificate: (String) -> String = { host ->
         if (isSerbian) "Nevažeći ili lažni bezbednosni (SSL/TLS) sertifikat sajta ($host)"
@@ -510,7 +510,7 @@ class AppStrings(val isSerbian: Boolean) {
         "Would you like to set Txtura as your default application for receiving SMS and MMS messages?",
         "Da li želite da podesite Txtura kao podrazumevanu aplikaciju za prijem SMS i MMS poruka?",
     )
-    val defaultSmsPromptConfirm: String = s("Set as Default", "Podesi kao podrazumevanu")
+    val defaultSmsPromptConfirm: String = s("Set as Default", "Podesi kao podrazumevano")
     val defaultSmsPromptLater: String = s("Not now", "Ne sada")
     val showContactPhotosTitle: String = s("Show contact photos", "Prikaži slike kontakata")
     val layoutModeCompact: String = s("Compact messages view", "Kompaktni prikaz poruka")
@@ -704,6 +704,20 @@ class AppStrings(val isSerbian: Boolean) {
         "Flash blinking synchronized with the notification sound rhythm",
         "Treperenje blica sinhronizovano sa ritmom zvuka obaveštenja",
     )
+    val flashAlertModeTitle: String = s("When to activate light feedback", "Kada uključiti svetlosni odziv")
+    val flashAlertModeAlways: String = s("Always", "Uvek")
+    val flashAlertModeVibrate: String = s(
+        "In vibrate mode",
+        "U režimu samo vibracija",
+    )
+    val flashAlertModeSilent: String = s(
+        "In silent mode",
+        "U režimu nečujno",
+    )
+    val flashAlertModeSound: String = s(
+        "In sound mode",
+        "U režimu zvuk",
+    )
     val hapticsTitle: String = s("Haptic feedback", "Haptički odzivi")
     val hapticsSub: String = s(
         "Tactile vibration feedback on touches, selection, and message actions",
@@ -746,12 +760,28 @@ class AppStrings(val isSerbian: Boolean) {
     )
 
     // Swipe Gestures & Trash / Deleted Messages
+    val swipeGesturesTitle: String = s("Swipe gestures", "Pokreti prevlačenja")
+    val swipeGesturesSub: String = s(
+        "Swipe actions for conversations and message bubbles",
+        "Pokreti prevlačenja za listu razgovora i prozorčiće poruka"
+    )
     val swipeSectionTitle: String = s("Messages Actions", "Interakcije sa porukama")
     val swipeRightLabel: String = s("Swipe Right Action (→)", "Radnja za svajp udesno (→)")
     val swipeLeftLabel: String = s("Swipe Left Action (←)", "Radnja za svajp ulevo (←)")
+    val messageSwipeRightLabel: String = s(
+        "Message Bubble Swipe Right (→)",
+        "Svajp udesno na prozorčić poruke (→)"
+    )
+    val messageSwipeLeftLabel: String = s(
+        "Message Bubble Swipe Left (←)",
+        "Svajp ulevo na prozorčić poruke (←)"
+    )
     val swipeActionPin: String = s("(Un)pin", "Prikači / Otkači")
     val swipeGesturePin: String = s("Pin", "Zakači")
     val swipeGestureUnpin: String = s("Unpin", "Otkači")
+    val swipeActionHighlight: String = s("(Un)highlight", "Hajlajtuj / Ukloni hajlajt")
+    val swipeGestureHighlight: String = s("Highlight", "Hajlajtuj")
+    val swipeGestureUnhighlight: String = s("Unhighlight", "Ukloni hajlajt")
     val swipeActionDelete: String = s("Trash", "Obriši")
     val swipeActionCall: String = s("Call", "Pozovi")
     val swipeActionMarkRead: String = s("Mark read / unread", "Pročitano / Nepročitano")
@@ -791,7 +821,7 @@ class AppStrings(val isSerbian: Boolean) {
         }
     }
     val confirmPermanentDeleteButton: String = s("Delete Forever", "Trajno obriši")
-    val restoreButton: String = s("Restore", "Vrati poruku")
+    val restoreButton: String = s("Restore", "Vrati")
     val deletePermanentlyButton: String = s("Delete forever", "Trajno obriši")
     val emptyTrashButton: String = s("Empty Trash", "Isprazni sve")
     val emptyTrashMessage: String = s("No deleted messages in Trash.", "Nema poruka u folderu Obrisane poruke.")
@@ -1092,14 +1122,36 @@ class AppStrings(val isSerbian: Boolean) {
     )
 
     // Selective Trash Management
-    val inspectTrashMessagesButton: String = s("Inspect messages", "Pregledaj poruke")
-    val inspectTrashDialogTitle: (String) -> String = { contact ->
-        if (isSerbian) "Obrisane poruke • $contact" else "Deleted messages • $contact"
-    }
+    val inspectTrashMessagesButton: String = s("Choose", "Odaberi")
+    val inspectTrashDialogTitle: (String) -> String = { contact -> contact }
     val restoreSelectedMessagesButton: String = s("Restore selected", "Vrati izabrane")
     val deleteSelectedMessagesButton: String = s("Delete selected", "Obriši izabrane")
     val selectedCountLabel: (Int) -> String = { count ->
         if (isSerbian) "$count izabrano" else "$count selected"
+    }
+    val confirmRestoreSelectedTitle: String = s("Restore Selected Messages?", "Vrati izabrane poruke?")
+    val confirmRestoreSelectedMessage: (Int) -> String = { count ->
+        if (isSerbian) {
+            "Da li ste sigurni da želite da vratite izabrane poruke ($count) u konverzaciju?"
+        } else {
+            "Are you sure you want to restore the selected messages ($count) back to the conversation?"
+        }
+    }
+    val confirmDeleteSelectedTitle: String = s("Permanently Delete Selected Messages?", "Trajno obriši izabrane poruke?")
+    val confirmDeleteSelectedMessage: (Int) -> String = { count ->
+        if (isSerbian) {
+            "Da li ste sigurni da želite trajno da obrišete izabrane poruke ($count)? Ova radnja se ne može opozvati."
+        } else {
+            "Are you sure you want to permanently delete the selected messages ($count)? This action cannot be undone."
+        }
+    }
+    val confirmRestoreThreadTitle: String = s("Restore Conversation?", "Vrati konverzaciju?")
+    val confirmRestoreThreadMessage: (String) -> String = { name ->
+        if (isSerbian) {
+            "Da li ste sigurni da želite da vratite ovu konverzaciju ($name) i sve njene poruke u prijemno sanduče?"
+        } else {
+            "Are you sure you want to restore this conversation ($name) and all its messages back to the inbox?"
+        }
     }
     val backupPasswordIncorrect: String = s(
         "Incorrect backup password or corrupted file.",
@@ -1234,6 +1286,45 @@ class AppStrings(val isSerbian: Boolean) {
         "Obaveštenja o novim verzijama aplikacije Txtura",
     )
     val changelogPreviousVersionsHeader: String = s("Previous Versions History", "Istorija prethodnih verzija")
+    val updateConfirmDialogTitle: String = s(
+        "Confirm Update from GitHub",
+        "Potvrda ažuriranja sa GitHub-a",
+    )
+    val updateConfirmVersionInfo: (String, String) -> String = { currentVer, targetTag ->
+        val cleanCur = if (currentVer.startsWith("v", ignoreCase = true)) currentVer else "v$currentVer"
+        val cleanTarget = if (targetTag.startsWith("v", ignoreCase = true)) targetTag else "v$targetTag"
+        if (isSerbian) {
+            "Direktno ažuriranje sa verzije $cleanCur na najnoviju verziju $cleanTarget "
+        } else {
+            "Direct update from $cleanCur to the latest version $cleanTarget "
+        }
+    }
+    val updateNetworkTypeLabel: (Boolean) -> String = { isCellular ->
+        if (isSerbian) {
+            if (isCellular) "Aktivna mreža: Mobilni podaci" else "Aktivna mreža: Wi-Fi"
+        } else {
+            if (isCellular) "Active network: Mobile data" else "Active network: Wi-Fi"
+        }
+    }
+    val updateConfirmNetworkPrompt: (Boolean) -> String = { isCellular ->
+        if (isSerbian) {
+            if (isCellular) {
+                "Povezani ste na mobilne podatke. Preuzimanje APK paketa sa GitHub-a koristi Vaš internet saobraćaj kod operatera. Da li želite da nastavite preuzimanje i instalaciju?"
+            } else {
+                "Povezani ste na Wi-Fi mrežu. Da li želite da preuzmete i instalirate najnovije ažuriranje sa GitHub-a?"
+            }
+        } else {
+            if (isCellular) {
+                "You are connected via mobile data. Downloading the APK package from GitHub uses your carrier data plan. Do you want to proceed with downloading and installing?"
+            } else {
+                "You are connected to Wi-Fi. Do you want to download and install the latest update from GitHub?"
+            }
+        }
+    }
+    val updateConfirmProceedButton: String = s("Confirm & Download", "Potvrdi i preuzmi")
+    val reinstallLatestReleaseButton: (String) -> String = { tag ->
+        if (isSerbian) "Preuzmi najnoviju ($tag)" else "Download latest ($tag)"
+    }
 
     // Draft messages
     val draftPrefix: String = s("[Draft]", "[Nacrt]")
@@ -1307,6 +1398,7 @@ class AppStrings(val isSerbian: Boolean) {
     // Auto-detected email & phone numbers in received messages
     val saveToContactsAction: String = s("Save to contacts", "Sačuvaj u kontakte")
     val callNumberAction: String = s("Call number", "Pozovi broj")
+    val sendSmsToNumberAction: String = s("Send SMS message", "Pošalji SMS poruku")
     val sendEmailAction: String = s("Send email", "Pošalji email")
     val copyPhoneNumberAction: String = s("Copy phone number", "Kopiraj broj telefona")
     val copyEmailAction: String = s("Copy email", "Kopiraj email adresu")
@@ -1315,7 +1407,7 @@ class AppStrings(val isSerbian: Boolean) {
     val detectedPhoneNumberLabel: String = s("Detected phone", "Prepoznat broj")
     val detectedEmailLabel: String = s("Detected email", "Prepoznat email")
 
-    // Smart Bank Account (Tekući račun) recognition strings
+    // Smart Bank Account, Payment Reference, Amount, Deadline Date & Package Tracking strings
     val bankAccountCardTitle: String = s("Bank Account", "Tekući račun")
     val copyBankAccountAction: String = s("Copy Account Number", "Kopiraj broj računa")
     val copyFull18DigitsAction: String = s("Copy full format (18 digits)", "Kopiraj puni format (18 cifara)")
@@ -1323,12 +1415,98 @@ class AppStrings(val isSerbian: Boolean) {
         val bankSuffix = if (!bank.isNullOrBlank()) " ($bank)" else ""
         if (isSerbian) "Broj računa kopiran: $num$bankSuffix" else "Bank account copied: $num$bankSuffix"
     }
+    val paymentReferenceChipLabel: (String, String?) -> String = { ref, model ->
+        if (!model.isNullOrBlank()) {
+            if (isSerbian) "Poziv na br: $ref • Model $model" else "Ref: $ref • Model $model"
+        } else {
+            if (isSerbian) "Poziv na br: $ref" else "Ref: $ref"
+        }
+    }
+    val paymentReferenceCopiedToast: (String, String?) -> String = { ref, model ->
+        val modelSuffix = if (!model.isNullOrBlank()) " (Model $model)" else ""
+        if (isSerbian) "Poziv na broj kopiran: $ref$modelSuffix" else "Payment reference copied: $ref$modelSuffix"
+    }
+    val paymentAmountChipLabel: (String) -> String = { display ->
+        if (isSerbian) "Iznos: $display" else "Amount: $display"
+    }
+    val paymentAmountCopiedToast: (String, String) -> String = { amount, currency ->
+        if (isSerbian) "Iznos kopiran za uplatu: $amount ($currency)" else "Amount copied: $amount ($currency)"
+    }
+    val actionableDateChipLabel: (String, Boolean) -> String = { displayDate, isDeadline ->
+        if (isDeadline) {
+            if (isSerbian) "Rok: $displayDate" else "Due: $displayDate"
+        } else {
+            if (isSerbian) "Termin: $displayDate" else "Date: $displayDate"
+        }
+    }
+    val calendarReminderDefaultTitle: (Boolean) -> String = { isDeadline ->
+        if (isDeadline) {
+            if (isSerbian) "Podsetnik: Rok za uplatu računa" else "Reminder: Bill payment due"
+        } else {
+            if (isSerbian) "Podsetnik iz SMS poruke" else "SMS Reminder"
+        }
+    }
+    val packageTrackingChipLabel: (String, String?) -> String = { code, courier ->
+        if (!courier.isNullOrBlank()) {
+            if (isSerbian) "Pošiljka ($courier): $code" else "Package ($courier): $code"
+        } else {
+            if (isSerbian) "Pošiljka: $code" else "Package: $code"
+        }
+    }
+    val packageTrackingCopiedToast: (String) -> String = { code ->
+        if (isSerbian) "Broj pošiljke kopiran: $code" else "Tracking number copied: $code"
+    }
 
     // Offered accent colors for custom gallery wallpaper
     val customWallpaperAccentTitle: String = s("Accent Color", "Boja akcenta")
     val customWallpaperAccentSub: String = s(
         "Choose an accent color for bubbles and buttons when using this photo",
         "Izaberite boju akcenta za oblačiće i dugmad uz ovu fotografiju"
+    )
+
+    // Harmful message override & Conversation screenshot protection
+    val markMessageNotHarmfulAction: String = s("Mark as not harmful", "Označi da nije štetna")
+    val confirmMarkSafeDialogTitle: (Int) -> String = { count ->
+        if (isSerbian) {
+            if (count <= 1) "Označi poruku kao bezbednu?" else "Označi poruke ($count) kao bezbedne?"
+        } else {
+            if (count <= 1) "Mark message as safe?" else "Mark $count messages as safe?"
+        }
+    }
+    val confirmMarkSafeDialogBody: (Int) -> String = { count ->
+        if (isSerbian) {
+            if (count <= 1) {
+                "Da li ste sigurni da želite da obeležite ovu poruku kao bezbednu? Upozorenje o štetnosti biće uklonjeno i linkovi u poruci postaće aktivni."
+            } else {
+                "Da li ste sigurni da želite da obeležite izabrane poruke ($count) kao bezbedne? Upozorenja o štetnosti biće uklonjena i linkovi u tim porukama postaće aktivni."
+            }
+        } else {
+            if (count <= 1) {
+                "Are you sure you want to mark this message as safe? The harmful warning will be removed and links in the message will become clickable."
+            } else {
+                "Are you sure you want to mark the selected $count messages as safe? Harmful warnings will be removed and links in those messages will become clickable."
+            }
+        }
+    }
+    val confirmMarkSafeButton: String = s("Mark as safe", "Obeleži kao bezbednu")
+    val messageMarkedNotHarmfulToast: String = s(
+        "Message marked as not harmful.",
+        "Poruka je označena da nije štetna.",
+    )
+    val messagesMarkedNotHarmfulToast: (Int) -> String = { count ->
+        if (isSerbian) {
+            if (count == 1) "Poruka je označena da nije štetna." else "Poruke ($count) su označene da nisu štetne."
+        } else {
+            if (count == 1) "Message marked as not harmful." else "$count messages marked as not harmful."
+        }
+    }
+    val chatScreenshotProtectionTitle: String = s(
+        "Prevent Conversation Screenshots",
+        "Sprečavanje skrinšotovanja konverzacija",
+    )
+    val chatScreenshotProtectionSub: String = s(
+        "Blocks taking screenshots and screen recordings on any screen showing message content (conversation list, chats, highlighted, and deleted messages).",
+        "Onemogućava slikanje i snimanje ekrana na svakom ekranu gde se nalazi sadržaj poruka (lista konverzacija, razgovori, hajlajtovane i obrisane poruke).",
     )
 }
 

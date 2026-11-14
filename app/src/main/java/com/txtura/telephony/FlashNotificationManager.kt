@@ -4,12 +4,10 @@ import android.content.Context
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.media.AudioAttributes
-import android.media.MediaPlayer
-import android.media.RingtoneManager
-import android.media.audiofx.Visualizer
+import android.media.AudioManager
 import android.util.Log
 import com.txtura.R
+import com.txtura.data.FlashAlertMode
 import com.txtura.data.SmsMmsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +37,7 @@ object FlashNotificationManager {
     private const val TAG = "FlashNotificationManager"
     const val PREFS_SETTINGS = "txtura_settings"
     const val KEY_FLASH_ALERT_ENABLED = "flash_alert_enabled"
+    const val KEY_FLASH_ALERT_MODE = "flash_alert_mode"
 
     // Hardware latency compensation: CameraManager IPC + LED driver circuit takes ~35 ms from command to light
     const val LED_HARDWARE_DELAY_COMPENSATION_MS = 35L
@@ -65,6 +64,31 @@ object FlashNotificationManager {
             .edit {
                 putBoolean(KEY_FLASH_ALERT_ENABLED, enabled)
             }
+    }
+
+    fun getFlashAlertMode(context: Context): FlashAlertMode {
+        val prefs = context.getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_FLASH_ALERT_MODE, FlashAlertMode.ALWAYS.name)
+        return FlashAlertMode.fromId(raw)
+    }
+
+    fun setFlashAlertMode(context: Context, mode: FlashAlertMode) {
+        context.getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
+            .edit {
+                putString(KEY_FLASH_ALERT_MODE, mode.name)
+            }
+    }
+
+    /**
+     * Checks whether flash notification should trigger given the current enabled toggle
+     * and the selected [FlashAlertMode] vs. the device's current ringer mode.
+     */
+    fun shouldTriggerFlashAlert(context: Context): Boolean {
+        if (!isFlashAlertEnabled(context)) return false
+        val mode = getFlashAlertMode(context)
+        if (mode == FlashAlertMode.ALWAYS) return true
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return true
+        return mode.matchesRingerMode(audioManager.ringerMode)
     }
 
     /**
@@ -107,8 +131,8 @@ object FlashNotificationManager {
     /**
      * Triggers synchronized flash notification for an incoming SMS/MMS.
      */
-    fun triggerFlashNotification(context: Context) {
-        if (!isFlashAlertEnabled(context)) return
+    fun triggerFlashNotification(context: Context, customRawResId: Int? = null) {
+        if (!shouldTriggerFlashAlert(context)) return
 
         val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager ?: return
         val cameraId = getFlashCameraId(cameraManager) ?: return
@@ -116,8 +140,7 @@ object FlashNotificationManager {
         activeFlashJob?.cancel()
         activeFlashJob = flashScope.launch {
             try {
-                val sound = SmsMmsRepository.getSmsNotificationSound(context)
-                val rawResId = sound.rawResId
+                val rawResId = customRawResId ?: SmsMmsRepository.getSmsNotificationSound(context).rawResId
 
                 if (rawResId != null) {
                     // 1. Internal WAV Sound: Automated PCM energy/rhythm analysis
@@ -314,89 +337,6 @@ object FlashNotificationManager {
 
             val pulseDuration = endMs - startMs
             delay(pulseDuration.coerceAtLeast(35L).milliseconds)
-            setTorchSafely(cameraManager, cameraId, false)
-        }
-    }
-
-    /**
-     * Uses the Android Visualizer API attached to MediaPlayer playing the system ringtone,
-     * automatically capturing rhythm energy and compensating for LED hardware delay.
-     */
-    private suspend fun executeSystemVisualizerFlashPattern(
-        context: Context,
-        cameraManager: CameraManager,
-        cameraId: String
-    ) {
-        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) ?: return
-        var mediaPlayer: MediaPlayer? = null
-        var visualizer: Visualizer? = null
-
-        try {
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(context, soundUri)
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                        .build()
-                )
-                prepare()
-            }
-
-            val sessionId = mediaPlayer.audioSessionId
-            var isVisualizerActive = false
-
-            if (sessionId > 0) {
-                try {
-                    visualizer = Visualizer(sessionId).apply {
-                        captureSize = Visualizer.getCaptureSizeRange()[0].coerceAtLeast(128)
-                        setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
-                            var lastState = false
-                            var lastToggleMs = 0L
-
-                            override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {
-                                if (waveform == null || waveform.isEmpty()) return
-                                var sumSq = 0.0
-                                for (b in waveform) {
-                                    val sample = (b.toInt() and 0xFF) - 128
-                                    sumSq += (sample * sample)
-                                }
-                                val rms = sqrt(sumSq / waveform.size)
-                                val isPeak = rms > 16.0
-                                val now = System.currentTimeMillis()
-                                if (isPeak != lastState && (now - lastToggleMs >= 35L)) {
-                                    lastState = isPeak
-                                    lastToggleMs = now
-                                    setTorchSafely(cameraManager, cameraId, isPeak)
-                                }
-                            }
-
-                            override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {}
-                        }, Visualizer.getMaxCaptureRate() / 2, true, false)
-                        enabled = true
-                        isVisualizerActive = true
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not initialize Visualizer effect, using fallback rhythm", e)
-                }
-            }
-
-            mediaPlayer.start()
-
-            if (!isVisualizerActive) {
-                // Fallback rhythm if device restrictions prevent Visualizer
-                executePcmWavFlashPattern(context, cameraManager, cameraId, R.raw.dolazna)
-            } else {
-                val duration = mediaPlayer.duration.coerceIn(500, 3500).toLong()
-                delay(duration.milliseconds)
-            }
-        } finally {
-            try { visualizer?.enabled = false } catch (_: Exception) {}
-            try { visualizer?.release() } catch (_: Exception) {}
-            try {
-                mediaPlayer?.stop()
-                mediaPlayer?.release()
-            } catch (_: Exception) {}
             setTorchSafely(cameraManager, cameraId, false)
         }
     }

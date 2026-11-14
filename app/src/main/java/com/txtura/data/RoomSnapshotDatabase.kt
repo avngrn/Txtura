@@ -137,6 +137,7 @@ abstract class TxturaSecureDatabase : RoomDatabase() {
                 )
                     .openHelperFactory(openHelperFactory)
                     .addMigrations(MIGRATION_1_2)
+                    .fallbackToDestructiveMigration(dropAllTables = true)
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                     .build()
                     .also { instance = it }

@@ -16,6 +16,7 @@ import android.graphics.ImageDecoder
 import android.graphics.drawable.AnimatedImageDrawable
 import android.net.Uri
 import android.os.Build
+import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.view.WindowManager
 import android.widget.ImageView
@@ -81,6 +82,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -134,6 +136,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
@@ -201,6 +204,7 @@ import com.txtura.data.DeliveryStatus
 import com.txtura.data.DockBarItem
 import com.txtura.data.GitHubReleaseInfo
 import com.txtura.data.MainListLayoutMode
+import com.txtura.data.MessageSwipeAction
 import com.txtura.data.MessageType
 import com.txtura.data.MmsAttachment
 import com.txtura.data.MmsAutoRetrieveMode
@@ -402,6 +406,9 @@ private val PinMovePlacementSpec = spring(
 @Composable
 fun ConversationsListScreen(
     threads: List<ConversationThread>,
+    listState: LazyListState = rememberLazyListState(),
+    savedScrollIndex: Int = 0,
+    savedScrollOffset: Int = 0,
     isInitialLoading: Boolean = false,
     deletedCount: Int = 0,
     autoDeleteDays: Int = 30,
@@ -415,7 +422,7 @@ fun ConversationsListScreen(
     dockBarOrder: List<DockBarItem> = DockBarItem.defaultOrder,
     onUpdateDockBarOrder: (List<DockBarItem>) -> Unit = {},
     onOpenThread: (Long) -> Unit,
-    onOpenThreadWithMessage: (Long, Long) -> Unit = { threadId, _ -> onOpenThread(threadId) },
+    onOpenThreadWithMessage: (Long, Long, String) -> Unit = { threadId, _, _ -> onOpenThread(threadId) },
     onTogglePin: (Long) -> Unit,
     onRequestDeleteThread: (ConversationThread) -> Unit,
     onDeleteSelectedThreads: (Set<Long>) -> Unit = {},
@@ -447,7 +454,7 @@ fun ConversationsListScreen(
     val activeCategories = remember(categoryOrder) {
         categoryOrder.ifEmpty { ConversationFilter.defaultOrder }
     }
-    var selectedFilter by remember { mutableStateOf(value = activeCategories.firstOrNull() ?: ConversationFilter.PEOPLE) }
+    var selectedFilter by rememberSaveable { mutableStateOf(value = activeCategories.firstOrNull() ?: ConversationFilter.ALL) }
     var showMarkAllReadConfirmation by remember { mutableStateOf(value = false) }
 
     val totalHighlightedCount = remember(threads) {
@@ -486,6 +493,14 @@ fun ConversationsListScreen(
                 thread.contactName.contains(trimmedQuery, ignoreCase = true) ||
                     thread.address.contains(trimmedQuery, ignoreCase = true) ||
                     thread.messages.any { it.body.contains(trimmedQuery, ignoreCase = true) }
+            }
+        }
+    }
+
+    LaunchedEffect(filteredThreads.size) {
+        if (filteredThreads.isNotEmpty() && (savedScrollIndex > 0 || savedScrollOffset > 0)) {
+            if (listState.firstVisibleItemIndex == 0) {
+                listState.scrollToItem(savedScrollIndex, savedScrollOffset)
             }
         }
     }
@@ -766,7 +781,6 @@ fun ConversationsListScreen(
             val density = LocalDensity.current
             val swipeThresholdPx = remember(density) { with(density) { 105.dp.toPx() } }
             val swipeMaxDragPx = remember(density) { with(density) { 165.dp.toPx() } }
-            val listState = rememberLazyListState()
             val coroutineScope = rememberCoroutineScope()
 
             val pinScrollRequest = remember { PinScrollRequestHolder() }
@@ -785,7 +799,7 @@ fun ConversationsListScreen(
                 onTogglePin(threadId)
             }
 
-            // By default LazyColumn keeps its scroll position anchored to the KEY of the first
+            // By default, LazyColumn keeps its scroll position anchored to the KEY of the first
             // visible item. When the toggled card is (or becomes) that first item, the whole list
             // would jump along with it. Right before the re-sorted list is measured, we pin the
             // viewport to its current INDEX instead, so only the toggled card animates (via
@@ -906,6 +920,17 @@ fun ConversationsListScreen(
                             }
 
                             Box(modifier = Modifier.weight(1f)) {
+                                val trimmedSearch = searchQuery.trim()
+                                val matchedSearchMessage = remember(thread.messages, trimmedSearch) {
+                                    if (trimmedSearch.isEmpty()) {
+                                        null
+                                    } else {
+                                        thread.messages.lastOrNull { msg ->
+                                            msg.body.contains(trimmedSearch, ignoreCase = true)
+                                        }
+                                    }
+                                }
+
                                 SwipeableConversationCard(
                                     thread = thread,
                                     strings = strings,
@@ -930,10 +955,19 @@ fun ConversationsListScreen(
                                         isSelected = isSelectionMode && isChecked,
                                         showPinAction = swipeRightAction != SwipeAction.PIN &&
                                             swipeLeftAction != SwipeAction.PIN,
+                                        matchedSearchMessage = matchedSearchMessage,
                                         strings = strings,
                                         onClick = {
                                             if (isSelectionMode) {
                                                 toggleSelection()
+                                            } else if (trimmedSearch.isNotEmpty() &&
+                                                (matchedSearchMessage != null || thread.messages.any { it.body.contains(trimmedSearch, ignoreCase = true) })
+                                            ) {
+                                                onOpenThreadWithMessage(
+                                                    thread.id,
+                                                    matchedSearchMessage?.id ?: -1L,
+                                                    trimmedSearch
+                                                )
                                             } else {
                                                 onOpenThread(thread.id)
                                             }
@@ -942,7 +976,7 @@ fun ConversationsListScreen(
                                             if (isSelectionMode) {
                                                 toggleSelection()
                                             } else {
-                                                onOpenThreadWithMessage(threadId, msgId)
+                                                onOpenThreadWithMessage(threadId, msgId, trimmedSearch)
                                             }
                                         },
                                         onLongClick = {
@@ -1743,6 +1777,20 @@ private fun DraggableCategoryBar(
         }
     }
 
+    val isExpressive = LocalExpressiveAnimations.current
+    val targetUnreadWeight = when {
+        totalUnreadCount <= 0 -> 1.0f
+        totalUnreadCount < 10 -> 1.34f
+        else -> 1.42f
+    }
+    val animatedUnreadWeight by animateFloatAsState(
+        targetValue = targetUnreadWeight,
+        animationSpec = if (isExpressive) spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium) else tween(220),
+        label = "category_unread_weight"
+    )
+    val otherCategoriesCount = (localOrder.size - 1).coerceAtLeast(1)
+    val otherCategoryWeight = (localOrder.size.toFloat() - animatedUnreadWeight) / otherCategoriesCount.toFloat()
+
     Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1754,11 +1802,7 @@ private fun DraggableCategoryBar(
                 val isDragged = filter == draggedFilter
                 val label = filterLabel(filter, strings, totalUnreadCount)
 
-                val itemWeight = when (filter) {
-                    ConversationFilter.UNREAD -> if (totalUnreadCount > 0) 1.55f else 1.32f
-                    ConversationFilter.ALL -> 0.68f
-                    else -> 1.0f
-                }
+                val itemWeight = if (filter == ConversationFilter.UNREAD) animatedUnreadWeight else otherCategoryWeight
 
                 Box(
                     modifier = Modifier
@@ -1886,6 +1930,7 @@ private enum class SettingsCategoryWindow {
     APPEARANCE_AND_DISPLAY,
     NOTIFICATIONS_SOUNDS_HAPTICS,
     CHAT_AND_GESTURES,
+    SWIPE_GESTURES,
     PRIVACY_AND_SECURITY,
     DATA_AND_STORAGE,
     MESSAGING_AND_NETWORK,
@@ -1927,6 +1972,8 @@ fun SettingsScreen(
     onToggleExpressiveAnimations: (Boolean) -> Unit = {},
     flashAlertEnabled: Boolean = false,
     onToggleFlashAlert: (Boolean) -> Unit = {},
+    flashAlertMode: com.txtura.data.FlashAlertMode = com.txtura.data.FlashAlertMode.ALWAYS,
+    onSelectFlashAlertMode: (com.txtura.data.FlashAlertMode) -> Unit = {},
     hapticsEnabled: Boolean = true,
     onToggleHaptics: (Boolean) -> Unit = {},
     smsNotificationSound: SmsNotificationSound = SmsNotificationSound.SYSTEM,
@@ -1980,6 +2027,7 @@ fun SettingsScreen(
     onUpdateSectionFocused: () -> Unit = {},
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val strings = TxturaStrings.current()
     val (appVersionName, appVersionCode) = remember(context) {
         runCatching {
@@ -1999,6 +2047,7 @@ fun SettingsScreen(
     }
     var isCheckingUpdates by remember { mutableStateOf(false) }
     var downloadProgressPct by remember { mutableStateOf<Int?>(null) }
+    var pendingConfirmUpdateRelease by remember { mutableStateOf<com.txtura.data.GitHubReleaseInfo?>(null) }
 
     LaunchedEffect(context, appVersionName) {
         if (AppUpdateManager.shouldPerformPeriodicCheck(context)) {
@@ -2042,7 +2091,11 @@ fun SettingsScreen(
     }
 
     BackHandler(enabled = activeCategoryWindow != null) {
-        activeCategoryWindow = null
+        if (activeCategoryWindow == SettingsCategoryWindow.SWIPE_GESTURES) {
+            activeCategoryWindow = SettingsCategoryWindow.CHAT_AND_GESTURES
+        } else {
+            activeCategoryWindow = null
+        }
     }
 
     val activeDropdownId = rememberSaveable { mutableStateOf<String?>(null) }
@@ -2265,8 +2318,12 @@ fun SettingsScreen(
                             color = palette.textSecondary,
                             textAlign = TextAlign.Center,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp),
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    TxturaHaptics.tick(view, context)
+                                    showSecurityMeasuresDialog = true
+                                }
+                                .padding(horizontal = 12.dp, vertical = 2.dp),
                         )
 
                         Text(
@@ -2294,6 +2351,11 @@ fun SettingsScreen(
                             TxturaIcons.SwipeHoriz,
                             palette.accentPrimary,
                             strings.settingsCategoryChat
+                        )
+                        SettingsCategoryWindow.SWIPE_GESTURES -> Triple(
+                            TxturaIcons.SwipeHoriz,
+                            palette.accentPrimary,
+                            strings.swipeGesturesTitle
                         )
                         SettingsCategoryWindow.PRIVACY_AND_SECURITY -> Triple(
                             TxturaIcons.ShieldCheck,
@@ -2332,7 +2394,13 @@ fun SettingsScreen(
                             GlassIconButton(
                                 icon = TxturaIcons.ArrowBack,
                                 contentDescription = strings.back,
-                                onClick = { activeCategoryWindow = null },
+                                onClick = {
+                                    if (currentWindow == SettingsCategoryWindow.SWIPE_GESTURES) {
+                                        activeCategoryWindow = SettingsCategoryWindow.CHAT_AND_GESTURES
+                                    } else {
+                                        activeCategoryWindow = null
+                                    }
+                                },
                                 size = 38.dp
                             )
                             Spacer(modifier = Modifier.width(10.dp))
@@ -2770,20 +2838,21 @@ fun SettingsScreen(
                                     onCheckedChange = onToggleInAppSounds
                                 )
 
-                                // Svetlosni odziv (Flash Alert - rhythm synchronized torch notification)
-                                SettingsSwitchRow(
-                                    title = strings.flashAlertTitle,
-                                    subtitle = strings.flashAlertSub,
-                                    checked = flashAlertEnabled,
-                                    onCheckedChange = onToggleFlashAlert
-                                )
-
-                                // 2C. Haptički odzivi (Haptic Feedback)
+                                // 2B-2. Haptički odzivi (Haptic Feedback)
                                 SettingsSwitchRow(
                                     title = strings.hapticsTitle,
                                     subtitle = strings.hapticsSub,
                                     checked = hapticsEnabled,
                                     onCheckedChange = onToggleHaptics
+                                )
+
+                                // 2C. Svetlosni odziv (Flash Alert - rhythm synchronized torch notification + activation mode)
+                                FlashAlertSettingsCard(
+                                    flashAlertEnabled = flashAlertEnabled,
+                                    onToggleFlashAlert = onToggleFlashAlert,
+                                    flashAlertMode = flashAlertMode,
+                                    onSelectFlashAlertMode = onSelectFlashAlertMode,
+                                    strings = strings
                                 )
 
                                 // 2D. Mehurići (Bubbles)
@@ -2803,22 +2872,61 @@ fun SettingsScreen(
                             }
 
                             SettingsCategoryWindow.CHAT_AND_GESTURES -> {
-                                // 3A. Svajp gestovi (Swipe Gestures)
-                                SwipeDirectionInteractiveCard(
-                                    title = strings.swipeRightLabel,
-                                    currentAction = swipeRightAction,
-                                    defaultFallbackAction = SwipeAction.PIN,
-                                    strings = strings,
-                                    onSelectAction = onSelectSwipeRightAction
-                                )
-
-                                SwipeDirectionInteractiveCard(
-                                    title = strings.swipeLeftLabel,
-                                    currentAction = swipeLeftAction,
-                                    defaultFallbackAction = SwipeAction.DELETE,
-                                    strings = strings,
-                                    onSelectAction = onSelectSwipeLeftAction
-                                )
+                                // 3A. Pokreti prevlačenja (Swipe Gestures) - zaseban meni
+                                GlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(18.dp),
+                                    contentPadding = PaddingValues(14.dp),
+                                    onClick = { activeCategoryWindow = SettingsCategoryWindow.SWIPE_GESTURES }
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier
+                                                    .size(36.dp)
+                                                    .clip(CircleShape)
+                                                    .background(palette.accentPrimary.copy(alpha = 0.14f))
+                                                    .border(1.dp, palette.accentPrimary.copy(alpha = 0.42f), CircleShape)
+                                            ) {
+                                                Icon(
+                                                    imageVector = TxturaIcons.SwipeHoriz,
+                                                    contentDescription = null,
+                                                    tint = palette.accentPrimary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Column {
+                                                Text(
+                                                    text = strings.swipeGesturesTitle,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    color = palette.textPrimary,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = strings.swipeGesturesSub,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = palette.textSecondary
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Icon(
+                                            imageVector = TxturaIcons.ChevronRight,
+                                            contentDescription = null,
+                                            tint = palette.textSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
 
                                 // 3B. Uštinite da biste zumirali tekst konverzacije (Pinch to Zoom Conversation Text)
                                 SettingsSwitchRow(
@@ -2847,6 +2955,53 @@ fun SettingsScreen(
                                     autoPreviewsWifiOnly = autoPreviewsWifiOnly,
                                     onToggleAutoPreviewsWifiOnly = onToggleAutoPreviewsWifiOnly,
                                     strings = strings
+                                )
+                            }
+
+                            SettingsCategoryWindow.SWIPE_GESTURES -> {
+                                var messageSwipeRightAction by remember {
+                                    mutableStateOf(SmsMmsRepository.getMessageSwipeRightAction(context))
+                                }
+                                var messageSwipeLeftAction by remember {
+                                    mutableStateOf(SmsMmsRepository.getMessageSwipeLeftAction(context))
+                                }
+
+                                SwipeDirectionInteractiveCard(
+                                    title = strings.swipeRightLabel,
+                                    currentAction = swipeRightAction,
+                                    defaultFallbackAction = SwipeAction.PIN,
+                                    strings = strings,
+                                    onSelectAction = onSelectSwipeRightAction
+                                )
+
+                                SwipeDirectionInteractiveCard(
+                                    title = strings.swipeLeftLabel,
+                                    currentAction = swipeLeftAction,
+                                    defaultFallbackAction = SwipeAction.DELETE,
+                                    strings = strings,
+                                    onSelectAction = onSelectSwipeLeftAction
+                                )
+
+                                MessageSwipeDirectionInteractiveCard(
+                                    title = strings.messageSwipeRightLabel,
+                                    currentAction = messageSwipeRightAction,
+                                    defaultFallbackAction = MessageSwipeAction.PIN,
+                                    strings = strings,
+                                    onSelectAction = { action ->
+                                        messageSwipeRightAction = action
+                                        SmsMmsRepository.setMessageSwipeRightAction(context, action)
+                                    }
+                                )
+
+                                MessageSwipeDirectionInteractiveCard(
+                                    title = strings.messageSwipeLeftLabel,
+                                    currentAction = messageSwipeLeftAction,
+                                    defaultFallbackAction = MessageSwipeAction.HIGHLIGHT,
+                                    strings = strings,
+                                    onSelectAction = { action ->
+                                        messageSwipeLeftAction = action
+                                        SmsMmsRepository.setMessageSwipeLeftAction(context, action)
+                                    }
                                 )
                             }
 
@@ -3397,14 +3552,14 @@ fun SettingsScreen(
                                                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                                                     onClick = {
                                                         if (downloadProgressPct == null) {
-                                                            coroutineScope.launch {
-                                                                downloadProgressPct = 0
-                                                                AppUpdateManager.downloadAndInstallUpdate(
-                                                                    context = context,
-                                                                    releaseInfo = releaseToInstall,
-                                                                    onProgress = { pct -> downloadProgressPct = pct },
-                                                                )
-                                                                downloadProgressPct = null
+                                                            if (!AppUpdateManager.hasActiveInternetConnection(context)) {
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    strings.updateNoInternetToast,
+                                                                    Toast.LENGTH_SHORT,
+                                                                ).show()
+                                                            } else {
+                                                                pendingConfirmUpdateRelease = releaseToInstall
                                                             }
                                                         }
                                                     },
@@ -3439,6 +3594,9 @@ fun SettingsScreen(
                                 }
                                 var spamFirewallEnabled by remember {
                                     mutableStateOf(AppSecurityManager.isSpamFirewallEnabled(context))
+                                }
+                                var chatScreenshotProtectionEnabled by remember {
+                                    mutableStateOf(AppSecurityManager.isChatScreenshotProtectionEnabled(context))
                                 }
                                 var rootDetectionEnabled by remember {
                                     mutableStateOf(AppSecurityManager.isRootDetectionEnabled(context))
@@ -3583,6 +3741,28 @@ fun SettingsScreen(
                                                 }
                                             }
                                         }
+                                    }
+                                }
+
+                                // 1b. Sprečavanje skrinšotovanja konverzacija (Prevent Conversation Screenshots)
+                                GlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(18.dp),
+                                    contentPadding = PaddingValues(14.dp)
+                                ) {
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        SettingsSwitchRow(
+                                            title = strings.chatScreenshotProtectionTitle,
+                                            subtitle = strings.chatScreenshotProtectionSub,
+                                            checked = chatScreenshotProtectionEnabled,
+                                            onCheckedChange = { enabled ->
+                                                chatScreenshotProtectionEnabled = enabled
+                                                AppSecurityManager.setChatScreenshotProtectionEnabled(context, enabled)
+                                            }
+                                        )
                                     }
                                 }
 
@@ -4252,7 +4432,318 @@ fun SettingsScreen(
                 onDismiss = { showChangelogDialog = false }
             )
         }
+
+        pendingConfirmUpdateRelease?.let { releaseToConfirm ->
+            val isCellular = remember(context, releaseToConfirm) {
+                AppUpdateManager.isCellularConnection(context)
+            }
+            GlassAlertDialog(
+                onDismissRequest = { pendingConfirmUpdateRelease = null },
+                accentBorderColor = if (isCellular) palette.cautionColor else palette.safeColor,
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = TxturaIcons.ClockTimer,
+                            contentDescription = null,
+                            tint = if (isCellular) palette.cautionColor else palette.safeColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = strings.updateConfirmDialogTitle,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = palette.textPrimary
+                        )
+                    }
+                },
+                text = {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = strings.updateConfirmVersionInfo(appVersionName, releaseToConfirm.versionTag),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(
+                                    (if (isCellular) palette.cautionColor else palette.safeColor).copy(alpha = 0.14f)
+                                )
+                                .border(
+                                    0.8.dp,
+                                    (if (isCellular) palette.cautionColor else palette.safeColor).copy(alpha = 0.45f),
+                                    RoundedCornerShape(50)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                text = strings.updateNetworkTypeLabel(isCellular),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isCellular) palette.cautionColor else palette.safeColor,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = strings.updateConfirmNetworkPrompt(isCellular),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.textSecondary,
+                            lineHeight = 18.sp
+                        )
+                        if (releaseToConfirm.releaseNotes.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(palette.glassSurfaceElevated)
+                                    .border(0.8.dp, palette.glassBorderTop.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                                    .padding(10.dp)
+                            ) {
+                                Text(
+                                    text = releaseToConfirm.releaseNotes,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = palette.textPrimary.copy(alpha = 0.9f),
+                                    maxLines = 6,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val targetRelease = releaseToConfirm
+                            pendingConfirmUpdateRelease = null
+                            if (downloadProgressPct == null) {
+                                coroutineScope.launch {
+                                    downloadProgressPct = 0
+                                    AppUpdateManager.downloadAndInstallUpdate(
+                                        context = context,
+                                        releaseInfo = targetRelease,
+                                        onProgress = { pct -> downloadProgressPct = pct },
+                                    )
+                                    downloadProgressPct = null
+                                }
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = strings.updateConfirmProceedButton,
+                            color = palette.safeColor,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingConfirmUpdateRelease = null }) {
+                        Text(
+                            text = strings.cancel,
+                            color = palette.textSecondary
+                        )
+                    }
+                }
+            )
+        }
     }
+    }
+}
+
+@Composable
+private fun FlashAlertSettingsCard(
+    flashAlertEnabled: Boolean,
+    onToggleFlashAlert: (Boolean) -> Unit,
+    flashAlertMode: com.txtura.data.FlashAlertMode,
+    onSelectFlashAlertMode: (com.txtura.data.FlashAlertMode) -> Unit,
+    strings: AppStrings
+) {
+    val palette = LocalGlassPalette.current
+    val view = LocalView.current
+    val context = LocalContext.current
+    val isExpressive = LocalExpressiveAnimations.current
+    val activeDropdown = LocalActiveDropdownId.current
+    val dropdownKey = "selector_flash_alert_mode"
+    val menuExpanded = activeDropdown.value == dropdownKey
+
+    val handleToggle: (Boolean) -> Unit = { newChecked ->
+        TxturaHaptics.toggle(view, context, newChecked)
+        onToggleFlashAlert(newChecked)
+    }
+
+    val options = remember(strings) {
+        listOf(
+            com.txtura.data.FlashAlertMode.ALWAYS to strings.flashAlertModeAlways,
+            com.txtura.data.FlashAlertMode.VIBRATE_ONLY to strings.flashAlertModeVibrate,
+            com.txtura.data.FlashAlertMode.SILENT_ONLY to strings.flashAlertModeSilent,
+            com.txtura.data.FlashAlertMode.SOUND_ONLY to strings.flashAlertModeSound
+        )
+    }
+
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevated = flashAlertEnabled,
+        accentHighlight = if (flashAlertEnabled) palette.accentPrimary else null,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { handleToggle(!flashAlertEnabled) }
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = strings.flashAlertTitle,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (strings.flashAlertSub.isNotBlank()) {
+                        OverflowTooltipText(
+                            text = strings.flashAlertSub,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (flashAlertEnabled) palette.accentPrimary else palette.textSecondary,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Switch(
+                    checked = flashAlertEnabled,
+                    onCheckedChange = handleToggle,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = if (palette.isDark) Color.Black else Color.White,
+                        checkedTrackColor = palette.accentPrimary,
+                        uncheckedThumbColor = palette.textSecondary,
+                        uncheckedTrackColor = palette.glassSurfaceElevated
+                    )
+                )
+            }
+
+            AnimatedVisibility(
+                visible = flashAlertEnabled,
+                enter = TxturaMotion.verticalExpandEnter(isExpressive = isExpressive),
+                exit = TxturaMotion.verticalCollapseExit(isExpressive = isExpressive)
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(0.8.dp)
+                            .background(palette.glassBorderTop.copy(alpha = 0.28f))
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                activeDropdown.value = if (activeDropdown.value == dropdownKey) null else dropdownKey
+                            }
+                            .padding(vertical = 2.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = strings.flashAlertModeTitle,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = palette.textPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = flashAlertMode.getDisplayName(strings.isSerbian),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textSecondary,
+                                lineHeight = 15.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Box {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = flashAlertMode.getShortDisplayName(strings.isSerbian),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.textSecondary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = TxturaIcons.ChevronRight,
+                                    contentDescription = null,
+                                    tint = palette.textSecondary.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            val menuShape = RoundedCornerShape(16.dp)
+                            DropdownMenu(
+                                expanded = menuExpanded,
+                                onDismissRequest = {
+                                    if (activeDropdown.value == dropdownKey) {
+                                        activeDropdown.value = null
+                                    }
+                                },
+                                modifier = Modifier.widthIn(min = 180.dp, max = 280.dp),
+                                shape = menuShape,
+                                containerColor = palette.popupContainerColor,
+                                tonalElevation = 0.dp,
+                                shadowElevation = 8.dp,
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    brush = Brush.linearGradient(listOf(palette.glassBorderTop, palette.glassBorderBottom))
+                                )
+                            ) {
+                                options.forEach { (value, label) ->
+                                    val isSelected = value == flashAlertMode
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = label,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = if (isSelected) palette.accentPrimary else palette.textPrimary,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
+                                        trailingIcon = if (isSelected) {
+                                            {
+                                                Icon(
+                                                    imageVector = TxturaIcons.Check,
+                                                    contentDescription = null,
+                                                    tint = palette.accentPrimary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        } else null,
+                                        onClick = {
+                                            TxturaHaptics.click(view, context)
+                                            onSelectFlashAlertMode(value)
+                                            activeDropdown.value = null
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5199,9 +5690,33 @@ private fun SimMessagesDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val palette = LocalGlassPalette.current
     var simMessages by remember { mutableStateOf<List<SimCardMessage>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+
+    val activity = remember(context) {
+        var ctx = context
+        while (ctx is ContextWrapper) {
+            if (ctx is Activity) return@remember ctx
+            ctx = ctx.baseContext
+        }
+        null
+    }
+    val chatScreenshotProtectionEnabled by AppSecurityManager.chatScreenshotProtectionEnabled.collectAsState()
+    DisposableEffect(activity, view, chatScreenshotProtectionEnabled) {
+        val dialogWindow = (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
+        if (chatScreenshotProtectionEnabled) {
+            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            dialogWindow?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            if (chatScreenshotProtectionEnabled) {
+                dialogWindow?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -5502,6 +6017,168 @@ private fun SwipeDirectionInteractiveCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MessageSwipeDirectionInteractiveCard(
+    title: String,
+    currentAction: MessageSwipeAction,
+    defaultFallbackAction: MessageSwipeAction,
+    strings: AppStrings,
+    onSelectAction: (MessageSwipeAction) -> Unit
+) {
+    val palette = LocalGlassPalette.current
+    val enabled = currentAction != MessageSwipeAction.NONE
+    val activeDropdown = LocalActiveDropdownId.current
+    val dropdownKey = "msg_swipe_${title.hashCode()}"
+    val expanded = activeDropdown.value == dropdownKey
+    val selectableActions = remember {
+        MessageSwipeAction.entries.filter { it != MessageSwipeAction.NONE }
+    }
+
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevated = enabled || expanded,
+        accentHighlight = if (enabled) palette.accentPrimary else null,
+        contentPadding = PaddingValues(14.dp)
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable {
+                        activeDropdown.value = if (activeDropdown.value == dropdownKey) null else dropdownKey
+                    }
+                    .padding(vertical = 4.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = messageSwipeActionLabel(currentAction, strings),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (enabled) palette.accentPrimary else palette.textSecondary
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { turnOn ->
+                        if (turnOn) {
+                            onSelectAction(defaultFallbackAction)
+                            activeDropdown.value = dropdownKey
+                        } else {
+                            onSelectAction(MessageSwipeAction.NONE)
+                            if (activeDropdown.value == dropdownKey) {
+                                activeDropdown.value = null
+                            }
+                        }
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = if (palette.isDark) Color.Black else Color.White,
+                        checkedTrackColor = palette.accentPrimary,
+                        uncheckedThumbColor = palette.textSecondary,
+                        uncheckedTrackColor = palette.glassSurfaceElevated
+                    )
+                )
+            }
+
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp)
+                ) {
+                    selectableActions.chunked(2).forEach { rowActions ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            rowActions.forEach { action ->
+                                val selected = action == currentAction
+                                val actionTint = when (action) {
+                                    MessageSwipeAction.HIGHLIGHT -> palette.cautionColor
+                                    MessageSwipeAction.DELETE -> palette.dangerColor
+                                    else -> palette.accentPrimary
+                                }
+                                val actionIcon = when (action) {
+                                    MessageSwipeAction.HIGHLIGHT -> TxturaIcons.HighlightStar
+                                    MessageSwipeAction.DELETE -> TxturaIcons.Delete
+                                    else -> TxturaIcons.PinOutline
+                                }
+                                GlassCard(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp),
+                                    shape = RoundedCornerShape(14.dp),
+                                    elevated = selected,
+                                    accentHighlight = if (selected) actionTint else null,
+                                    contentPadding = PaddingValues(horizontal = 11.dp, vertical = 6.dp),
+                                    onClick = { onSelectAction(action) }
+                                ) {
+                                    Box(
+                                        contentAlignment = Alignment.CenterStart,
+                                        modifier = Modifier.fillMaxSize()
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(
+                                                imageVector = actionIcon,
+                                                contentDescription = null,
+                                                tint = if (selected) actionTint else palette.textSecondary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(7.dp))
+                                            Text(
+                                                text = messageSwipeActionLabel(action, strings),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 11.sp,
+                                                lineHeight = 13.sp,
+                                                color = if (selected) actionTint else palette.textPrimary.copy(alpha = 0.88f),
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            if (rowActions.size == 1) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun messageSwipeActionLabel(action: MessageSwipeAction, strings: AppStrings): String {
+    return when (action) {
+        MessageSwipeAction.PIN -> strings.swipeActionPin
+        MessageSwipeAction.HIGHLIGHT -> strings.swipeActionHighlight
+        MessageSwipeAction.DELETE -> strings.swipeActionDelete
+        MessageSwipeAction.NONE -> strings.swipeActionNone
     }
 }
 
@@ -6105,29 +6782,92 @@ private fun AppChangelogDialog(
                     }
 
                     ChangelogVersionSection(
-                        versionName = "v3.7",
-                        releaseDate = if (strings.isSerbian) "Trenutno izdanje" else "Current Release",
+                        versionName = "v3.8",
+                        releaseDate = if (strings.isSerbian) "14.11.2026. • Trenutno izdanje" else "14.11.2026. • Current Release",
                         isCurrent = true,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Unos poruka i stabilnost interfejsa" else "Composer & UI Stability",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Fiksiran raspored polja za unos: Onemogućeno nepoželjno premeštanje i vertikalno slaganje ikonica pri kucanju poruka od više redova" else "Input Composer Layout Fixes: Left action icons remain strictly in a horizontal row regardless of message length or line count",
-                                    if (strings.isSerbian) "Stabilno tekstualno polje i mikrofon: Ograničena visina polja i razmak kako tekst ne bi prekrivao dugme za mikrofon pri više redova" else "Text Box & Mic Alignment Fix: Constrained text field height and right clearance to prevent overlapping the microphone button"
+                                    if (strings.isSerbian) "Direktno otvaranje pregleda zaštite klikom na štit u zaglavlju razgovora i u podnožju podešavanja: Klik na zeleni štit u zaglavlju razgovora ili na tekst „Zaštićena SMS/MMS aplikacija“ u podnožju podešavanja direktno otvara prozor pregleda ugrađenih bezbednosnih mera (Security Configuration Summary)" else "Direct Security Overview Access from Conversation Header Shield & Settings Footer: Tapping the green security shield in the conversation header or the 'Protected SMS/MMS' badge in the settings footer opens the Security Configuration Summary dialog",
+                                    if (strings.isSerbian) "Zaseban ekran podešavanja „Pokreti prevlačenja“ (Swipe gestures): Sve 4 opcije prevlačenja (svajp ulevo i udesno na listi konverzacija i prozorčićima poruka) smeštene su u zaseban podmeni unutar podešavanja Razgovor i gestovi uz namensko zaglavlje i navigaciju nazad" else "Dedicated 'Swipe gestures' Sub-Menu Screen: Grouped all 4 swipe actions (left and right swipes for conversation list and message bubbles) into a dedicated glass sub-menu screen in Chat & Gestures settings with seamless back navigation",
+                                    if (strings.isSerbian) "Ujednačene širine kategorija sa srazmernim širenjem nepročitanih: Širine kategorija na početnom ekranu su ujednačene; kada pristignu nepročitane poruke, kategorija Nepročitano se dinamički širi a ostale tri srazmerno skupljaju bez prelivanja i horizontalnog skrolovanja, a po čitanju se vraćaju u ravnomernu širinu" else "Dynamic Category Widths & Proportional Unread Expansion: Category chips on the home screen have equal widths; when unread messages arrive, Unread expands dynamically while the other three categories shrink proportionally to match search bar width without horizontal overflow, reverting to equal widths when read",
+                                    if (strings.isSerbian) "Kategorija „Sve“ (All) po defaultu na prvom mestu: Kategorija „Sve“ je podrazumevano prva na početnom ekranu (Sve, Ljudi, Servisi, Nepročitano), uz potpuno očuvanje korisničkog redosleda prevlačenjem (drag-and-drop)" else "'All' Category First by Default: The 'All' category is displayed first by default on the home screen (All, People, Services, Unread), with custom drag-and-drop reordering fully preserved",
+                                    if (strings.isSerbian) "Opcija „Obriši“ (Trash) za svajp na prozorčić poruke uz dijalog za potvrdu: U podešavanjima svajpa ulevo i udesno na prozorčić poruke dodata je opcija premeštanja poruke u obrisane poruke (Trash) uz prikaz prozora za potvrdu pre brisanja" else "Message Bubble Swipe 'Trash' Option with Confirmation Dialog: Added the 'Trash' option to Message Bubble Swipe Right and Swipe Left settings with a confirmation prompt before moving the message to Deleted messages",
+                                    if (strings.isSerbian) "Pametno prepoznavanje poziva na broj, iznosa za uplatu, rokova za kalendar, brojeva pošiljki i brzo slanje SMS-a: Automatska detekcija i brzi čipovi u porukama za kopiranje poziva na broj (uz prikaz modela, npr. Model 97), kopiranje tačnog iznosa računa/transakcije za m-banking, dodavanje roka za uplatu ili termina direktno u kalendar telefona, kopiranje broja pošiljke (Post Express / kurirske službe) i opcija „Pošalji SMS poruku“ pri kliku na prepoznat broj telefona" else "Smart Payment Reference, Amount, Calendar Deadline, Package Tracking & Send SMS Actions: Automatic detection and quick-action chips in messages for payment reference numbers (with model), payment/transaction amounts, calendar deadline reminders, package tracking numbers, and a 'Send SMS message' option on detected phone numbers",
+                                    if (strings.isSerbian) "Potvrda pre označavanja štetne poruke kao bezbedne: Dijalog za potvrdu koji pita korisnika da li zaista želi da označi upozorenu poruku kao bezbednu pre primene izuzetka (Harmful message override)" else "Harmful Message Override Confirmation Dialog: Confirmation prompt asking the user to verify before marking a flagged message as safe",
+                                    if (strings.isSerbian) "Trenutni zvuk „poslato.wav“ na pritisak tastera Pošalji: Zvučni efekat res/raw/poslato.wav koji se reprodukuje odmah čim korisnik pritisne dugme za slanje poruke" else "Instant 'poslato.wav' Sound on Send Button Tap: Plays res/raw/poslato.wav immediately when the Send button is pressed",
+                                    if (strings.isSerbian) "Trajno čuvanje zakazanih poruka i obnavljanje pri pokretanju uređaja: Zakazane SMS i MMS poruke se trajno čuvaju u memoriji i automatski nastavljaju odbrojavanje nakon ponovnog pokretanja aplikacije ili restarta telefona" else "Persistent Scheduled Messages & Boot Restoration: Scheduled SMS and MMS messages persist across app restarts and device reboots via BootCompletedReceiver",
+                                    if (strings.isSerbian) "Dijalozi za potvrdu za akcije u korpi i direktan ulazak u pregled: Dodati dijalozi za potvrdu pre vraćanja konverzacije iz korpe, kao i pre vraćanja ili trajnog brisanja izabranih poruka u prozoru pregleda, dok se u pregled poruka ulazi direktno klikom na samu karticu (ili avatar) kao i preko dugmeta „Odaberi“" else "Confirmation Dialogs for Trash Actions & Direct Inspection on Card Tap: Added confirmation prompts before restoring a thread from Trash, as well as before restoring or permanently deleting selected messages in the inspection dialog, while tapping the conversation card (or avatar) or the 'Choose' button enters inspection directly"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Dijalozi i naslovi" else "Dialogs & Typography Refinements",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Prikaz naslova dijaloga u 1 redu: Naslovi dijaloga potvrde (npr. Označi sve kao pročitano, Podrazumevana SMS aplikacija) prikazuju se uvek u jednom redu" else "Single-Line Dialog Titles: Modal confirmation dialog titles render on a single row with Ellipsis overflow handling",
-                                    if (strings.isSerbian) "Poravnanje dugmadi u isti red: Dugmad za akcije dijaloga (Podesi kao podrazumevanu i Ne sada) fiksirana su u istom horizontalnom redu" else "Horizontal Single-Row Dialog Buttons: Dialog action buttons stay strictly in a single horizontal row without vertical stacking"
+                                    if (strings.isSerbian) "Čisto ime kontakta u zaglavlju pregleda obrisanih poruka: Uklonjen suvišni prefiks „Obrisane poruke • “ iz naslova prozora pregleda, tako da se u tom redu prikazuje isključivo ime kontakta ili broj telefona" else "Clean Contact Name in Trash Inspection Header: Removed the redundant 'Deleted messages • ' window title prefix, displaying exclusively the contact's name or phone number",
+                                    if (strings.isSerbian) "Uklonjene suvišne prečice u listi obrisanih poruka: Uklonjene pojedinačne ikonice za vraćanje i brisanje sa svake poruke u prozoru pregleda radi sprečavanja slučajnih dodira i veće preglednosti, uz jedinstvenu kontrolu preko donjih dugmadi" else "Streamlined Message Cards in Trash Inspection Dialog: Removed the inline restore and delete shortcut icon buttons from individual message rows to prevent accidental taps and maximize reading space, keeping action control unified under the bottom batch action buttons",
+                                    if (strings.isSerbian) "Očuvanje pozicije liste razgovora pri povratku iz razgovora: Povratak iz otvorenog razgovora na listu konverzacija vraća na tačno mesto (i izabranu kategoriju) gde se lista nalazila umesto automatskog skrolovanja na vrh" else "Preserved Conversation List Scroll Position on Back Navigation: Navigating back from an open conversation returns to the exact scroll position and active category filter instead of resetting to the top of the list",
+                                    if (strings.isSerbian) "Namenski zvuk „dolazna.wav“ u razgovoru i ton obaveštenja van razgovora: Zvučni efekat res/raw/dolazna.wav reprodukuje se isključivo dok je korisnik u prozoru konverzacije, dok se van konverzacije reprodukuje izabrani ton obaveštenja poruke" else "Dedicated In-Chat 'dolazna.wav' Sound vs. External Notification Tone: res/raw/dolazna.wav plays strictly while the user is inside an open conversation window, while incoming messages received outside the conversation play the standard message notification tone",
+                                    if (strings.isSerbian) "Precizan detektor brojeva telefona, datuma, poziva na broj, linkova i skraćenica: Otklonjeno pogrešno prepoznavanje datuma i vremena (npr. 05/10/2026 17:42:27), poziva na broj i brojeva unutar URL linkova kao brojeva telefona, kao i sprečeno prepoznavanje skraćenica poput „br.kartice*5431“ kao veb-linkova" else "Precision Phone Number & Link Detector Filtering: Eliminated false-positive phone number detections on dates/timestamps, payment references, and numeric substrings inside URLs, and prevented abbreviations like 'br.kartice*5431' from being linkified as URLs",
+                                    if (strings.isSerbian) "Bezbedan FileProvider uz podršku za direktno GitHub APK ažuriranje: Ograničene putanje deljenja fajlova (file_paths.xml) isključivo na namenske podfascikle uz zadržanu podršku za direktno preuzimanje i instalaciju ažuriranja sa GitHub-a" else "Scoped FileProvider Security & Direct GitHub APK Updates: Restricted file_paths.xml strictly to dedicated subdirectories while retaining direct in-app GitHub APK updates",
+                                    if (strings.isSerbian) "Standardizovano MMS slanje i primanje govornih poruka i dokumenata: Unapređen MmsPduHelper po OMA MMS standardu sa korenskim SMIL delom, ispravnim WSP zaglavljima, trajnim čuvanjem govornih poruka, prepoznavanjem svih audio formata i .txt priloga, uz podrazumevani SLOBODAN (300 KB) MMS režim" else "OMA-Compliant MMS PDU Encoding, Voice Messages & Document Attachments: Upgraded MmsPduHelper with root SMIL presentation, WSP Value-length headers, persistent voice message storage, multi-codec audio & .txt attachment parsing, and FREE (300 KB) MMS mode by default",
+                                    if (strings.isSerbian) "Trenutno asinhrono slanje poruka i serijsko učitavanje MMS-a: Slanje SMS i MMS poruka više ne zadržava glavni ekran (kompresija slike i kreiranje PDU-a rade u pozadini), a učitavanje MMS delova pri pokretanju izvršava se jednim grupnim upitom" else "Non-Blocking Asynchronous SMS/MMS Send & Batch MMS Loading: Outgoing messages appear instantaneously while image compression and PDU creation run on background threads, and MMS parts load via a single batched query",
+                                    if (strings.isSerbian) "Aktivna primena blokiranih pošiljalaca, MMS potvrda čitanja i režima kreiranja: Ručno blokirani brojevi su uvek blokirani nezavisno od spam filtera, slanje potvrda o čitanju MMS-a i režimi kreiranja (Ograničeno 100 KB / Upozorenje / Slobodno 300 KB) aktivno se primenjuju, a ručno preuzimanje MMS-a čuva tačnu SIM karticu" else "Active Enforcement of Blocked Senders, MMS Read Reports & Creation Modes: Manually blocked numbers are always blocked, MMS read report status and creation mode size limits are actively enforced, and manual MMS download preserves the target SIM subId",
+                                    if (strings.isSerbian) "Ograničen svajp na listi konverzacija prema širini teksta opcije: Prevlačenje kartice konverzacije ulevo i udesno na glavnom prozoru ograničeno je tačno na širinu potrebnu da se prikaže cela ikonica i naziv opcije" else "Exact-Width Conversation List Swipe Clamping: Left and right swipe distance on the main conversation list is dynamically clamped to the exact width needed to reveal the full action icon and text",
+                                    if (strings.isSerbian) "Zabrana skrinšotovanja na svim ekranima sa sadržajem poruka: Kada je uključeno sprečavanje skrinšotovanja, blokirano je slikanje i snimanje ekrana (FLAG_SECURE) na listi konverzacija, u razgovorima, istaknutim porukama, obrisanim porukama (korpi) i porukama na SIM kartici" else "Comprehensive Message Content Screenshot Blocking: When screenshot protection is enabled, FLAG_SECURE blocks screenshots and screen recordings across the conversation list, chats, highlighted messages, deleted messages (Trash), and SIM card messages"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Navigacija sa štita i zvučni motor" else "Security Navigation & Audio Engine",
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Navigacija i skrolovanje sa upozorenja štita: Klik na crveni tekst upozorenja štita direktno otvara razgovor, skroluje i svetlosno ističe sumnjivu poruku" else "Security Shield Deep Navigation: Tapping red security warning banners opens the conversation and auto-scrolls/highlights the suspicious message",
-                                    if (strings.isSerbian) "Reimplementiran zvučni motor: Automatsko ponovno učitavanje svih 19 zvučnih efekata iz res/raw u SoundPool i osvežavanje analize ritma blica" else "Sound Engine Reloading: SoundPool automatically preloads all 19 custom .wav effects from res/raw with zero latency and refreshes flash rhythm caches"
+                                    if (strings.isSerbian) "Usluga Over-The-Air lokalizacije (OtaLocalizationManager): Potpuno uklonjena klasa OtaLocalizationManager.kt, PendingLocaleWorker.kt i sve poveznice sa udaljenim preuzimanjem prevoda" else "OTA Localization Service (OtaLocalizationManager): Completely removed OtaLocalizationManager.kt, PendingLocaleWorker.kt, and all remote localization references",
+                                    if (strings.isSerbian) "Zvučni efekat „odlazna.wav“: Uklonjena datoteka res/raw/odlazna.wav u korist zvuka res/raw/poslato.wav pri slanju poruke" else "'odlazna.wav' Outgoing Sound File: Removed unused res/raw/odlazna.wav in favor of res/raw/poslato.wav when pressing Send"
+                                )
+                            )
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = strings.changelogPreviousVersionsHeader,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = palette.textSecondary,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v3.7",
+                        releaseDate = "13.11.2026.",
+                        isCurrent = false,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
+                                items = listOf(
+                                    if (strings.isSerbian) "Svajp ulevo i udesno na prozorčić poruke: Podesive opcije prevlačenja ulevo i udesno direktno na oblačić poruke u razgovoru za (Un)pin i (Un)highlight, uz prikaz ikonice iznad naziva opcije i kompaktan razmak pored oblačića" else "Message Bubble Swipe Left & Right: Configurable left and right swipe gestures directly on individual message bubbles for (Un)pin and (Un)highlight, with the icon placed above the label and a compact gap next to the bubble",
+                                    if (strings.isSerbian) "Režimi aktivacije svetlosnog odziva: Izbor uslova pod kojima se uključuje blic (Uvek, U režimu samo vibracija, U režimu nečujno, U režimu zvuk)" else "Light Feedback Activation Modes: Selectable ringer-mode conditions for camera flash alerts (Always, In vibrate mode, In silent mode, In sound mode)",
+                                    if (strings.isSerbian) "Direktno ažuriranje sa bilo koje starije verzije i preko svake mreže: Podrška za direktan prelazak sa bilo koje prethodne verzije na najnoviju GitHub verziju i preuzimanje preko Wi-Fi ili mobilnih podataka uz dijalog za potvrdu korisnika" else "Universal Direct Update & Any-Network Confirmation: Direct update from any previous version to the newest GitHub release and downloading over Wi-Fi or Mobile Data with user confirmation",
+                                    if (strings.isSerbian) "Trenutna pozadinska obaveštenja o ažuriranju: Pozadinska provera (WorkManager i mrežni osluškivač) koja šalje sistemsko obaveštenje čim se detektuje nova verzija, bez čekanja na ulazak u aplikaciju" else "Immediate Background Update Notifications: Background WorkManager and connectivity checks that send a notification as soon as a new release is detected without waiting for app launch",
+                                    if (strings.isSerbian) "Označavanje poruke da nije štetna: Mogućnost označavanja upozorenih poruka kao bezbednih („Označi da nije štetna“), dostupna isključivo na porukama koje su detektovane kao štetne" else "Mark Harmful Message as Safe: Option to mark flagged messages as not harmful ('Mark as not harmful'), available strictly on messages detected as harmful",
+                                    if (strings.isSerbian) "Sprečavanje skrinšotovanja konverzacija: On/Off prekidač u podešavanjima Privatnost i bezbednost (ispod kartice Blokirani pošiljaoci) koji zabranjuje slikanje i snimanje ekrana na listi konverzacija i u samim konverzacijama" else "Conversation Screenshot Protection: On/Off toggle in Privacy & Security settings (below Blocked Senders) that blocks screenshots and screen recordings on the conversation list and inside conversations"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
+                                items = listOf(
+                                    if (strings.isSerbian) "Pretraga u glavnom meniju i razgovoru sa skrolovanjem i signalizacijom: Klik na konverzaciju u pretrazi glavnog menija i pretraga u okviru razgovora (isključivo za tu konverzaciju) automatski skroluju do pronađene poruke i vizuelno je signaliziraju oznakom „Pronađena poruka“, svetlećim okvirom i obojenim pojmom" else "Main Menu & In-Chat Search Scroll and Visual Signaling: Tapping a conversation from main menu search or searching inside a chat (scoped strictly to that conversation) automatically scrolls to the matched message and highlights both the bubble and search term",
+                                    if (strings.isSerbian) "Navigacija sa upozorenja o štetnoj poruci na glavnom meniju: Klik na crveno upozorenje u pregledu konverzacije direktno otvara razgovor, učitava istoriju, skroluje do štetne poruke i vizuelno je ističe uz opciju da se označi da nije štetna" else "Harmful Message Warning Deep Navigation: Clicking the red warning in the main menu conversation preview opens the chat directly at the harmful message, scrolls to it, and highlights it with the option to mark it as not harmful",
+                                    if (strings.isSerbian) "Objedinjeno podešavanje svetlosnog odziva i raspored haptike: Prekidač svetlosnog odziva i izbor režima aktivacije spojeni su u jednu karticu, a podešavanje „Haptički odzivi“ je premešteno iznad „Svetlosnog odziva“" else "Consolidated Light Feedback Card & Haptics Reordering: Merged the light feedback toggle and activation mode selector into one card, and moved Haptic feedback directly above Light feedback",
+                                    if (strings.isSerbian) "Boja vremenske odrednice u razgovoru: Boja plutajuće vremenske odrednice (datuma) u četu usklađena je sa bojom strelice nadole koja vraća konverzaciju na najskorije poruke" else "Conversation Date Pill Color Alignment: Matched the floating conversation date header color and border to the scroll-to-bottom down-arrow button",
+                                    if (strings.isSerbian) "Stabilnost polja za unos i zatvaranja priloga (+ / x): Fiksiran horizontalni raspored ikonica pri višelinijskom kucanju bez prekrivanja mikrofona i otklonjen vizuelni ispad pri dodirivanju ikonice x za zatvaranje dodatnih kategorija datoteka" else "Composer Multi-Line & Attachment Close (+ / x) Stability: Fixed horizontal icon alignment during multi-line entry without overlapping the microphone button and eliminated layout jumping when closing extra attachment categories",
+                                    if (strings.isSerbian) "Jednolinijski naslovi dijaloga i nazivi dugmadi: Dijalog „Podrazumevana SMS i MMS aplikacija“ i dijalozi potvrde prikazuju ceo naslov u jednom redu i pune nazive dugmadi („Ne sada“ i „Podesi kao podrazumevano“) u istom redu, uz skraćene tastere u korpi („Odaberi“ i „Vrati“)" else "Single-Line Dialog Titles & Concise Action Labels: Full single-row title and horizontal button labels for the default SMS/MMS dialog and confirmation prompts, with concise Choose and Restore buttons in Trash",
+                                    if (strings.isSerbian) "Unapred učitani zvučni efekti (SoundPool): Zvučni motor unapred učitava svih 19 .wav efekata iz res/raw bez kašnjenja (forceReload) i osvežava keš ritma blica" else "Preloaded SoundPool Audio Engine: Preloads all 19 custom .wav sound effects from res/raw into SoundPool with forceReload support and refreshes flash rhythm caches"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
+                                items = listOf(
+                                    if (strings.isSerbian) "Zasebna kartica „Kada aktivirati svetlosni odziv“: Uklonjena kao posebna kartica jer je izbor režima ugrađen direktno u karticu „Svetlosni odziv“" else "Separate 'When to activate light feedback' Card: Removed as a standalone settings card after integrating its selector into the Light feedback card",
+                                    if (strings.isSerbian) "Tekstualni natpis „• Protected conversation“ u zaglavlju razgovora: Uklonjen tekst pored broja telefona u zaglavlju četa — zadržan je samo zeleni štit pre broja kao indikator bezbednosti" else "'• Protected conversation' Header Text: Removed the text suffix next to the phone number in the conversation header, keeping only the green shield icon before the number"
                                 )
                             )
                         )
@@ -6135,26 +6875,30 @@ private fun AppChangelogDialog(
 
                     ChangelogVersionSection(
                         versionName = "v3.6",
-                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        releaseDate = "12.11.2026.",
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "SIM / eSIM i MMS motor" else "SIM / eSIM & MMS Engine",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Preusmeravanje za više SIM kartica i eSIM: Dinamičko slanje i prijem poruka sa aktivnog fizičkog ili eSIM slota uz SubscriptionManager" else "Multi-SIM & eSIM Subscription Routing: Dynamic SMS/MMS sending and receiving from active physical SIM or eSIM slot via SubscriptionManager",
-                                    if (strings.isSerbian) "Centralizovani MmsPayloadValidator do 300 KB: Centralna provera veličine MMS poruke sa rezervom za OMA-SMIL zaglavlja" else "Pre-Flight MMS Payload Validation: Central MmsPayloadValidator enforcing strict 300 KB PDU payload limits"
+                                    if (strings.isSerbian) "Preusmeravanje za više SIM kartica i eSIM: Dinamičko slanje i prijem SMS/MMS poruka sa aktivnog fizičkog ili eSIM slota uz SubscriptionManager" else "Multi-SIM & eSIM Subscription Routing: Dynamic SMS/MMS sending and receiving from the active physical SIM or eSIM slot via SubscriptionManager",
+                                    if (strings.isSerbian) "Centralizovani MmsPayloadValidator (do 300 KB) i IANA MIME mapiranje: Provera veličine MMS priloga uz podršku za kancelarijske dokumente, tabele, prezentacije, beleške, audio, kontakte i kalendar, kao i provera aktivnih mobilnih podataka (FAILED_NO_DATA)" else "Centralized MmsPayloadValidator (300 KB) & IANA MIME Mapping: Strict 300 KB PDU validation, lossless MIME mapping for office/media/contact/calendar files, and cellular data pre-flight check (FAILED_NO_DATA)",
+                                    if (strings.isSerbian) "Over-The-Air lokalizacija i teme Espreso i Lavanda: Pozadinska sinhronizacija prevoda (PendingLocaleWorker) i nove teme Espreso krem, Monohrom espreso, Lavanda sanja i Monohrom lavanda sa teksturama zrna kafe i latica lavande" else "OTA Localization & Espresso / Lavender Themes: Background PendingLocaleWorker translation sync and new Espresso and Lavender themes with procedural coffee bean and lavender petal textures"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Arhitektura i lokalizacija" else "Architecture & Localization",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Over-The-Air lokalizacija i stabilnost prikaza: Dinamičko osvežavanje prevoda bez re-izdavanja aplikacije i optimizacija modela uz @Immutable" else "OTA Localization & UI Stability: Zero-blocking OTA localization engine with background WorkManager sync and @Immutable model optimizations"
+                                    if (strings.isSerbian) "EXIF orijentacija slika i Compose stabilnost (@Immutable): Ispravljena rotacija portretnih MMS fotografija pre kompresije, modeli označeni sa @Immutable i uključen StrictMode u debug režimu" else "EXIF Image Orientation & Compose @Immutable Stability: Preserved portrait photo rotation before MMS compression, annotated UI models with @Immutable, and enabled debug StrictMode",
+                                    if (strings.isSerbian) "Glatka animacija poništavanja odbrojavanja slanja: Prepravljen prelaz tastera za slanje/otkazivanje (AnimatedContent) sa odlaganjem vraćanja nacrta od 250ms bez skakanja rasporeda" else "Synchronized Send Countdown Cancel Animation: Refactored send/cancel slot with AnimatedContent and a 250ms draft restoration delay to prevent layout jumps",
+                                    if (strings.isSerbian) "Automatski prikaz SMSC broja: Kartica SMSC centra prikazuje broj automatski očitan sa SIM kartice ili mreže operatera" else "Automatic SMSC Display: SMSC settings card automatically displays the carrier/SIM-detected service center number"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Teme, teksture i animacije" else "UI, Themes & Animations",
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Teme Espreso i Lavanda sa novim teksturama: Nove bogate teme sa taktilnim teksturama kafe i latica lavande, i glatko poništavanje slanja" else "Espresso & Lavender Themes with Custom Textures: Rich new polychrome/monochrome themes with bespoke textures and synchronized send cancel motion"
+                                    if (strings.isSerbian) "Ručne APN kartice i zastareli prekidači mobilnih podataka: Uklonjeni iz podešavanja mrežnih servisa u korist automatskog rutiranja" else "Manual Carrier APN Cards & Legacy Mobile Data Toggles: Removed from Messaging & Network settings in favor of automatic carrier routing",
+                                    if (strings.isSerbian) "Periodični 3-minutni MMS servis i naknadno transkodovanje zvuka: Uklonjeno 3-minutno pozadinsko prozivanje (zamenjeno WAP_PUSH_DELIVER prijemom u realnom vremenu) i uklonjeno naknadno audio transkodovanje (zamenjeno direktnim AMR-NB snimanjem)" else "3-Minute MMS Polling & Offline Audio Transcoding: Removed periodic 3-minute polling in favor of real-time WAP_PUSH_DELIVER broadcasts and replaced offline audio transcoding with direct native AMR-NB recording"
                                 )
                             )
                         )
@@ -6162,26 +6906,21 @@ private fun AppChangelogDialog(
 
                     ChangelogVersionSection(
                         versionName = "v3.5",
-                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        releaseDate = "12.11.2026.",
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "MMS telefonija i pozadinska sinhronizacija" else "MMS Telephony & Background Sync",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Automatska pozadinska MMS sinhronizacija: Pozadinski proces na svakih 3 minuta za automatsko ponovno slanje zaglavljenih odlaznih i preuzimanje pristiglih MMS poruka" else "Periodic background MMS retry engine: Background process running every 3 minutes via AlarmManager and JobScheduler to auto-retry stuck outgoing MMS and retrieve pending incoming MMS",
-                                    if (strings.isSerbian) "Automatska detekcija MMS APN podešavanja: Pozadinsko preuzimanje i podešavanje MMS parametara (MMSC URL, Proxy, Port) prema SMSC broju i SIM operateru" else "SMSC-based MMS APN auto-detection: Background setup of carrier MMS APN parameters based on SMSC center number and SIM operator"
+                                    if (strings.isSerbian) "Automatska detekcija MMS parametara prema SMSC broju i SIM operateru: Automatsko prepoznavanje MMSC URL-a, proksija i porta za regionalne i svetske operatere (mts, Yettel, A1, Globaltel, HT Eronet, BH Telecom, m:tel, Hrvatski Telekom, Telekom Slovenije, T-Mobile, Vodafone, AT&T, Verizon)" else "SMSC & SIM Operator MMS Auto-Detection: Automatic resolution of carrier MMSC URL, proxy, and port based on SMSC number and SIM operator",
+                                    if (strings.isSerbian) "Provera #!AMR\\n zaglavlja glasovnih poruka (AmrAudioConverter): Validacija standardnog AMR-NB formata glasovnih zapisa pre MMS slanja" else "AMR-NB Voice Header Validator (AmrAudioConverter): Validates standard #!AMR\\n header compliance for voice recordings prior to MMS transmission"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Zvučni enkoderi i mediji" else "Audio Encoders & Media Processing",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Konverzija i provera AMR-NB formata: Obrada glasovnih poruka i zvučnih zapisa uz proveru i transkodovanje u važeći AMR-NB format pre slanja" else "AMR-NB audio format converter: Ensures standard #!AMR\\n header compliance and transcodes non-AMR audio formats to valid AMR-NB before MMS transmission"
-                                )
-                            ),
-                            ChangelogCategory(
-                                title = if (strings.isSerbian) "Interfejs i podešavanja" else "UI Layouts & Settings Refinements",
-                                items = listOf(
-                                    if (strings.isSerbian) "Simetrična APN kartica i naslovi u jednom redu: Redizajnirana APN podešavanja sa podjednakom dugmadi (50/50), prikaz naslova kartica u 1 redu i fiksiran prostor pri poništavanju slanja" else "Symmetrical APN card & single-line titles: Redesigned MMS APN card with 50/50 symmetrical action buttons, single-line settings card titles, and isolated countdown timer slot to eliminate flicker"
+                                    if (strings.isSerbian) "Podrazumevane vrednosti zaštite pri prvoj instalaciji: Napredne opcije (lokalni fajervol, šifrovanje baze, SSL pinning, minimizacija metapodataka, root provera) podrazumevano su isključene pri prvoj instalaciji, dok je detekcija zlonamernih sajtova uključena" else "First-Install Security Defaults: Optional advanced security toggles start disabled on clean installs while malicious website detection starts enabled",
+                                    if (strings.isSerbian) "Statična kartica eksternih linkova i jednolinijski naslovi podešavanja: Naslovi kartica u podešavanjima prikazuju se u jednom redu uz stabilan raspored kartice za eksterne linkove" else "Static External Links Card & Single-Line Settings Titles: Single-line titles across settings cards and static layout for the External Links card"
                                 )
                             )
                         )
@@ -6189,25 +6928,20 @@ private fun AppChangelogDialog(
 
                     ChangelogVersionSection(
                         versionName = "v3.4",
-                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        releaseDate = "12.11.2026.",
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Ažuriranje i instalacija" else "App Updates & Installation",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Direktno preuzimanje i instalacija ažuriranja sa GitHub-a uz prikaz napretka u realnom vremenu i automatsko pokretanje instalatera bez otvaranja pretraživača" else "Direct APK update download from GitHub Releases with live percentage progress and automatic package installer launch without external browser"
+                                    if (strings.isSerbian) "Direktno preuzimanje i pokretanje instalacije APK-a iz aplikacije: Preuzimanje GitHub izdanja sa prikazom napretka u procentima i automatskim otvaranjem Android instalatera bez eksternog pretraživača" else "In-App GitHub APK Downloader & Installer: Direct APK download from GitHub Releases with live percentage progress and native package installer launch"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Poruke i animacije" else "Messaging & Animations",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Animacija opruge pri pinovanju i otpinovanju: Glatka animacija premeštanja razgovora na vrh ili novu poziciju uz zadržavanje pozicije skrolovanja" else "Pin and unpin spring motion: Smooth placement spring animation when pinning or unpinning conversations with index-anchored viewport scroll"
-                                )
-                            ),
-                            ChangelogCategory(
-                                title = if (strings.isSerbian) "Podešavanja i teme" else "Settings & Defaults",
-                                items = listOf(
-                                    if (strings.isSerbian) "Osvežene podrazumevane opcije: Sistemska tema kao podrazumevani izbor, Starlight Galaxy pozadina i optimizovani tonovi obaveštenja" else "Updated default settings: System dark/light theme as default, Starlight Galaxy wallpaper preset, and refined notification sounds"
+                                    if (strings.isSerbian) "Animacija opruge pri kačenju i otkačinjanju razgovora: Glatka spring animacija premeštanja razgovora na vrh ili povratka na hronološko mesto uz zadržavanje pozicije skrolovanja" else "Pin & Unpin Spring Placement Motion: Smooth spring placement animation when pinning or unpinning conversations while preserving scroll position",
+                                    if (strings.isSerbian) "Podrazumevana tema i pozadina: Sistemska tema i Starlight Galaxy pozadina postavljene kao podrazumevani izbor pri instalaciji" else "Default Theme & Wallpaper Presets: System theme mode and Starlight Galaxy wallpaper set as clean-install defaults"
                                 )
                             )
                         )
@@ -6215,28 +6949,23 @@ private fun AppChangelogDialog(
 
                     ChangelogVersionSection(
                         versionName = "v3.3.1",
-                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        releaseDate = "12.11.2026.",
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Upravljanje obrisanim porukama" else "Selective Trash Management",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Selektivno vraćanje i trajno brisanje: Detaljan pregled obrisanih razgovora i izbor pojedinačnih poruka za vraćanje u inbox ili trajno uklanjanje iz memorije uređaja" else "Selective Trash recovery: Inspect deleted conversations and select individual messages to restore to inbox or permanently purge from device storage"
+                                    if (strings.isSerbian) "Selektivni pregled, vraćanje i brisanje poruka u korpi: Pojedinačni izbor obrisanih poruka unutar razgovora u korpi za vraćanje u sanduče ili trajno brisanje, uz komande Označi sve / Odznači sve" else "Selective Trash Message Inspection & Recovery: Inspect deleted threads in Trash and select individual messages to restore or permanently delete with Select All / Deselect All controls",
+                                    if (strings.isSerbian) "Brojač nepročitanih poruka na kategoriji: Kategorija „Nepročitano“ prikazuje ukupan broj nepročitanih poruka u realnom vremenu (npr. Nepročitano (3))" else "Unread Category Counter Badge: The Unread category chip displays the live count of unread messages (e.g., Unread (3))",
+                                    if (strings.isSerbian) "Ikonica medveda za Burgundi teme: Prilagođena ikonica u glavnom zaglavlju za teme Burgundi Anita i Monohrom sa burgundi akcentom uz automatsku prilagodljivost svetlom i tamnom režimu" else "Burgundy Theme Header Branding: Custom bear icon rendered in the main header for Burgundy Anita and Monochrome Burgundy themes with light/dark mode adaptation"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Interfejs, prilagođavanje i lokalizacija" else "UI, Customization & Localization",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Datumski zaglavci na srpskoj latinici: Datumski razdelnici u razgovoru primenjuju srpsku latinicu (npr. utorak, 19. maj)" else "Serbian Latin date headers: Conversation date dividers use Serbian Latin script (e.g., utorak, 19. maj) for consistent readability",
-                                    if (strings.isSerbian) "Brojač nepročitanih poruka: Kategorija Nepročitano prikazuje ukupan broj nepročitanih poruka desno od naziva (npr. Nepročitano (3))" else "Unread category count indicator: The Unread category chip displays the total number of currently unread messages in real-time (e.g., Unread (3))",
-                                    if (strings.isSerbian) "Tematska ikonica za Burgundi teme: Ikonica medveda u glavnom zaglavlju za teme Burgundi Anita i Monohrom sa burgundi akcentom uz automatsku prilagodljivost svetlom i tamnom režimu" else "Burgundy theme branding: Custom bear icon rendered in top header for Burgundy Anita & Monochrome Burgundy themes with light/dark asset switching"
-                                )
-                            ),
-                            ChangelogCategory(
-                                title = if (strings.isSerbian) "Pokreti i obaveštenja" else "Gestures & Notifications",
-                                items = listOf(
-                                    if (strings.isSerbian) "Glatko skrolovanje bez slučajnog obeležavanja: Detektor pokreta osigurava da skrolovanje preko poruka nikada ne pokreće smanjenje ili lažno obeležavanje poruke" else "Smooth scrolling without accidental selection: Optimized touch gesture pipeline so scrolling over message bubbles never triggers press scaling or false long-press selection",
-                                    if (strings.isSerbian) "Otklonjeno lažno okidanje zvuka i blica: Ulazak u razgovor i učitavanje istorije poruka više ne aktivira zvučni i blic signal za dolazne poruke" else "Fix false incoming alert sounds on thread open: Opening a thread or loading historical messages no longer triggers incoming message sounds or flash alerts"
+                                    if (strings.isSerbian) "Datumski zaglavci na srpskoj latinici: Datumski razdelnici u razgovoru prikazuju se isključivo na srpskoj latinici (npr. utorak, 19. maj) umesto ćirilice" else "Serbian Latin Conversation Date Headers: Conversation date dividers always format in Serbian Latin script (e.g., utorak, 19. maj)",
+                                    if (strings.isSerbian) "Razdvajanje skrolovanja od dugog pritiska: Skrolovanje preko oblačića poruke nikada ne pokreće skupljanje ili slučajno označavanje (označavanje zahteva stacionarni pritisak od 500ms)" else "Scroll Gesture Isolation from Long-Press Selection: Scrolling over message bubbles never triggers press scaling or accidental selection (requires a stationary 500ms long-press)",
+                                    if (strings.isSerbian) "Sprečeno lažno okidanje zvuka i blica pri ulasku u razgovor: Otvaranje postojećeg razgovora i učitavanje istorije više ne aktivira zvučni niti svetlosni signal dolazne poruke" else "Suppressed False Alert Sounds on Thread Open: Opening a thread or loading message history no longer triggers incoming message sounds or flash alerts"
                                 )
                             )
                         )
@@ -6244,21 +6973,26 @@ private fun AppChangelogDialog(
 
                     ChangelogVersionSection(
                         versionName = "v3.3",
-                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        releaseDate = "11.11.2026.",
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Bezbednost i arhitektura baze" else "Security & Database Architecture",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "SQLCipher Room baza: Kriptovana baza podataka uz Room KSP, SQLCipher enkripciju i selektivno učitavanje istorije razgovora" else "SQLCipher Room database: Encrypted storage with Room KSP, SQLCipher database encryption, and granular lazy loading for conversation history",
-                                    if (strings.isSerbian) "Vidljivost aplikacija i sertifikati: Dodat eksplicitan unos u AndroidManifest.xml za root aplikacije i osveženo HTTPS/TLS povezivanje sertifikata" else "Package visibility & certificates: Explicit AndroidManifest.xml queries for root tools and refined HTTPS/TLS certificate pinning"
+                                    if (strings.isSerbian) "SQLCipher Room šifrovana baza podataka: Skladištenje lokalne istorije razgovora (ConversationHistoryEntity) u Room bazi šifrovanoj pomoću SQLCipher-a uz selektivno učitavanje po razgovoru" else "SQLCipher Room Encrypted Database: Encrypted Room database storage (ConversationHistoryEntity) with SQLCipher and per-thread lazy history loading",
+                                    if (strings.isSerbian) "Vidljivost paketa za root proveru: Dodate eksplicitne <queries> deklaracije u AndroidManifest.xml za detekciju root menadžera" else "Explicit Root Package Visibility Queries: Added <queries> declarations in AndroidManifest.xml for accurate root manager detection"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Performanse i životni ciklus" else "Performance & Lifecycle",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Brži životni ciklus: Inicijalizacija baze i hitnih obaveštenja direktno u MainActivity.onCreate() bez TxturaApp klase za brže hladno pokretanje" else "Streamlined lifecycle: Async repository and emergency alert initialization directly in MainActivity.onCreate() for faster cold starts",
-                                    if (strings.isSerbian) "Deduplikacija i smanjeno opterećenje: Automatsko uklanjanje duplikata poruka i kontrola učestalosti sinhronizacije sa uređajem" else "Deduplication & sync throttling: Automated message deduplication and throttled background telephony syncs"
+                                    if (strings.isSerbian) "Deduplikacija poruka i kontrola sinhronizacije: Automatsko uklanjanje duplikata poruka po ID-u i sadržaju između lokalne baze i sistemske telefonije" else "Message Deduplication & Sync Throttling: Automated message ID and content deduplication between local snapshots and telephony syncs"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
+                                items = listOf(
+                                    if (strings.isSerbian) "Zastarela blokirajuća inicijalizacija pri startu: Uklonjeno blokirajuće podizanje repozitorijuma pri hladnom pokretanju u korist asinhrone inicijalizacije" else "Legacy Blocking Startup Initialization: Removed blocking cold-start repository initialization in favor of asynchronous startup loading"
                                 )
                             )
                         )
@@ -6266,24 +7000,26 @@ private fun AppChangelogDialog(
 
                     ChangelogVersionSection(
                         versionName = "v3.2",
-                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        releaseDate = "11.11.2026.",
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Performanse i bezbednost" else "Performance & Security",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Brže pokretanje: Učitavanje podešavanja, lokalnog keša i hitnih obaveštenja premešteno je van glavne niti; sinhronizacija poruka čeka asinhrono učitavanje keša" else "Faster startup: Preferences, local cache, and emergency-alert initialization run off the main thread; message sync waits asynchronously for cache loading",
-                                    if (strings.isSerbian) "AES-256-GCM ključ keša: Lokalni JSON snapshot koristi nasumični 256-bitni ključ zaštićen Android Keystore-om, uz migraciju starog formata keša" else "AES-256-GCM cache key: Local JSON snapshots use a random 256-bit key wrapped by Android Keystore, with migration from the previous cache format",
-                                    if (strings.isSerbian) "Bekapi bez blokiranja interfejsa: PBKDF2 zaštita lozinkom je zadržana, a čitanje, parsiranje i kriptografija bekapa izvršavaju se u pozadini" else "Non-blocking backups: Password-based PBKDF2 protection is retained while backup reading, parsing, and cryptography run in the background",
-                                    if (strings.isSerbian) "Jasan opis enkripcije: Podešavanja prikazuju AES-256-GCM zaštitu lokalnog JSON keša poruka" else "Clear encryption details: Settings describe AES-256-GCM protection of the local JSON message cache"
+                                    if (strings.isSerbian) "Sistemski pokret za nazad (BackHandler): Podrška za Android gest prevlačenja za nazad na svim ekranima sa istim ponašanjem kao strelica u aplikaciji" else "System Back Gesture Navigation: Added BackHandler support across screens matching in-app back navigation"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Poruke i navigacija" else "Messaging & Navigation",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Animacije pinovanja: Razgovori se animirano vraćaju na prethodno mesto pri otpinovanju, a pin ikonice se skrivaju kada je pinovanje dodeljeno prevlačenju" else "Pin motion: Conversations animate back to their prior position when unpinned, and pin icons are hidden when pinning is assigned to a swipe action",
-                                    if (strings.isSerbian) "Sistemski pokret za nazad: Gest navigacije poziva isto ponašanje kao strelica za nazad u menijima" else "System back gesture: Android navigation gestures trigger the same behavior as menu back buttons",
-                                    if (strings.isSerbian) "Slanje i prijem SMS/MMS poruka: Registrovane su povratne akcije slanja i preuzimanja, a WAP Push sadržaj se proverava i obrađuje asinhrono" else "SMS/MMS delivery: Sent and downloaded callbacks are registered; WAP Push content is validated and processed asynchronously"
+                                    if (strings.isSerbian) "Asinhrono pokretanje, v2 migracija ključa keša i pozadinski bekap: Učitavanje podešavanja, migracija Android Keystore ključa keša sa v1 na v2 i PBKDF2 šifrovanje/dešifrovanje bekapa izvršavaju se van glavne niti" else "Non-Blocking Startup, v2 Cache Key Migration & Background Backup Crypto: Preference loading, v1-to-v2 Keystore key migration, and PBKDF2 backup cryptography run off the main thread",
+                                    if (strings.isSerbian) "Asinhrona obrada isporuke i WAP Push paketa: Povratni događaji slanja/preuzimanja i provera dolaznih WAP Push MMS paketa izvršavaju se asinhrono" else "Asynchronous SMS/MMS Delivery & WAP Push Handling: Sent/downloaded callbacks and incoming WAP Push validation process asynchronously"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
+                                items = listOf(
+                                    if (strings.isSerbian) "Dupla ikonica čiode na kartici razgovora: Ikonica čiode na kartici razgovora automatski se skriva kada je kačenje/otkačinjanje već dodeljeno svajp pokretu" else "Redundant Pin Icon on Conversation Cards When Assigned to Swipe: Automatically hides the card pin icon when pin/unpin is already assigned to left or right swipe"
                                 )
                             )
                         )
@@ -6291,29 +7027,43 @@ private fun AppChangelogDialog(
 
                     ChangelogVersionSection(
                         versionName = "v3.1",
-                        releaseDate = if (strings.isSerbian) "Prethodno izdanje" else "Previous Release",
+                        releaseDate = "10.11.2026.",
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Upravljanje memorijom i dozvolama" else "Storage & Permissions Management",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Trajno brisanje iz memorije uređaja: Pražnjenje smeća i trajno uklanjanje razgovora sada fizički uklanja sve poruke (SMS, MMS) i multimedijalne priloge (audio zapise, slike, fajlove) iz baze uređaja i interne memorije" else "Permanent storage deletion: Emptying trash and permanently deleting conversations now thoroughly removes messages (SMS, MMS) and all media attachments from device telephony storage and internal memory",
-                                    if (strings.isSerbian) "Automatski zahtev za dozvolu za kalendar: Dozvola za kalendar se sada traži odmah pri prvom pokretanju aplikacije uz ostale sistemske dozvole, omogućavajući kreiranje i slanje kalendarskih .ics događaja" else "First-launch calendar permission prompt: Calendar permission is now requested during the initial app startup alongside core permissions, enabling calendar event picker and .ics generation"
+                                    if (strings.isSerbian) "Prilagodljivi donji dok bar: Slobodno premeštanje ikonica na donjem navigacionom baru prevlačenjem i prikaz dok bara na ekranima Obrisane i Hajlajtovane poruke" else "Customizable Drag-and-Drop Dock Bar: Reorder bottom dock icons via drag-and-drop, with the dock visible on Deleted and Highlighted screens",
+                                    if (strings.isSerbian) "GIF animacije sa tastature (do 299.9 KB): Direktno slanje i animirana reprodukcija GIF-ova umetnutih sa tastature u oblačiću poruke" else "Keyboard GIF Support up to 299.9 KB: Direct sending and animated in-bubble playback for GIFs inserted from the keyboard"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Interfejs i navigacija" else "UI & Navigation",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Prilagodljivi dok bar na svim ekranima: Ikonice dok bara se mogu slobodno premeštati prevlačenjem levo-desno, a dok bar ostaje postojan na ekranima Obrisane poruke i Hajlajtovane poruke" else "Customizable dock bar: Dock bar icons can be freely reordered via drag-and-drop, and the dock bar remains seamlessly visible on Deleted and Highlighted screens",
-                                    if (strings.isSerbian) "Usklađene animacije i brzi prelazi: Prelaz između glavnog menija i podešavanja, hajlajtovanih i obrisanih poruka optimizovan je bez zadrške i treperenja uz prirodnu fiziku opruge" else "Synchronized transitions: Smooth spring transitions between main screen, settings, highlighted, and deleted messages with no lag or flicker",
-                                    if (strings.isSerbian) "GIF animacije i tastatura: Direktno slanje GIF animacija iz tastature do 299.9 kB sa automatskim prepoznavanjem i reprodukcijom unutar oblačića poruke" else "Keyboard GIF animations: Direct sending of GIFs up to 299.9 kB from keyboard with automatic detection and animated playback in chat bubbles"
+                                    if (strings.isSerbian) "Fizičko brisanje poruka i fajlova pri pražnjenju korpe: Trajno brisanje uklanja SMS/MMS zapise iz baze uređaja i sve keširane multimedijalne priloge iz interne memorije" else "Physical Storage Purge on Empty Trash: Permanent deletion removes SMS/MMS telephony records and cached media attachments from internal storage",
+                                    if (strings.isSerbian) "Dozvola za kalendar pri pokretanju i PCM sinhronizacija blica: Dozvola za kalendar traži se pri inicijalnom pokretanju, a blic treperi u tačnom ritmu PCM audio analize tona obaveštenja" else "Startup Calendar Permission & Audio-Synchronized Flash Timing: Requests calendar permission on initial launch and synchronizes flash pulses with the PCM audio rhythm of the notification tone"
+                                )
+                            )
+                        )
+                    )
+
+                    ChangelogVersionSection(
+                        versionName = "v3.0",
+                        releaseDate = "10.11.2026.",
+                        isCurrent = false,
+                        categories = listOf(
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
+                                items = listOf(
+                                    if (strings.isSerbian) "Glasovne poruke u razgovoru: Snimanje glasovnih poruka sa tajmerom, preslušavanjem i otkazivanjem pre slanja" else "In-Chat Voice Messages: Voice message recording with timer, playback preview, and cancellation inside conversations",
+                                    if (strings.isSerbian) "Deljenje kalendarskih događaja (.ics), dokumenata i kompresija slika: Birač događaja iz kalendara sa generisanjem .ics fajla, slanje dokumenata i automatska kompresija fotografija za MMS" else "Calendar Event (.ics) Sharing, Document Attachments & Image Compression: Calendar event picker with .ics generation, document attachments, and automatic MMS photo compression",
+                                    if (strings.isSerbian) "Obaveštenja blicem kamere: Svetlosna signalizacija blicem kamere za dolazne poruke" else "Camera Flash Notifications: Camera flashlight alerts for incoming messages"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Obaveštenja i odziv" else "Notifications & Feedback",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Sinhronizovani svetlosni odziv: Blic obaveštenja počinju u tačnoj sinhronizaciji sa zvukom dolazne SMS poruke" else "Synchronized flash notifications: Camera flashlight pulse starts simultaneously with incoming SMS audio alerts",
-                                    if (strings.isSerbian) "Zvučni odzivi: Proširena podešavanja za širok spektar tonova i zvučnih povratnih informacija" else "Audio feedback: Expanded sound settings covering custom tones and operational audio feedback"
+                                    if (strings.isSerbian) "Asinhrono preuzimanje MMS-a i pojedinačne dozvole: Preuzimanje dolaznih MMS priloga u pozadini i traženje dozvola prema funkciji koju korisnik pokrene" else "Asynchronous Incoming MMS Downloads & Feature-Based Permissions: Background MMS attachment downloading and on-demand runtime permission prompts"
                                 )
                             )
                         )
@@ -6321,29 +7071,26 @@ private fun AppChangelogDialog(
 
                     ChangelogVersionSection(
                         versionName = "v2.4",
-                        releaseDate = "10.11.2026.",
+                        releaseDate = "09.11.2026.",
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Tonovi obaveštenja i zvučni efekti" else "Notification Sounds & Audio Effects",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Prilagođeni tonovi obaveštenja: 6 novih visokokvalitetnih melodija (Dupli puls, Kristalni zvončić, Meki pop, Ritam kod, Topla kalimba, Diskretni oblak) uz trenutni pregled zvuka" else "Custom notification tones: 6 curated high-quality notification melodies (Double Pulse, Crystal Chime, Soft Pop, Rhythm Code, Warm Kalimba, Discreet Cloud) with instant preview",
-                                    if (strings.isSerbian) "Sistemski meni za zvuk: Dinamičko podešavanje 'Podesi zvuk sistema' koje se pojavljuje kada je odabran Sistemski ton i vodi direktno na sistemski meni kanala za izbor melodije" else "System sound integration: Dynamic 'Set system sound' option when System tone is chosen, directly opening the system notification channel sound settings",
-                                    if (strings.isSerbian) "Zvučni efekti akcija: Novi namenski zvuci za hajlajtovanje, uklanjanje hajlajta, brisanje u kantu, trajno brisanje, pinovanje, otpinovanje i označavanje statusa poruka" else "Action sound effects: Distinct in-app sound effects for highlighting, unhighlighting, trash deletion, permanent deletion, pinning, unpinning, and message status"
+                                    if (strings.isSerbian) "6 prilagođenih tonova obaveštenja, zvučni efekti akcija i prečica za sistemski zvuk: Melodije (Dupli puls, Kristalni zvončić, Meki pop, Ritam kod, Topla kalimba, Diskretni oblak) uz trenutni pregled, zvuci za akcije nad porukama i opcija „Podesi zvuk sistema“" else "6 Studio Notification Tones, Action Audio Effects & System Sound Shortcut: 6 custom melodies with instant preview, tactile action sound effects, and a direct shortcut to Android notification channel sound settings",
+                                    if (strings.isSerbian) "Selektivna zabrana skrinšotovanja četova (FLAG_SECURE) i budan ekran u razgovoru: Posebno podešavanje koje sprečava snimanje ekrana samo u četovima i listi poruka, i drži ekran uključenim dok je razgovor otvoren" else "Selective Chat Screenshot Protection & Chat Keep-Awake: Dedicated toggle enforcing FLAG_SECURE only on chats and message lists, plus FLAG_KEEP_SCREEN_ON inside active conversations"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Privatnost i bezbednost" else "Privacy & Security",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Selektivna zabrana snimanja ekrana: Nova opcija u Privatnosti i bezbednosti koja dinamički sprečava skrinšotovanje četova i liste poruka, dok su podešavanja i ostali delovi aplikacije slobodni za snimanje" else "Selective chat screenshot protection: New setting in Privacy & Security to selectively prevent screenshots and screen recordings in conversations and message lists while leaving other screens accessible"
+                                    if (strings.isSerbian) "Isključivost padajućih menija i brz povratak na glavni ekran: Onemogućeno preklapanje više padajućih menija istovremeno i uklonjeno zadržavanje od 2–3s pri povratku iz razgovora" else "Single Active Dropdown Menu & Fast Return to Main Screen: Enforced single-menu exclusivity and eliminated the 2–3s delay when returning to the conversation list"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Korisničko iskustvo i performanse" else "UX & Performance",
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Poboljšanja nove poruke: Uklonjena ikonica iz polja primaoca radi maksimalne širine i pune preglednosti svih izabranih kontakata" else "New message improvements: Removed contact icon from the recipient field to provide maximum width and full visibility of all chosen contacts",
-                                    if (strings.isSerbian) "Uvek uključen ekran u četu: Ekran ostaje uključen dok ste unutar aktivnog razgovora kako se ne bi gasio tokom kucanja i čitanja" else "Keep screen on in chat: Screen stays awake while viewing a conversation, preventing screen timeout",
-                                    if (strings.isSerbian) "Optimizacija prelaza i menija: Uklonjeno zadržavanje pri povratku na glavni ekran i osiguran samo jedan otvoren padajući meni u isto vreme" else "Transition & menu optimization: Eliminated lag when returning to the main screen and ensured only a single dropdown menu can be open at a time"
+                                    if (strings.isSerbian) "Bezuslovna zabrana skrinšotovanja cele aplikacije i ikonica u polju primaoca: Uklonjena globalna blokada snimanja ekrana u podešavanjima i uklonjena ikonica kontakta unutar polja primaoca radi pune širine" else "Unconditional Whole-App Screenshot Blocking & Recipient Field Contact Icon: Removed global screenshot blocking on settings screens and removed the contact icon inside the recipient input field"
                                 )
                             )
                         )
@@ -6355,10 +7102,16 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Deduplikacija i konsolidacija kontakata" else "Contact Deduplication & Consolidation",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Napredno spajanje konverzacija: Otklonjena pojava istih kontakata više puta na listi, uz automatsko objedinjavanje poruka, nepročitanih brojača i statusa zakačenosti" else "Advanced thread merging: Completely eliminates duplicate conversation cards for the same person, automatically consolidating messages, unread counts, and pins",
-                                    if (strings.isSerbian) "Višefaktorsko prepoznavanje: Pametno uparivanje po imenu kontakta iz imenika, normalizovanim ciframa broja telefona i preklapanju brojeva unutar poruka" else "Multi-factor matching: Smart pairing using saved address book names, normalized phone digits, and overlapping message phone numbers"
+                                    if (strings.isSerbian) "Haptika pri prevlačenju i promeni rasporeda kategorija: Taktilni vibracioni odziv na prag prevlačenja kartica, listanje zakačenih poruka i premeštanje kategorija" else "Swipe Threshold & Category Reordering Haptics: Tactile vibration feedback on conversation swipe thresholds, pinned message carousel switching, and category drag-reordering"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
+                                items = listOf(
+                                    if (strings.isSerbian) "Višefaktorsko spajanje duplih konverzacija: Objedinjavanje razdvojenih niti razgovora za isti kontakt prema imenu iz imenika i normalizovanim ciframa broja" else "Multi-Factor Conversation Deduplication: Consolidates fragmented telephony thread IDs for the same person using phonebook names and normalized phone digits",
+                                    if (strings.isSerbian) "Tačna kategorizacija „Usluge“ i širina kartica na srpskom: Imenovani kontakti i razgovori sa odgovorima korisnika zaštićeni su od lažnog svrstavanja u „Usluge“, a širine kartica prilagođene su tako da se „Nepročitano“ ne skraćuje" else "Smart Service Categorization & Serbian Tab Sizing: Named contacts and replied-to threads are protected from false Services classification, and category tab widths prevent truncation"
                                 )
                             )
                         )
@@ -6370,27 +7123,15 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Višestruko slanje poruka" else "Multi-Recipient Messaging",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Simultano slanje poruke: Slanje jedne poruke na više izabranih kontakata i unetih brojeva istovremeno kao pojedinačni SMS bez kreiranja grupnih MMS poruka" else "Simultaneous broadcast: Send a single message to multiple chosen contacts and typed numbers concurrently as direct 1-on-1 SMS without group MMS",
-                                    if (strings.isSerbian) "Pametni birač primalaca: Biranje kontakata putem čipova, mogućnost izbora ili poništavanja svih predloga jednim dodirom, brojač karaktera i SMS segmenata (N • M SMS)" else "Smart recipient picker: Chip selection, Select All/Deselect All toggle, live character count and SMS segment calculator",
-                                    if (strings.isSerbian) "Brza akcija u razgovoru: Nova opcija 'Pošalji na više brojeva' unutar menija sa tri tačkice u aktivnom razgovoru" else "Conversation shortcut: New 'Send to multiple numbers' action directly in chat details menu"
+                                    if (strings.isSerbian) "Višestruko pojedinačno slanje SMS poruka (Broadcast SMS): Slanje jedne poruke većem broju izabranih kontakata i unetih brojeva kao zasebnih 1-na-1 SMS poruka bez grupnog MMS-a, uz Označi sve / Odznači sve, brojač segmenata i prečicu u meniju razgovora" else "Multi-Recipient Broadcast SMS: Send a single message to multiple selected contacts and entered numbers as separate 1-on-1 SMS chats without group MMS, with Select All / Deselect All, segment counter, and chat menu shortcut"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Pouzdanost biometrije i zaštite" else "Biometrics & Security Reliability",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Ispravka otključavanja: Dodata sistemska USE_BIOMETRIC dozvola i izvorna Android BiometricPrompt podrška (API 29–37) za otisak, lice i PIN ekrana" else "Unlock fix: Added native USE_BIOMETRIC permission and native BiometricPrompt (API 29–37) for fingerprint, face, and device PIN",
-                                    if (strings.isSerbian) "Zaštita od blokiranja bez PIN-a: Ako uređaj nema podešeno zaključavanje ekrana, aplikacija omogućava trenutno otključavanje jednim dodirom i sprečava greške" else "No-lockout protection: If device has no screen lock or biometrics configured, the app enables instant one-tap unlocking and prevents lockouts",
-                                    if (strings.isSerbian) "Sprečeno lažno ponovno zaključavanje: Rešena petlja ponovnog zaključavanja prilikom povratka iz sistemskog dijaloga" else "Lifecycle fix: Resolved re-lock loop when returning from system authentication dialogues"
-                                )
-                            ),
-                            ChangelogCategory(
-                                title = if (strings.isSerbian) "Usluge, Haptika i Poliranje interfejsa" else "Services, Haptics & UI Polish",
-                                items = listOf(
-                                    if (strings.isSerbian) "Pametno prepoznavanje usluga: Imenovani kontakti iz imenika i prepiske sa vašim odgovorima nikada se više ne svrstavaju greškom u 'Usluge'" else "Smart service categorization: Named contacts and threads with user replies are protected from false service classification",
-                                    if (strings.isSerbian) "Haptika na prevlačenju: Taktički vibracioni odziv na swipe akcije, prag prevlačenja kartica, listanje zakačenih poruka i raspoređivanje kategorija" else "Swipe haptics: Tactile vibration feedback on conversation swipes, threshold crossing, pinned message carousel, and category reordering",
-                                    if (strings.isSerbian) "Poliranje srpskog prikaza: Prilagođene širine kartica kategorija tako da se 'Nepročitano' nikada ne seče ili sabija, i optimizovan tekst tastera u korpi ('Isprazni sve')" else "Serbian UI polish: Optimized category tab weights preventing 'Nepročitano' truncation, with clean button styling"
+                                    if (strings.isSerbian) "Pouzdanost biometrijskog otključavanja: Dodata USE_BIOMETRIC dozvola i izvorna BiometricPrompt podrška (otisak, lice, PIN), zaštita od blokiranja kada telefon nema PIN i ispravka petlje ponovnog zaključavanja" else "Biometric Unlock Reliability: Added USE_BIOMETRIC permission and native BiometricPrompt support, safe fallback when no device lock is configured, and fixed re-lock loops after authentication"
                                 )
                             )
                         )
@@ -6402,41 +7143,25 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Privatnost i bezbednost" else "Privacy & Security",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Šifrovanje lokalnog keša poruka: AES-256-GCM enkripcija sa nasumičnim ključem zaštićenim Android Keystore-om" else "Local message cache encryption: AES-256-GCM with a random data key protected by Android Keystore",
-                                    if (strings.isSerbian) "Biometrijska zaštita i PIN: Zaključavanje aplikacije otiskom prsta ili uređajnim PIN-om uz podesiv tajmaut (Odmah, 1 min, 5 min) i namenski stakleni ekran zaključavanja" else "Biometric protection & PIN: Lock the entire app with fingerprint or device PIN, with customizable lock timeout (Immediate, 1 min, 5 min) and dedicated glass lock screen",
-                                    if (strings.isSerbian) "HTTPS i TLS/SSL Pinning: Striktna upotreba šifrovanih veza uz SPKI sertifikat pinning za sprečavanje Man-in-the-Middle napada i automatsko blokiranje nešifrovanog HTTP saobraćaja" else "HTTPS & TLS/SSL Pinning: Strict encrypted connections with SPKI certificate pinning to prevent Man-in-the-Middle attacks, blocking plaintext HTTP",
-                                    if (strings.isSerbian) "Minimizacija metapodataka: Automatsko uklanjanje EXIF GPS koordinata i detalja sa MMS slika, FLAG_SECURE zaštita od snimanja ekrana i cenzurisana obaveštenja na zaključanom ekranu" else "Metadata minimization: Automated EXIF GPS/camera data stripping from MMS photos, FLAG_SECURE screenshot prevention, and redacted lock-screen notifications",
-                                    if (strings.isSerbian) "Detekcija Root stanja: Dubinsko skeniranje integriteta operativnog sistema (provera su binarnih fajlova, Magisk/KernelSU menadžera i test-keys potpisa)" else "Root state detection: Real-time system integrity scan checking su binaries, Magisk/KernelSU managers, and test-keys build tags",
-                                    if (strings.isSerbian) "Blokirani pošiljaoci: Centralizovano upravljanje blokiranim brojevima unutar bezbednosne grupe" else "Blocked senders: Centralized blocked contacts management integrated into the security hub"
+                                    if (strings.isSerbian) "Bezbednosni paket i aktivni štit: Zaključavanje aplikacije sa podesivim tajmautom (Odmah, 1 min, 5 min), AES-256-GCM šifrovanje lokalnog keša pomoću Android Keystore-a, SPKI SHA-256 sertifikat pinning, uklanjanje EXIF GPS metapodataka, detekcija root stanja, šifrovani prenosivi bekapi i pregled aktivnih mera klikom na štit u zaglavlju podešavanja" else "Security Suite & Active Shield Hub: App lock with configurable timeouts (Immediate, 1 min, 5 min), Android Keystore AES-256-GCM local cache encryption, SPKI SHA-256 certificate pinning, EXIF GPS stripping, root detection, encrypted portable backups, and live security status hub",
+                                    if (strings.isSerbian) "Pametni birač kontakata za novu poruku i provera ažuriranja sa GitHub-a: Pretraga imena i brojeva u realnom vremenu pri pisanju nove poruke i provera novih izdanja u sekciji Sistem i aplikacija" else "Smart Contact Picker & GitHub Release Checker: Real-time fuzzy contact search when composing a new message and GitHub release checking in System & About"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Redizajn podešavanja i Plutajući meniji" else "Settings Redesign & Floating Menus",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Kompletan redizajn podešavanja raspoređen u 7 preglednih kategorija po rednim brojevima" else "Complete settings redesign structured into 7 clear numbered thematic categories",
-                                    if (strings.isSerbian) "Izbornici se otvaraju kao kompaktni plutajući mini-meniji sa desne strane svake opcije umesto iskačućih dijaloga" else "Option selectors open as compact floating dropdown menus to the right of each row instead of popup dialogs",
-                                    if (strings.isSerbian) "Uklonjeni suvišni opisi sa glavnog menija radi čistijeg i preglednijeg izgleda bez pretrpanosti" else "Removed clutter and redundant subtitles from main category rows for a cleaner interface"
+                                    if (strings.isSerbian) "Redizajn podešavanja u 7 kategorija, plutajući meniji i crveni „X“ za opoziv slanja: Podešavanja organizovana u 7 numerisanih oblasti sa kompaktnim plutajućim izbornicima i crvenim „X“ tasterom sa zvukom cancel.wav tokom odbrojavanja slanja" else "7-Category Settings Redesign, Floating Menus & Red 'X' Send Recall: Settings structured into 7 numbered categories with compact floating dropdowns and a red 'X' cancel button with cancel.wav audio during the send countdown"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Poruke, Interakcija i Ažuriranja" else "Messaging, Interaction & Updates",
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Poništavanje slanja: Ikonica za slanje se tokom 6s odbrojavanja zamenjuje crvenim X tasterom uz autentični zvučni efekat poništavanja" else "Send recall: Send button is replaced by a red X cancel button during the 6s countdown with an authentic cancel sound effect",
-                                    if (strings.isSerbian) "Pametni birač za novu poruku: Pretraga kontakata u realnom vremenu, unos novog broja i direktan prelazak u razgovor preko tastera Sledeće" else "Smart new message picker: Real-time contact matching, manual phone entry, and direct transition to chat via Next button",
-                                    if (strings.isSerbian) "Automatska provera ažuriranja pri svakom ulasku u aplikaciju uz sistemsko obaveštenje i direktno otvaranje sekcije za ažuriranje" else "Automatic update check on every app launch with push notification and one-tap navigation to the update hub"
+                                    if (strings.isSerbian) "Podnaslovi glavnih kategorija podešavanja i modalni dijalozi izbora: Uklonjeni suvišni opisi sa glavnih kartica podešavanja i zamenjeni klasični iskačući dijalozi kompaktnim plutajućim menijima" else "Top-Level Settings Category Subtitles & Modal Picker Dialogs: Removed redundant subtitles from main settings category rows and replaced popup selection dialogs with floating menus"
                                 )
                             )
                         )
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = strings.changelogPreviousVersionsHeader,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = palette.textSecondary,
-                        fontWeight = FontWeight.Bold
                     )
 
                     ChangelogVersionSection(
@@ -6445,30 +7170,24 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Upravljanje porukama i Korpa" else "Message Handling & Trash",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Pojedinačne i označene poruke koje se brišu unutar samog četa premeštaju se u Obrisane poruke (korpu) umesto trajnog brisanja" else "Individual and multi-selected messages deleted directly from inside a chat are now moved to Trash instead of immediate permanent deletion",
-                                    if (strings.isSerbian) "Podrška za vraćanje (Restore) obrisanih poruka nazad u aktivni razgovor i automatsko uklanjanje nakon isteka definisanog roka" else "Full support for restoring trashed messages back into the active thread and auto-delete lifecycle purging",
-                                    if (strings.isSerbian) "Učitavanje kompletne istorije: uklonjena veštačka ograničenja (LIMIT) tako da se uvek učitavaju sve poruke iz memorije uređaja" else "Full message history loading: removed query LIMIT constraints to always load all stored SMS/MMS messages from device memory"
+                                    if (strings.isSerbian) "Premeštanje obrisanih poruka u Korpu sa rokom od 30 dana: Pojedinačne i označene poruke obrisane u četu premeštaju se u Obrisane poruke uz mogućnost vraćanja u razgovor i automatsko čišćenje nakon 30 dana" else "30-Day Trash Folder & Message Restore: Individual and multi-selected messages deleted in chat move to Trash with restore support and 30-day auto-purging"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Korisnički interfejs i Podešavanja" else "User Interface & Settings",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Donji navigacioni bar i traka za masovno označavanje prošireni na punu širinu ekrana radi savršenog uklapanja sa karticama" else "Bottom dock bar and selection bar expanded to full width to seamlessly match the rest of the interface",
-                                    if (strings.isSerbian) "Povećane ikonice i komfornije dodirne zone na donjem navigacionom baru" else "Enlarged icons and more comfortable touch targets on the bottom dock bar",
-                                    if (strings.isSerbian) "Objedinjena podešavanja za Mehuriće i Eksterne linkove u pregledne padajuće kartice ispod opcija automatskog uklanjanja poruka" else "Consolidated Bubbles and External Links options into elegant collapsible cards under auto-delete settings"
+                                    if (strings.isSerbian) "Donji bar u punoj širini i sklopljive kartice za Mehuriće i Linkove: Proširen donji navigacioni bar i traka za označavanje na punu širinu ekrana i objedinjene opcije za Mehuriće i Eksterne linkove u padajuće kartice" else "Full-Width Bottom Dock & Collapsible Bubble / Link Cards: Expanded bottom navigation dock and selection bar to full width and consolidated Bubbles and External Links into collapsible cards"
+                                )
+                            ),
+                            ChangelogCategory(
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
+                                items = listOf(
+                                    if (strings.isSerbian) "Veštačko LIMIT ograničenje pri učitavanju poruka: Uklonjeno ograničenje broja učitanih poruka tako da se uvek učitava kompletna SMS/MMS istorija sa uređaja" else "Artificial Message Query LIMIT: Removed database query LIMIT constraints so all stored SMS/MMS messages load completely"
                                 )
                             )
                         )
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = strings.changelogPreviousVersionsHeader,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = palette.textSecondary,
-                        fontWeight = FontWeight.Bold
                     )
 
                     ChangelogVersionSection(
@@ -6477,52 +7196,20 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Pretraga, Isticanje i Nacrti" else "Search, Pin, Highlights & Drafts",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Interaktivna pretraga unutar razgovora sa brojačem pogodaka i brzom navigacijom" else "Interactive in-chat message search with match counter and navigation",
-                                    if (strings.isSerbian) "Centralizovan pregled svih hajlajtovanih poruka od svih pošiljalaca na jednom mestu" else "Unified hub for all highlighted messages across all chats with jump-to-message",
-                                    if (strings.isSerbian) "Kačenje važnih poruka na vrh konverzacije (Pin / Unpin)" else "Pin and unpin important messages to the top of conversation",
-                                    if (strings.isSerbian) "Automatsko lokalno čuvanje nacrta (Draft) po razgovoru sa prikazom u listi poruka" else "Automatic per-thread draft saving with clear preview badges in thread list"
+                                    if (strings.isSerbian) "Pretraga u razgovoru, Hajlajtovane poruke, Pinovanje i Nacrti: Pretraga sa brojačem pogodaka, centralni pregled svih hajlajtovanih poruka sa skokom na poruku, kačenje važnih poruka na vrh četa i čuvanje nacrta po razgovoru" else "In-Chat Search, Highlighted Hub, Message Pinning & Drafts: In-chat search with match counter, unified Highlighted Messages hub with jump-to-message, message pinning, and per-thread drafts",
+                                    if (strings.isSerbian) "Prepoznavanje brojeva, emailova i tekućih računa + deljenje kontakata i rođendanski šablon: Brze akcije za prepoznate telefone, email adrese i 18-cifrene tekuće račune, deljenje kontakta u polje za unos i ponoćni šablon za rođendan (00:00)" else "Phone, Email & Bank Account Recognition + Contact Sharing & Birthday Preset: Quick actions for phone numbers, emails, and 18-digit bank accounts, contact sharing into compose bar, and midnight (00:00) birthday preset",
+                                    if (strings.isSerbian) "Cloudflare DoH zaštita, SIM poruke, odloženo slanje i AMOLED teme: Provera sumnjivih linkova preko Cloudflare DoH-a, upravljanje porukama na SIM kartici, opoziv slanja u roku od 6s, Pinch-to-zoom veličina oblačića, plutajući mehurići obaveštenja i AMOLED crna i bela tema" else "Cloudflare DoH Link Guard, SIM Manager, 6s Delayed Send & AMOLED Themes: Real-time Cloudflare DoH phishing checks, SIM card message management, 6s delayed send, pinch-to-zoom bubble sizing, notification bubbles, and AMOLED black/white themes"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Grupno slanje i Pametne radnje" else "Broadcast Messaging & Smart Actions",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Slanje jedne poruke većem broju primalaca u zasebnim 1-na-1 privatnim razgovorima" else "Multi-recipient broadcast messaging in separate private 1-on-1 chats",
-                                    if (strings.isSerbian) "Prepoznavanje brojeva i email adresa u porukama uz brze akcije (poziv, mail, kontakti)" else "Smart recognition of phone numbers and emails in received messages with quick actions",
-                                    if (strings.isSerbian) "Brzo deljenje kontakata iz imenika telefona direktno u polje za unos poruke" else "Quick contact sharing from device phonebook directly into compose bar",
-                                    if (strings.isSerbian) "Brzi taster za planiranje čestitki u ponoć za rođendan (00:00) sa gotovom porukom" else "Birthday midnight preset (00:00) with ready-made greeting for scheduled sending"
-                                )
-                            ),
-                            ChangelogCategory(
-                                title = if (strings.isSerbian) "Interakcija, Zvuk i Mehurići" else "Interaction, In-App Audio & Bubbles",
-                                items = listOf(
-                                    if (strings.isSerbian) "Zvučni efekti pri slanju i prijemu poruka dok je razgovor otvoren" else "In-app sound effects for outgoing and incoming messages while chatting",
-                                    if (strings.isSerbian) "Uštipnite ekran (Pinch-to-zoom) za trenutno podešavanje veličine teksta razgovora" else "Pinch-to-zoom gesture to dynamically resize conversation text bubbles",
-                                    if (strings.isSerbian) "Izražajne fizike animacija i integracija sa sistemskim plutajućim mehurićima" else "Expressive bubble physics and system floating notification bubbles integration",
-                                    if (strings.isSerbian) "Prilagođavanje automatskih pregleda linkova i multimedije (Wi-Fi režim, veb-linkovi)" else "Customizable automatic link and rich media preview controls (Wi-Fi only, web only)"
-                                )
-                            ),
-                            ChangelogCategory(
-                                title = if (strings.isSerbian) "Bezbednost, SIM i Personalizacija" else "Security, SIM & Personalization",
-                                items = listOf(
-                                    if (strings.isSerbian) "Zaštita od fišinga i sumnjivih sajtova u realnom vremenu preko Cloudflare DoH" else "Real-time anti-phishing and malicious link security inspection via Cloudflare DoH",
-                                    if (strings.isSerbian) "Opoziv slanja (Undo) i odloženo slanje poruka pre prenosa preko mreže" else "Delayed send undo and recall mechanism before network transmission",
-                                    if (strings.isSerbian) "Pregled, kopiranje u sanduče i brisanje poruka sačuvanih na SIM kartici" else "View, copy to inbox, and delete messages stored on the SIM card",
-                                    if (strings.isSerbian) "Prikaz i podešavanje broja SMS centra mobilnog operatera (SMSC)" else "Carrier SMS center number (SMSC) viewing and custom configuration",
-                                    if (strings.isSerbian) "Minimalistički pravi AMOLED crni i čisto beli režim za uštedu baterije" else "Minimalist pure AMOLED black and clean white theme presets for power saving",
-                                    if (strings.isSerbian) "Ručna promena kategorije pošiljaoca (Osobe ↔ Usluge) direktno iz opcija četa" else "Manual sender categorization toggle between People and Services from chat menu"
+                                    if (strings.isSerbian) "Ručna promena kategorije pošiljaoca i filteri pregleda linkova: Ručno prebacivanje kontakta između kategorija Osobe i Usluge iz menija četa i filtriranje automatskih pregleda (samo Wi-Fi, samo veb-linkovi)" else "Manual People ↔ Services Override & Link Preview Filters: Manual sender category switching from chat menu and configurable automatic link previews (Wi-Fi only, web links only)"
                                 )
                             )
                         )
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = strings.changelogPreviousVersionsHeader,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = palette.textSecondary,
-                        fontWeight = FontWeight.Bold
                     )
 
                     ChangelogVersionSection(
@@ -6531,52 +7218,24 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "SMS i MMS napredne opcije" else "SMS & MMS Advanced Options",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Izveštaji o isporuci za svaku poslatu SMS i MMS poruku" else "Delivery reports for sent SMS and MMS messages",
-                                    if (strings.isSerbian) "Potvrde o čitanju za poslate MMS poruke" else "Read receipts for sent MMS messages",
-                                    if (strings.isSerbian) "Slanje potvrde pošiljaocu da je MMS pročitan" else "Send read confirmation to MMS sender when requested",
-                                    if (strings.isSerbian) "Automatsko preuzimanje MMS-a (uvek, nikad ili van rominga)" else "Auto retrieve MMS (always, never or not in roaming)",
-                                    if (strings.isSerbian) "Preuzimanje i slanje MMS-a i kada su mobilni podaci isključeni" else "MMS transfer even when mobile data is disabled",
-                                    if (strings.isSerbian) "Režim kreiranja MMS-a: Slobodno, Upozorenje, Ograničeno" else "MMS creation modes: Free, Warning, Restricted",
-                                    if (strings.isSerbian) "Izbor tona zvona za poruke sa integrisanim biračem sistema" else "System message ringtone picker integration",
-                                    if (strings.isSerbian) "Prečica za bežična bezbednosna upozorenja u vanrednim situacijama" else "Emergency and safety alerts shortcut"
+                                    if (strings.isSerbian) "Napredne SMS/MMS opcije i prečica za hitna upozorenja: Izveštaji o isporuci, potvrde o čitanju za MMS, automatsko preuzimanje MMS-a (uvek, nikad, van rominga), režimi kreiranja MMS-a (Slobodno, Upozorenje, Ograničeno), planirano slanje poruka i prečica za bežična hitna upozorenja" else "Advanced SMS/MMS Controls & Emergency Alerts Shortcut: Delivery reports, MMS read receipts, configurable MMS auto-retrieve, MMS creation modes (Free, Warning, Restricted), scheduled messages, and wireless emergency alerts shortcut"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Korisnički interfejs i Teme" else "User Interface & Themes",
+                                title = if (strings.isSerbian) "Prepravljene opcije" else "Modified & Fixed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Optimizovan prikaz kategorija (Osobe, Usluge, Nepročitano, Sve) u punoj širini" else "Optimized full-width message category tabs",
-                                    if (strings.isSerbian) "Ikonica za slanje u potpunosti usklađena sa izabranom temom i akcentima" else "Send icon dynamically adapted to the active theme accent",
-                                    if (strings.isSerbian) "Pojednostavljeno i preglednije planiranje slanja poruka" else "Streamlined scheduled messaging selector",
-                                    if (strings.isSerbian) "Poboljšan kontrast teksta i stakleni elementi preko pozadine" else "Enhanced contrast and frosted glass hierarchy"
+                                    if (strings.isSerbian) "Kartice kategorija u punoj širini i stakleni kontrast: Optimizovan prikaz kategorija (Osobe, Usluge, Nepročitano, Sve), ikonica slanja usklađena sa temom i poboljšan kontrast teksta preko pozadine" else "Full-Width Category Tabs & Frosted Glass Contrast: Optimized full-width category tabs, theme-adapted send icon, and enhanced frosted glass text contrast"
                                 )
                             ),
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Upravljanje porukama i Korpa" else "Message Handling & Recycle Bin",
+                                title = if (strings.isSerbian) "Uklonjene opcije" else "Removed Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Zasebno brisanje pojedinačnih poruka u razgovoru i slanje u korpu" else "Individual message deletion to trash from conversation thread",
-                                    if (strings.isSerbian) "Automatsko zadržavanje u korpi 30 dana uz mogućnost vraćanja ili trajnog brisanja" else "Trash retention for 30 days with restore or permanent delete",
-                                    if (strings.isSerbian) "Potpuno uklonjeni testni primeri iz produkcione baze" else "Removed mock sample data from production view"
-                                )
-                            ),
-                            ChangelogCategory(
-                                title = if (strings.isSerbian) "Zaštita privatnosti i Ažuriranja" else "Privacy Protection & Updates",
-                                items = listOf(
-                                    if (strings.isSerbian) "Automatska provera novih verzija sa GitHub-a na svakih 6 sati" else "Periodic update checks via GitHub every 6 hours",
-                                    if (strings.isSerbian) "Direktno preuzimanje i instalacija novih izdanja unutar aplikacije" else "In-app download and installation of app updates",
-                                    if (strings.isSerbian) "Zero telemetry: Vaše poruke i kontakti nikada ne napuštaju telefon" else "Zero telemetry: messages and contacts stay local on device"
+                                    if (strings.isSerbian) "Testni primeri razgovora: Potpuno uklonjeni svi testni (mock) podaci iz produkcione baze" else "Mock Sample Conversations: Completely removed all mock sample messages from production builds"
                                 )
                             )
                         )
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = strings.changelogPreviousVersionsHeader,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = palette.textSecondary,
-                        fontWeight = FontWeight.Bold
                     )
 
                     ChangelogVersionSection(
@@ -6585,11 +7244,9 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Pametne kategorije i Svajp radnje" else "Smart Categories & Swipe Actions",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Automatsko sortiranje poruka u Osobe, Usluge i Nepročitano" else "Automatic conversation categorization into People, Services and Unread",
-                                    if (strings.isSerbian) "Prilagodljive svajp radnje (arhiviranje, brisanje, blokiranje, pročitano)" else "Customizable swipe actions (archive, delete, block, read)",
-                                    if (strings.isSerbian) "Sistem za blokiranje neželjenih brojeva i spam pošiljalaca" else "Spam protection and blacklist sender manager"
+                                    if (strings.isSerbian) "Pametne kategorije, svajp radnje nad razgovorima i blokiranje pošiljalaca: Automatsko sortiranje razgovora u Osobe, Usluge i Nepročitano, podesive svajp radnje na listi razgovora i blokiranje neželjenih brojeva" else "Smart Categories, Conversation Swipe Actions & Blocked Senders: Automatic conversation sorting into People, Services, and Unread, customizable conversation card swipe actions, and sender blocking"
                                 )
                             )
                         )
@@ -6601,11 +7258,9 @@ private fun AppChangelogDialog(
                         isCurrent = false,
                         categories = listOf(
                             ChangelogCategory(
-                                title = if (strings.isSerbian) "Početna verzija i Arhitektura" else "Initial Release & Architecture",
+                                title = if (strings.isSerbian) "Dodate opcije" else "Added Options",
                                 items = listOf(
-                                    if (strings.isSerbian) "Slanje i prijem SMS i MMS poruka sa podrškom za dve SIM kartice" else "Dual-SIM SMS/MMS messaging engine",
-                                    if (strings.isSerbian) "Lokalni bekap i vraćanje poruka u bezbednom JSON formatu" else "Secure offline JSON backup and restore",
-                                    if (strings.isSerbian) "Originalni Glassmorphic dizajn sa izborom 7 tema i prilagođenih slika" else "Original Glassmorphic UI with 7 color themes and custom wallpaper support"
+                                    if (strings.isSerbian) "Početno izdanje i osnovna arhitektura: Slanje i prijem SMS i MMS poruka sa podrškom za dve SIM kartice, lokalni JSON bekap i vraćanje poruka, i Glassmorphism interfejs sa 7 tema i prilagođenim pozadinama" else "Initial Release & Core Architecture: Dual-SIM SMS/MMS messaging engine, offline JSON backup and restore, and original Glassmorphism UI with 7 themes and custom wallpapers"
                                 )
                             )
                         )
@@ -6700,6 +7355,7 @@ private fun ConversationThreadCard(
     listLayoutMode: MainListLayoutMode = MainListLayoutMode.DEFAULT,
     isSelected: Boolean = false,
     showPinAction: Boolean = true,
+    matchedSearchMessage: ChatMessage? = null,
     strings: AppStrings,
     onClick: () -> Unit,
     onOpenThreadWithMessage: ((Long, Long) -> Unit)? = null,
@@ -6709,13 +7365,14 @@ private fun ConversationThreadCard(
     onCopyOtp: (String) -> Unit
 ) {
     val palette = LocalGlassPalette.current
-    val lastMsg = thread.lastMessage
+    val lastMsg = matchedSearchMessage ?: thread.lastMessage
     val risk = thread.highestRiskLevel
     val otpCode = lastMsg?.securityAnalysis?.extractedOtpCode
     val isCompact = listLayoutMode == MainListLayoutMode.COMPACT
 
     val borderAccent = when {
         isSelected -> palette.accentPrimary
+        matchedSearchMessage != null -> palette.accentPrimary
         risk == SecurityRiskLevel.SUSPICIOUS -> palette.dangerColor
         thread.isPinned -> palette.accentPrimary
         thread.unreadCount > 0 -> palette.accentPrimary
@@ -6725,7 +7382,7 @@ private fun ConversationThreadCard(
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(if (isCompact) 14.dp else 20.dp),
-        elevated = isSelected || (thread.unreadCount > 0) || thread.isPinned,
+        elevated = isSelected || matchedSearchMessage != null || (thread.unreadCount > 0) || thread.isPinned,
         accentHighlight = borderAccent,
         contentPadding = PaddingValues(
             horizontal = if (isCompact) 10.dp else 14.dp,
@@ -6785,8 +7442,10 @@ private fun ConversationThreadCard(
                     Spacer(modifier = Modifier.height(if (isCompact) 2.dp else 4.dp))
 
                     // Bottom Row: Message preview or Draft preview across available width (strictly 1 line)
-                    val hasDraft = !thread.draftText.isNullOrBlank()
-                    val previewText = if (hasDraft) {
+                    val hasDraft = matchedSearchMessage == null && !thread.draftText.isNullOrBlank()
+                    val previewText = if (matchedSearchMessage != null) {
+                        matchedSearchMessage.body
+                    } else if (hasDraft) {
                         "${strings.draftPrefix} ${thread.draftText}"
                     } else {
                         lastMsg?.body ?: ""
@@ -6798,14 +7457,14 @@ private fun ConversationThreadCard(
                         } else {
                             MaterialTheme.typography.bodyMedium
                         },
-                        color = if (hasDraft) {
+                        color = if (matchedSearchMessage != null || hasDraft) {
                             palette.accentPrimary
                         } else if (thread.unreadCount > 0) {
                             palette.textPrimary
                         } else {
                             palette.textSecondary
                         },
-                        fontWeight = if (hasDraft || thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                        fontWeight = if (matchedSearchMessage != null || hasDraft || thread.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth()
@@ -6952,8 +7611,8 @@ private fun ConversationThreadCard(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
                                 .clickable {
-                                    if (suspiciousMsg != null && onOpenThreadWithMessage != null) {
-                                        onOpenThreadWithMessage(thread.id, suspiciousMsg.id)
+                                    if (onOpenThreadWithMessage != null) {
+                                        onOpenThreadWithMessage(thread.id, suspiciousMsg?.id ?: -2L)
                                     } else {
                                         onClick()
                                     }
@@ -6996,6 +7655,7 @@ private data class PendingDelayedMessage(
 fun ConversationDetailScreen(
     thread: ConversationThread,
     initialTargetMessageId: Long? = null,
+    initialSearchQuery: String = "",
     showContactPhotos: Boolean = true,
     recallMessagesEnabled: Boolean = true,
     bubbleZoomScale: Float = 1.0f,
@@ -7013,6 +7673,8 @@ fun ConversationDetailScreen(
     onTogglePinThread: () -> Unit,
     onTogglePinMessage: (Long) -> Unit,
     onToggleHighlightMessage: (Long) -> Unit = {},
+    onMarkMessageSafe: (Long) -> Unit = {},
+    onMarkMessagesSafe: (List<Long>) -> Unit = { ids -> ids.forEach(onMarkMessageSafe) },
     onDeleteMessage: (Long) -> Unit = {},
     onDeleteMessages: (List<Long>) -> Unit = { ids -> ids.forEach(onDeleteMessage) },
     onCopyMessageText: (String) -> Unit = {},
@@ -7059,18 +7721,30 @@ fun ConversationDetailScreen(
         SmsMmsRepository.saveDraftForThread(context, thread.id, draftText)
     }
 
-    // In-Chat Search state (located right above the writing box)
+    // Deduplicated messages strictly belonging to this conversation thread
+    val displayMessages = remember(thread.id, thread.messages) {
+        deduplicateMessageList(thread.messages.filter { it.threadId == thread.id || thread.messages.isNotEmpty() })
+    }
+
+    // In-Chat Search state (searches ONLY within this active conversation thread)
     var isChatSearchVisible by remember(thread.id) { mutableStateOf(false) }
     var chatSearchQuery by remember(thread.id) { mutableStateOf("") }
     var activeSearchMatchIndex by remember(thread.id) { mutableIntStateOf(0) }
     var showAttachmentActions by remember(thread.id) { mutableStateOf(false) }
 
-    val matchingMessageIndices = remember(thread.messages, chatSearchQuery) {
-        if (chatSearchQuery.isBlank()) {
+    LaunchedEffect(isChatSearchVisible, thread.id, initialTargetMessageId, initialSearchQuery) {
+        if ((isChatSearchVisible || initialTargetMessageId != null || initialSearchQuery.isNotBlank()) && !thread.isHistoryLoaded) {
+            SmsMmsRepository.loadCachedThreadHistory(context, thread.id)
+        }
+    }
+
+    val matchingMessageIndices = remember(displayMessages, chatSearchQuery) {
+        val trimmed = chatSearchQuery.trim()
+        if (trimmed.isEmpty()) {
             emptyList()
         } else {
-            thread.messages.mapIndexedNotNull { index, msg ->
-                if (msg.body.contains(chatSearchQuery, ignoreCase = true)) index else null
+            displayMessages.mapIndexedNotNull { index, msg ->
+                if (msg.body.contains(trimmed, ignoreCase = true)) index else null
             }
         }
     }
@@ -7078,6 +7752,7 @@ fun ConversationDetailScreen(
     var showShareContactDialog by remember { mutableStateOf(false) }
     var showBroadcastDialog by remember { mutableStateOf(false) }
     var showCalendarPickerDialog by remember { mutableStateOf(false) }
+    var showSecurityMeasuresDialog by remember { mutableStateOf(false) }
 
     val calendarPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -7254,15 +7929,26 @@ fun ConversationDetailScreen(
     val inputFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    val initialMessageScrollIndex = remember(thread.id, initialTargetMessageId) {
-        if (initialTargetMessageId != null) {
-            val foundIdx = thread.messages.indexOfFirst { it.id == initialTargetMessageId }
-            if (foundIdx != -1) foundIdx else (thread.messages.size - 1).coerceAtLeast(0)
-        } else {
-            (thread.messages.size - 1).coerceAtLeast(0)
+    val initialMessageScrollIndex = remember(thread.id, initialTargetMessageId, initialSearchQuery) {
+        when {
+            initialTargetMessageId != null -> {
+                val foundIdx = if (initialTargetMessageId > 0L) {
+                    val byId = displayMessages.indexOfFirst { it.id == initialTargetMessageId }
+                    if (byId != -1) byId else displayMessages.indexOfLast { it.securityAnalysis.riskLevel == SecurityRiskLevel.SUSPICIOUS }
+                } else {
+                    displayMessages.indexOfLast { it.securityAnalysis.riskLevel == SecurityRiskLevel.SUSPICIOUS }
+                }
+                if (foundIdx != -1) foundIdx else (displayMessages.size - 1).coerceAtLeast(0)
+            }
+            initialSearchQuery.isNotBlank() -> {
+                val trimmed = initialSearchQuery.trim()
+                val foundIdx = displayMessages.indexOfLast { it.body.contains(trimmed, ignoreCase = true) }
+                if (foundIdx != -1) foundIdx else (displayMessages.size - 1).coerceAtLeast(0)
+            }
+            else -> (displayMessages.size - 1).coerceAtLeast(0)
         }
     }
-    val listState = key(thread.id, initialTargetMessageId) {
+    val listState = key(thread.id) {
         rememberLazyListState(initialFirstVisibleItemIndex = initialMessageScrollIndex)
     }
     val coroutineScope = rememberCoroutineScope()
@@ -7272,20 +7958,54 @@ fun ConversationDetailScreen(
     var previousPinnedMessageIds by remember(thread.id) {
         mutableStateOf(pinnedMessages.mapTo(mutableSetOf()) { it.id })
     }
-    var jumpedToMessageId by remember(thread.id, initialTargetMessageId) { mutableStateOf<Long?>(initialTargetMessageId) }
+    var jumpedToMessageId by remember(thread.id, initialTargetMessageId, initialSearchQuery) {
+        mutableStateOf<Long?>(initialTargetMessageId)
+    }
     var showPinnedMessagesManageDialog by remember(thread.id) { mutableStateOf(value = false) }
     var selectedPinnedIdsForUnpin by remember(thread.id) { mutableStateOf<Set<Long>>(emptySet()) }
     val currentZoom by rememberUpdatedState(bubbleZoomScale)
 
+    val activeInChatSearchMatchedMessageId = remember(
+        isChatSearchVisible,
+        chatSearchQuery,
+        matchingMessageIndices,
+        activeSearchMatchIndex,
+        displayMessages
+    ) {
+        if (isChatSearchVisible && chatSearchQuery.isNotBlank() && matchingMessageIndices.isNotEmpty()) {
+            val safeIdx = activeSearchMatchIndex.coerceIn(0, matchingMessageIndices.lastIndex)
+            displayMessages.getOrNull(matchingMessageIndices[safeIdx])?.id
+        } else {
+            null
+        }
+    }
+
+    LaunchedEffect(chatSearchQuery.trim(), matchingMessageIndices.size) {
+        val trimmed = chatSearchQuery.trim()
+        if (isChatSearchVisible && trimmed.isNotEmpty() && matchingMessageIndices.isNotEmpty()) {
+            val matchPos = matchingMessageIndices.lastIndex
+            activeSearchMatchIndex = matchPos
+            val listIdx = matchingMessageIndices[matchPos]
+            val matchedMsg = displayMessages.getOrNull(listIdx)
+            if (matchedMsg != null) {
+                jumpedToMessageId = matchedMsg.id
+                listState.animateScrollToItem(
+                    index = listIdx,
+                    scrollOffset = -120
+                )
+            }
+        }
+    }
+
     LaunchedEffect(pinnedMessages.map { it.id }) {
         val currentPinnedIds = pinnedMessages.mapTo(mutableSetOf()) { it.id }
         val unpinnedMessageStillInThread = previousPinnedMessageIds.any { messageId ->
-            messageId !in currentPinnedIds && thread.messages.any { it.id == messageId }
+            messageId !in currentPinnedIds && displayMessages.any { it.id == messageId }
         }
         previousPinnedMessageIds = currentPinnedIds
 
-        if (unpinnedMessageStillInThread && thread.messages.isNotEmpty()) {
-            listState.animateScrollToItem(thread.messages.size - 1)
+        if (unpinnedMessageStillInThread && displayMessages.isNotEmpty()) {
+            listState.animateScrollToItem(displayMessages.size - 1)
         }
     }
 
@@ -7304,8 +8024,10 @@ fun ConversationDetailScreen(
 
     LaunchedEffect(jumpedToMessageId) {
         if (jumpedToMessageId != null) {
-            delay(1600.milliseconds)
-            jumpedToMessageId = null
+            delay(3500.milliseconds)
+            if (activeInChatSearchMatchedMessageId == null) {
+                jumpedToMessageId = null
+            }
         }
     }
 
@@ -7358,6 +8080,7 @@ fun ConversationDetailScreen(
 
     var messagePendingDelete by remember { mutableStateOf<ChatMessage?>(null) }
     var messagePendingForward by remember { mutableStateOf<ChatMessage?>(null) }
+    var pendingMarkSafeMessageIds by remember { mutableStateOf<List<Long>>(emptyList()) }
 
     // Preview outgoing message bubble displayed during the 6-second delayed send countdown
     val pendingOutgoingPreviewMessage = remember(pendingDelayedSend, thread.id, thread.address) {
@@ -7373,8 +8096,9 @@ fun ConversationDetailScreen(
                 status = DeliveryStatus.SENT,
                 securityAnalysis = MessageSecurityAnalyzer.analyzeMessage(pending.body),
                 attachment = pending.attachmentUri?.let { uri ->
-                    val isAudio = uri.path?.endsWith(".amr", ignoreCase = true) == true ||
-                        uri.toString().contains("voice_") ||
+                    val uriStr = uri.toString()
+                    val isAudio = com.txtura.telephony.MmsPduHelper.isAudioContentType(null, uri.path ?: uriStr) ||
+                        uriStr.contains("voice_") ||
                         pending.body == strings.voiceMessageTitle
                     MmsAttachment(
                         uri = uri,
@@ -7390,22 +8114,57 @@ fun ConversationDetailScreen(
     var showMoreMenu by remember { mutableStateOf(false) }
     var showConfirmBlockContactDialog by remember { mutableStateOf(false) }
 
-    var isInitialScrollDone by remember(thread.id, initialTargetMessageId) { mutableStateOf(false) }
+    var isInitialScrollDone by remember(thread.id, initialTargetMessageId, initialSearchQuery) { mutableStateOf(false) }
+    var hasScrolledToTargetMessage by remember(thread.id, initialTargetMessageId, initialSearchQuery) { mutableStateOf(false) }
 
-    LaunchedEffect(thread.id, thread.messages.size, pendingOutgoingPreviewMessage?.id, initialTargetMessageId) {
-        val totalItems = thread.messages.size + (if (pendingOutgoingPreviewMessage != null) 1 else 0)
+    LaunchedEffect(thread.id, displayMessages.size, pendingOutgoingPreviewMessage?.id, initialTargetMessageId, initialSearchQuery) {
+        val totalItems = displayMessages.size + (if (pendingOutgoingPreviewMessage != null) 1 else 0)
         if (totalItems > 0) {
-            val target = if (initialTargetMessageId != null) {
-                val foundIdx = thread.messages.indexOfFirst { it.id == initialTargetMessageId }
-                if (foundIdx != -1) foundIdx else totalItems - 1
+            val trimmedInitialQuery = initialSearchQuery.trim()
+            val hasInitialTarget = initialTargetMessageId != null || trimmedInitialQuery.isNotEmpty()
+            if (hasInitialTarget) {
+                val foundIdx = when {
+                    initialTargetMessageId != null -> {
+                        val byId = if (initialTargetMessageId > 0L) {
+                            displayMessages.indexOfFirst { it.id == initialTargetMessageId }
+                        } else {
+                            -1
+                        }
+                        if (byId >= 0) {
+                            byId
+                        } else {
+                            val suspiciousIdx = displayMessages.indexOfLast {
+                                it.securityAnalysis.riskLevel == SecurityRiskLevel.SUSPICIOUS
+                            }
+                            if (suspiciousIdx >= 0) {
+                                suspiciousIdx
+                            } else if (trimmedInitialQuery.isNotEmpty()) {
+                                displayMessages.indexOfLast { it.body.contains(trimmedInitialQuery, ignoreCase = true) }
+                            } else {
+                                -1
+                            }
+                        }
+                    }
+                    else -> displayMessages.indexOfLast { it.body.contains(trimmedInitialQuery, ignoreCase = true) }
+                }
+                if (foundIdx >= 0 && !hasScrolledToTargetMessage) {
+                    hasScrolledToTargetMessage = true
+                    isInitialScrollDone = true
+                    val targetMsg = displayMessages[foundIdx]
+                    jumpedToMessageId = targetMsg.id
+                    listState.animateScrollToItem(
+                        index = foundIdx,
+                        scrollOffset = -120
+                    )
+                }
             } else {
-                totalItems - 1
-            }
-            if (!isInitialScrollDone) {
-                isInitialScrollDone = true
-                listState.scrollToItem(target)
-            } else if (initialTargetMessageId == null) {
-                listState.animateScrollToItem(target)
+                val target = totalItems - 1
+                if (!isInitialScrollDone) {
+                    isInitialScrollDone = true
+                    listState.scrollToItem(target)
+                } else {
+                    listState.animateScrollToItem(target)
+                }
             }
         }
     }
@@ -7475,26 +8234,124 @@ fun ConversationDetailScreen(
             )
         }
 
-        // Confirm single message deletion
+        // Confirmation dialog before marking harmful message(s) as safe (Harmful message override)
+        if (pendingMarkSafeMessageIds.isNotEmpty()) {
+            val idsToConfirm = pendingMarkSafeMessageIds
+            GlassAlertDialog(
+                onDismissRequest = { pendingMarkSafeMessageIds = emptyList() },
+                accentBorderColor = palette.safeColor,
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = TxturaIcons.ShieldCheck,
+                            contentDescription = null,
+                            tint = palette.safeColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = strings.confirmMarkSafeDialogTitle(idsToConfirm.size),
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontSize = 17.5.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = palette.textPrimary
+                        )
+                    }
+                },
+                text = {
+                    Text(
+                        text = strings.confirmMarkSafeDialogBody(idsToConfirm.size),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            TxturaHaptics.confirm(view, context)
+                            pendingMarkSafeMessageIds = emptyList()
+                            selectedMessageIds = emptySet()
+                            if (idsToConfirm.size == 1) {
+                                onMarkMessageSafe(idsToConfirm.first())
+                                Toast.makeText(
+                                    context,
+                                    strings.messageMarkedNotHarmfulToast,
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                onMarkMessagesSafe(idsToConfirm)
+                                Toast.makeText(
+                                    context,
+                                    strings.messagesMarkedNotHarmfulToast(idsToConfirm.size),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = strings.confirmMarkSafeButton,
+                            color = palette.safeColor,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingMarkSafeMessageIds = emptyList() }) {
+                        Text(strings.cancel, color = palette.textSecondary)
+                    }
+                }
+            )
+        }
+
+        // Confirm single message deletion (Move to Trash)
         val msgToDelete = messagePendingDelete
         if (msgToDelete != null) {
             GlassAlertDialog(
                 onDismissRequest = { messagePendingDelete = null },
                 accentBorderColor = palette.dangerColor,
                 title = {
-                    Text(strings.confirmDeleteSingleMessageTitle, color = palette.textPrimary)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = TxturaIcons.Delete,
+                            contentDescription = null,
+                            tint = palette.dangerColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = strings.confirmDeleteSingleMessageTitle,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontSize = 17.5.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = palette.textPrimary,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 },
                 text = {
-                    Text(strings.confirmDeleteSingleMessageBody, color = palette.textPrimary)
+                    Text(
+                        text = strings.confirmDeleteSingleMessageBody,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textSecondary
+                    )
                 },
                 confirmButton = {
                     TextButton(
                         onClick = {
+                            TxturaHaptics.reject(view, context)
                             messagePendingDelete = null
                             onDeleteMessage(msgToDelete.id)
                         }
                     ) {
-                        Text(strings.deleteMessageOption, color = palette.dangerColor, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = strings.confirmMoveToTrashButton,
+                            color = palette.dangerColor,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 },
                 dismissButton = {
@@ -7502,6 +8359,14 @@ fun ConversationDetailScreen(
                         Text(strings.cancel, color = palette.textSecondary)
                     }
                 }
+            )
+        }
+
+        // Security measures summary dialog
+        if (showSecurityMeasuresDialog) {
+            SecurityMeasuresDialog(
+                onDismiss = { showSecurityMeasuresDialog = false },
+                identifyMaliciousWebsites = MessageSecurityAnalyzer.isOnlineMaliciousWebsiteCheckEnabled
             )
         }
 
@@ -7847,15 +8712,25 @@ fun ConversationDetailScreen(
                             }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = TxturaIcons.ShieldCheck,
-                                contentDescription = null,
-                                tint = palette.safeColor,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        TxturaHaptics.tick(view, context)
+                                        showSecurityMeasuresDialog = true
+                                    }
+                                    .padding(end = 4.dp, top = 2.dp, bottom = 2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = TxturaIcons.ShieldCheck,
+                                    contentDescription = strings.securitySectionTitle,
+                                    tint = palette.safeColor,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
                             OverflowTooltipText(
-                                text = "${thread.address} • ${strings.protectedChannelSuffix}",
+                                text = thread.address,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = palette.textSecondary,
                                 maxLines = 1
@@ -8354,8 +9229,46 @@ fun ConversationDetailScreen(
                 }
             }
 
-            val displayMessages = remember(thread.messages) {
-                deduplicateMessageList(thread.messages)
+            // Precompute the index of the first message of the same calendar day for each message in O(N)
+            val dayGroupFirstIndex = remember(displayMessages) {
+                IntArray(displayMessages.size).apply {
+                    for (i in displayMessages.indices) {
+                        this[i] = if (i == 0 || !isSameDay(displayMessages[i - 1].timestampMillis, displayMessages[i].timestampMillis)) {
+                            i
+                        } else {
+                            this[i - 1]
+                        }
+                    }
+                }
+            }
+
+            val defaultHeaderHeightPx = with(LocalDensity.current) { (30f * bubbleZoomScale.coerceIn(0.75f, 1.65f)).dp.roundToPx() }
+            var stickyHeaderHeightPx by remember { mutableIntStateOf(defaultHeaderHeightPx) }
+
+            // Sticky date header state: (activeDayStartIdx, activeTimestampMillis, pushUpTranslationY)
+            val stickyDateHeaderState by remember(listState, displayMessages, dayGroupFirstIndex) {
+                derivedStateOf {
+                    if (displayMessages.isEmpty()) return@derivedStateOf null
+                    val visibleMsgItems = listState.layoutInfo.visibleItemsInfo.filter { it.index in displayMessages.indices }
+                    if (visibleMsgItems.isEmpty()) return@derivedStateOf null
+
+                    val activeTopItem = visibleMsgItems.lastOrNull { it.offset <= 0 } ?: visibleMsgItems.first()
+                    val activeDayStartIdx = dayGroupFirstIndex[activeTopItem.index]
+                    val activeTimestamp = displayMessages[activeDayStartIdx].timestampMillis
+
+                    val nextDayStartItem = visibleMsgItems.firstOrNull { item ->
+                        item.index > activeTopItem.index && dayGroupFirstIndex[item.index] == item.index
+                    }
+
+                    val headerH = stickyHeaderHeightPx.coerceAtLeast(1)
+                    val pushUpOffsetPx = if (nextDayStartItem != null && nextDayStartItem.offset in 1 until headerH) {
+                        (nextDayStartItem.offset - headerH).toFloat()
+                    } else {
+                        0f
+                    }
+
+                    Triple(activeDayStartIdx, activeTimestamp, pushUpOffsetPx)
+                }
             }
 
             Box(
@@ -8394,45 +9307,100 @@ fun ConversationDetailScreen(
                         key = { _, msg -> msg.id },
                         contentType = { _, msg -> if (msg.attachment != null) "mms_bubble" else "sms_bubble" }
                     ) { index, msg ->
-                        val showDateHeader = index == 0 || !isSameDay(displayMessages[index - 1].timestampMillis, msg.timestampMillis)
-                        if (showDateHeader) {
-                            ChatDateHeaderPill(
-                                timestampMillis = msg.timestampMillis,
-                                strings = strings,
-                                zoomScale = bubbleZoomScale
-                            )
+                        val showDateHeader = dayGroupFirstIndex[index] == index
+                        val isHiddenByStickyOverlay = stickyDateHeaderState?.first == index
+                        val messageSwipeRightAction = remember(context) {
+                            SmsMmsRepository.getMessageSwipeRightAction(context)
+                        }
+                        val messageSwipeLeftAction = remember(context) {
+                            SmsMmsRepository.getMessageSwipeLeftAction(context)
                         }
 
-                        val isMsgSelected = selectedMessageIds.contains(msg.id)
-                        MessageBubbleItem(
-                            message = msg,
-                            zoomScale = bubbleZoomScale,
-                            expressiveAnimationsEnabled = expressiveAnimationsEnabled,
-                            autoPreviewsShowAll = autoPreviewsShowAll,
-                            autoPreviewsWebLinksOnly = autoPreviewsWebLinksOnly,
-                            autoPreviewsWifiOnly = autoPreviewsWifiOnly,
-                            strings = strings,
-                            isSelected = isMsgSelected,
-                            isSelectionMode = isSelectionMode,
-                            isJumpHighlighted = jumpedToMessageId == msg.id,
-                            onClickMessage = {
-                                if (isSelectionMode) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            if (showDateHeader) {
+                                ChatDateHeaderPill(
+                                    timestampMillis = msg.timestampMillis,
+                                    strings = strings,
+                                    zoomScale = bubbleZoomScale,
+                                    modifier = Modifier.alpha(if (isHiddenByStickyOverlay) 0f else 1f)
+                                )
+                            }
+
+                            val isMsgSelected = selectedMessageIds.contains(msg.id)
+                            val activeHighlightQuery = if (isChatSearchVisible && chatSearchQuery.isNotBlank()) {
+                                chatSearchQuery.trim()
+                            } else {
+                                initialSearchQuery.trim()
+                            }
+                            MessageBubbleItem(
+                                message = msg,
+                                zoomScale = bubbleZoomScale,
+                                expressiveAnimationsEnabled = expressiveAnimationsEnabled,
+                                autoPreviewsShowAll = autoPreviewsShowAll,
+                                autoPreviewsWebLinksOnly = autoPreviewsWebLinksOnly,
+                                autoPreviewsWifiOnly = autoPreviewsWifiOnly,
+                                strings = strings,
+                                isSelected = isMsgSelected,
+                                isSelectionMode = isSelectionMode,
+                                isJumpHighlighted = (jumpedToMessageId == msg.id) || (activeInChatSearchMatchedMessageId == msg.id),
+                                searchHighlightQuery = activeHighlightQuery,
+                                swipeRightAction = if (isSelectionMode) MessageSwipeAction.NONE else messageSwipeRightAction,
+                                swipeLeftAction = if (isSelectionMode) MessageSwipeAction.NONE else messageSwipeLeftAction,
+                                onExecuteMessageSwipeAction = { action ->
+                                    when (action) {
+                                        MessageSwipeAction.PIN -> {
+                                            val wasPinned = msg.isPinned
+                                            onTogglePinMessage(msg.id)
+                                            val toastMsg = if (wasPinned) {
+                                                strings.messagesUnpinnedToast(1)
+                                            } else {
+                                                strings.messagesPinnedToast(1)
+                                            }
+                                            Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                                        }
+                                        MessageSwipeAction.HIGHLIGHT -> {
+                                            val wasHighlighted = msg.isHighlighted
+                                            onToggleHighlightMessage(msg.id)
+                                            val toastMsg = if (wasHighlighted) {
+                                                strings.messagesUnhighlightedToast(1)
+                                            } else {
+                                                strings.messagesHighlightedToast(1)
+                                            }
+                                            Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                                        }
+                                        MessageSwipeAction.DELETE -> {
+                                            messagePendingDelete = msg
+                                        }
+                                        MessageSwipeAction.NONE -> Unit
+                                    }
+                                },
+                                onClickMessage = {
+                                    if (isSelectionMode) {
+                                        selectedMessageIds = if (msg.id in selectedMessageIds) {
+                                            selectedMessageIds - msg.id
+                                        } else {
+                                            selectedMessageIds + msg.id
+                                        }
+                                    }
+                                },
+                                onLongPressMessage = {
                                     selectedMessageIds = if (msg.id in selectedMessageIds) {
                                         selectedMessageIds - msg.id
                                     } else {
                                         selectedMessageIds + msg.id
                                     }
-                                }
-                            },
-                            onLongPressMessage = {
-                                selectedMessageIds = if (msg.id in selectedMessageIds) {
-                                    selectedMessageIds - msg.id
+                                },
+                                onMarkMessageSafe = if (msg.securityAnalysis.riskLevel == SecurityRiskLevel.SUSPICIOUS) {
+                                    {
+                                        TxturaHaptics.tick(view, context)
+                                        pendingMarkSafeMessageIds = listOf(msg.id)
+                                    }
                                 } else {
-                                    selectedMessageIds + msg.id
-                                }
-                            },
-                            onCopyOtp = onCopyOtp
-                        )
+                                    null
+                                },
+                                onCopyOtp = onCopyOtp
+                            )
+                        }
                     }
 
                     // Show pending delayed message in an outgoing sender bubble during the 6s countdown
@@ -8451,11 +9419,41 @@ fun ConversationDetailScreen(
                                 strings = strings,
                                 isSelected = false,
                                 isSelectionMode = false,
+                                swipeRightAction = MessageSwipeAction.NONE,
+                                swipeLeftAction = MessageSwipeAction.NONE,
                                 onClickMessage = {},
                                 onLongPressMessage = {},
                                 onCopyOtp = onCopyOtp
                             )
                         }
+                    }
+                }
+
+                // Sticky top-center date header pill below the contact header card:
+                // stays pinned while scrolling messages of the active date and scrolls out when pushed by the next date's pill
+                stickyDateHeaderState?.let { (_, activeTimestamp, pushUpOffsetPx) ->
+                    Box(
+                        contentAlignment = Alignment.TopCenter,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                            .clipToBounds()
+                            .align(Alignment.TopCenter)
+                    ) {
+                        ChatDateHeaderPill(
+                            timestampMillis = activeTimestamp,
+                            strings = strings,
+                            zoomScale = bubbleZoomScale,
+                            modifier = Modifier
+                                .onSizeChanged { size ->
+                                    if (size.height > 0) {
+                                        stickyHeaderHeightPx = size.height
+                                    }
+                                }
+                                .graphicsLayer {
+                                    translationY = pushUpOffsetPx
+                                }
+                        )
                     }
                 }
 
@@ -8518,6 +9516,8 @@ fun ConversationDetailScreen(
                 }
                 val allSelectedPinned = selectedMessages.isNotEmpty() && selectedMessages.all { it.isPinned }
                 val allSelectedHighlighted = selectedMessages.isNotEmpty() && selectedMessages.all { it.isHighlighted }
+                val allSelectedSuspicious = selectedMessages.isNotEmpty() &&
+                    selectedMessages.all { it.securityAnalysis.riskLevel == SecurityRiskLevel.SUSPICIOUS }
                 val selCount = selectedMessageIds.size
 
                 GlassCard(
@@ -8633,6 +9633,21 @@ fun ConversationDetailScreen(
                             }
                         )
 
+                        // 4b. Mark as Not Harmful (Označi da nije štetna) - ONLY when selected message(s) are harmful!
+                        if (allSelectedSuspicious) {
+                            GlassTooltipIconButton(
+                                icon = TxturaIcons.ShieldCheck,
+                                tooltipText = strings.markMessageNotHarmfulAction,
+                                tint = palette.safeColor,
+                                pressedTint = palette.safeColor,
+                                size = 38.dp,
+                                onClick = {
+                                    TxturaHaptics.tick(view, context)
+                                    pendingMarkSafeMessageIds = selectedMessageIds.toList()
+                                }
+                            )
+                        }
+
                         // 5. Forward (Prosledi)
                         GlassTooltipIconButton(
                             icon = TxturaIcons.Forward,
@@ -8710,17 +9725,10 @@ fun ConversationDetailScreen(
                                 value = chatSearchQuery,
                                 onValueChange = { query ->
                                     chatSearchQuery = query
-                                    activeSearchMatchIndex = 0
-                                    if (query.isNotBlank()) {
-                                        val firstMatch = thread.messages.indexOfFirst { msg ->
-                                            msg.body.contains(query, ignoreCase = true)
-                                        }
-                                        if (firstMatch >= 0) {
-                                            coroutineScope.launch {
-                                                listState.animateScrollToItem(firstMatch)
-                                                jumpedToMessageId = thread.messages[firstMatch].id
-                                            }
-                                        }
+                                    val trimmed = query.trim()
+                                    if (trimmed.isEmpty()) {
+                                        activeSearchMatchIndex = 0
+                                        jumpedToMessageId = null
                                     }
                                 },
                                 singleLine = true,
@@ -8733,7 +9741,10 @@ fun ConversationDetailScreen(
                             val matchCount = matchingMessageIndices.size
                             Text(
                                 text = if (matchCount > 0) {
-                                    strings.searchMatchesCounter(activeSearchMatchIndex + 1, matchCount)
+                                    strings.searchMatchesCounter(
+                                        activeSearchMatchIndex.coerceIn(0, (matchCount - 1).coerceAtLeast(0)) + 1,
+                                        matchCount
+                                    )
                                 } else {
                                     strings.searchNoMatches
                                 },
@@ -8758,9 +9769,15 @@ fun ConversationDetailScreen(
                                             }
                                             activeSearchMatchIndex = prevIdx
                                             val listIdx = matchingMessageIndices[prevIdx]
-                                            coroutineScope.launch {
-                                                listState.animateScrollToItem(listIdx)
-                                                jumpedToMessageId = thread.messages[listIdx].id
+                                            val matchedMsg = displayMessages.getOrNull(listIdx)
+                                            if (matchedMsg != null) {
+                                                jumpedToMessageId = matchedMsg.id
+                                                coroutineScope.launch {
+                                                    listState.animateScrollToItem(
+                                                        index = listIdx,
+                                                        scrollOffset = -120
+                                                    )
+                                                }
                                             }
                                         }
                                 )
@@ -8780,9 +9797,15 @@ fun ConversationDetailScreen(
                                             }
                                             activeSearchMatchIndex = nextIdx
                                             val listIdx = matchingMessageIndices[nextIdx]
-                                            coroutineScope.launch {
-                                                listState.animateScrollToItem(listIdx)
-                                                jumpedToMessageId = thread.messages[listIdx].id
+                                            val matchedMsg = displayMessages.getOrNull(listIdx)
+                                            if (matchedMsg != null) {
+                                                jumpedToMessageId = matchedMsg.id
+                                                coroutineScope.launch {
+                                                    listState.animateScrollToItem(
+                                                        index = listIdx,
+                                                        scrollOffset = -120
+                                                    )
+                                                }
                                             }
                                         }
                                 )
@@ -8798,6 +9821,7 @@ fun ConversationDetailScreen(
                                 .clip(CircleShape)
                                 .clickable {
                                     isChatSearchVisible = false
+                                    jumpedToMessageId = null
                                     coroutineScope.launch {
                                         delay(150.milliseconds)
                                         chatSearchQuery = ""
@@ -9073,172 +10097,218 @@ fun ConversationDetailScreen(
                                 contentDescription = strings.attachMmsImage,
                                 tint = if (showAttachmentActions) palette.accentPrimary else palette.accentSecondary,
                                 onClick = { showAttachmentActions = !showAttachmentActions },
-                                size = if (showAttachmentActions) 32.dp else 34.dp,
+                                size = 34.dp,
                                 modifier = Modifier.rotate(plusRotation)
                             )
 
-                            AnimatedVisibility(
-                                visible = showAttachmentActions,
-                                enter = TxturaMotion.horizontalExpandEnter(isExpressive = expressiveAnimationsEnabled),
-                                exit = TxturaMotion.horizontalCollapseExit(isExpressive = expressiveAnimationsEnabled)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                                    modifier = Modifier.padding(start = 3.dp)
-                                ) {
-                                    GlassIconButton(
-                                        icon = TxturaIcons.AttachImage,
-                                        contentDescription = strings.attachMmsImage,
-                                        tint = palette.accentSecondary,
-                                        onClick = {
-                                            showAttachmentActions = false
-                                            onPickMmsPhoto()
-                                        },
-                                        size = 32.dp
-                                    )
-
-                                    GlassIconButton(
-                                        icon = TxturaIcons.CalendarEvent,
-                                        contentDescription = strings.attachCalendarEvent,
-                                        tint = palette.accentSecondary,
-                                        onClick = {
-                                            showAttachmentActions = false
-                                            DynamicPermissionManager.checkAndRequest(
-                                                context = context,
-                                                permission = Manifest.permission.READ_CALENDAR,
-                                                companionMessage = if (strings.isSerbian) "Potrebna je dozvola za kalendar radi odabira događaja" else "Calendar permission required to pick events",
-                                                permanentlyDeniedMessage = if (strings.isSerbian) "Dozvola za kalendar je trajno odbijena. Uključite je u podešavanjima." else "Calendar permission permanently denied. Enable in Settings.",
-                                                requestLauncher = { calendarPermissionLauncher.launch(it) },
-                                                onAlreadyGranted = { showCalendarPickerDialog = true }
-                                            )
-                                        },
-                                        size = 32.dp
-                                    )
-
-                                    GlassIconButton(
-                                        icon = TxturaIcons.DocumentFile,
-                                        contentDescription = strings.attachDocumentFile,
-                                        tint = palette.accentSecondary,
-                                        onClick = {
-                                            showAttachmentActions = false
-                                            documentPickerLauncher.launch(arrayOf("*/*"))
-                                        },
-                                        size = 32.dp
-                                    )
-
-                                    GlassIconButton(
-                                        icon = TxturaIcons.ContactPerson,
-                                        contentDescription = strings.shareContactTooltip,
-                                        tint = palette.accentSecondary,
-                                        onClick = {
-                                            showAttachmentActions = false
-                                            DynamicPermissionManager.checkAndRequest(
-                                                context = context,
-                                                permission = Manifest.permission.READ_CONTACTS,
-                                                companionMessage = if (strings.isSerbian) "Potrebna je dozvola za kontakte radi deljenja" else "Contacts permission required to share contacts",
-                                                permanentlyDeniedMessage = if (strings.isSerbian) "Dozvola za kontakte je trajno odbijena. Uključite je u podešavanjima." else "Contacts permission permanently denied. Enable in Settings.",
-                                                requestLauncher = { contactsPermissionLauncher.launch(it) },
-                                                onAlreadyGranted = { showShareContactDialog = true }
-                                            )
-                                        },
-                                        size = 32.dp
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.width(if (showAttachmentActions) 3.dp else 4.dp))
-
-                            GlassIconButton(
-                                icon = TxturaIcons.Search,
-                                contentDescription = strings.searchInChatPlaceholder,
-                                tint = if (isChatSearchVisible) palette.accentPrimary else palette.textSecondary,
-                                onClick = {
-                                    isChatSearchVisible = !isChatSearchVisible
-                                    if (!isChatSearchVisible) {
-                                        chatSearchQuery = ""
-                                        activeSearchMatchIndex = 0
-                                    }
-                                },
-                                size = if (showAttachmentActions) 32.dp else 34.dp
+                            val textBarAlpha by animateFloatAsState(
+                                targetValue = if (showAttachmentActions) 0f else 1f,
+                                animationSpec = tween(durationMillis = if (expressiveAnimationsEnabled) 150 else 90),
+                                label = "composer_text_bar_alpha"
                             )
 
-                            Spacer(modifier = Modifier.width(if (showAttachmentActions) 6.dp else 8.dp))
-
-                            if (!showAttachmentActions) {
-                                Box(
+                            Box(
+                                contentAlignment = Alignment.CenterStart,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                // Layer 1: Search button + Text Input Box (always measured at full width so it never squeezes or jumps)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(palette.glassSurfaceElevated.copy(alpha = 0.42f))
-                                        .border(
-                                            width = 0.8.dp,
-                                            color = palette.glassBorderTop.copy(alpha = 0.3f),
-                                            shape = RoundedCornerShape(16.dp)
-                                        )
-                                        .padding(horizontal = 11.dp, vertical = 6.dp)
-                                ) {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        val textScrollState = rememberScrollState()
-
-                                        LaunchedEffect(draftText) {
-                                            if (draftText.isNotEmpty()) {
-                                                textScrollState.animateScrollTo(textScrollState.maxValue)
+                                        .fillMaxWidth()
+                                        .alpha(textBarAlpha)
+                                        .pointerInput(showAttachmentActions) {
+                                            if (showAttachmentActions) {
+                                                awaitPointerEventScope {
+                                                    while (true) {
+                                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                        event.changes.forEach { it.consume() }
+                                                    }
+                                                }
                                             }
                                         }
+                                ) {
+                                    Spacer(modifier = Modifier.width(4.dp))
 
-                                        // Bounded text box: exactly max 2 lines (~42.dp max height) with vertical scroll
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .heightIn(min = 22.dp, max = 42.dp)
-                                                .verticalScroll(textScrollState)
-                                        ) {
-                                            if (draftText.isEmpty()) {
-                                                Text(
-                                                    text = if (isMmsMode) strings.addMmsCaptionPlaceholder else strings.writeSmsPlaceholder,
-                                                    style = MaterialTheme.typography.bodyLarge.copy(
-                                                        fontSize = 14.5.sp
-                                                    ),
-                                                    color = palette.textSecondary,
-                                                    maxLines = 1,
-                                                    softWrap = false,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
+                                    GlassIconButton(
+                                        icon = TxturaIcons.Search,
+                                        contentDescription = strings.searchInChatPlaceholder,
+                                        tint = if (isChatSearchVisible) palette.accentPrimary else palette.textSecondary,
+                                        onClick = {
+                                            if (!showAttachmentActions) {
+                                                isChatSearchVisible = !isChatSearchVisible
+                                                if (!isChatSearchVisible) {
+                                                    chatSearchQuery = ""
+                                                    activeSearchMatchIndex = 0
+                                                }
                                             }
-                                            BasicTextField(
-                                                value = draftText,
-                                                onValueChange = { draftText = it },
-                                                textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                                    color = palette.textPrimary,
-                                                    fontSize = 15.sp,
-                                                    lineHeight = 19.sp
-                                                ),
-                                                cursorBrush = SolidColor(palette.accentPrimary),
+                                        },
+                                        size = 34.dp
+                                    )
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(palette.glassSurfaceElevated.copy(alpha = 0.42f))
+                                            .border(
+                                                width = 0.8.dp,
+                                                color = palette.glassBorderTop.copy(alpha = 0.3f),
+                                                shape = RoundedCornerShape(16.dp)
+                                            )
+                                            .padding(horizontal = 11.dp, vertical = 6.dp)
+                                    ) {
+                                        Column(modifier = Modifier.fillMaxWidth()) {
+                                            val textScrollState = rememberScrollState()
+
+                                            LaunchedEffect(draftText) {
+                                                if (draftText.isNotEmpty()) {
+                                                    textScrollState.animateScrollTo(textScrollState.maxValue)
+                                                }
+                                            }
+
+                                            // Bounded text box: exactly max 2 lines (~42.dp max height) with vertical scroll
+                                            Box(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .focusRequester(inputFocusRequester)
+                                                    .heightIn(min = 22.dp, max = 42.dp)
+                                                    .verticalScroll(textScrollState)
+                                            ) {
+                                                if (draftText.isEmpty()) {
+                                                    Text(
+                                                        text = if (isMmsMode) strings.addMmsCaptionPlaceholder else strings.writeSmsPlaceholder,
+                                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                                            fontSize = 14.5.sp
+                                                        ),
+                                                        color = palette.textSecondary,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                                BasicTextField(
+                                                    value = draftText,
+                                                    onValueChange = { draftText = it },
+                                                    enabled = !showAttachmentActions,
+                                                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                                        color = palette.textPrimary,
+                                                        fontSize = 15.sp,
+                                                        lineHeight = 19.sp
+                                                    ),
+                                                    cursorBrush = SolidColor(palette.accentPrimary),
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .focusRequester(inputFocusRequester)
+                                                )
+                                            }
+
+                                            Spacer(modifier = Modifier.height(2.dp))
+
+                                            // Character counter directly below text field inside the textbox card
+                                            Text(
+                                                text = if (isMmsMode) {
+                                                    strings.mmsModeIndicator
+                                                } else {
+                                                    "${draftText.length}/$charsPerSegment ($smsSegments) • SMS"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontSize = 11.sp
+                                                ),
+                                                color = if (isMmsMode) palette.accentSecondary else palette.textSecondary,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Clip
                                             )
                                         }
+                                    }
+                                }
 
-                                        Spacer(modifier = Modifier.height(2.dp))
-
-                                        // Character counter directly below text field inside the textbox card
-                                        Text(
-                                            text = if (isMmsMode) {
-                                                strings.mmsModeIndicator
-                                            } else {
-                                                "${draftText.length}/$charsPerSegment ($smsSegments) • SMS"
+                                // Layer 2: Attachment categories + Search button (expands/collapses smoothly without squeezing Layer 1)
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visible = showAttachmentActions,
+                                    enter = TxturaMotion.horizontalExpandEnter(isExpressive = expressiveAnimationsEnabled),
+                                    exit = TxturaMotion.horizontalCollapseExit(isExpressive = expressiveAnimationsEnabled)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                        modifier = Modifier.padding(start = 3.dp)
+                                    ) {
+                                        GlassIconButton(
+                                            icon = TxturaIcons.AttachImage,
+                                            contentDescription = strings.attachMmsImage,
+                                            tint = palette.accentSecondary,
+                                            onClick = {
+                                                showAttachmentActions = false
+                                                onPickMmsPhoto()
                                             },
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 11.sp
-                                            ),
-                                            color = if (isMmsMode) palette.accentSecondary else palette.textSecondary
+                                            size = 32.dp
+                                        )
+
+                                        GlassIconButton(
+                                            icon = TxturaIcons.CalendarEvent,
+                                            contentDescription = strings.attachCalendarEvent,
+                                            tint = palette.accentSecondary,
+                                            onClick = {
+                                                showAttachmentActions = false
+                                                DynamicPermissionManager.checkAndRequest(
+                                                    context = context,
+                                                    permission = Manifest.permission.READ_CALENDAR,
+                                                    companionMessage = if (strings.isSerbian) "Potrebna je dozvola za kalendar radi odabira događaja" else "Calendar permission required to pick events",
+                                                    permanentlyDeniedMessage = if (strings.isSerbian) "Dozvola za kalendar je trajno odbijena. Uključite je u podešavanjima." else "Calendar permission permanently denied. Enable in Settings.",
+                                                    requestLauncher = { calendarPermissionLauncher.launch(it) },
+                                                    onAlreadyGranted = { showCalendarPickerDialog = true }
+                                                )
+                                            },
+                                            size = 32.dp
+                                        )
+
+                                        GlassIconButton(
+                                            icon = TxturaIcons.DocumentFile,
+                                            contentDescription = strings.attachDocumentFile,
+                                            tint = palette.accentSecondary,
+                                            onClick = {
+                                                showAttachmentActions = false
+                                                documentPickerLauncher.launch(arrayOf("*/*"))
+                                            },
+                                            size = 32.dp
+                                        )
+
+                                        GlassIconButton(
+                                            icon = TxturaIcons.ContactPerson,
+                                            contentDescription = strings.shareContactTooltip,
+                                            tint = palette.accentSecondary,
+                                            onClick = {
+                                                showAttachmentActions = false
+                                                DynamicPermissionManager.checkAndRequest(
+                                                    context = context,
+                                                    permission = Manifest.permission.READ_CONTACTS,
+                                                    companionMessage = if (strings.isSerbian) "Potrebna je dozvola za kontakte radi deljenja" else "Contacts permission required to share contacts",
+                                                    permanentlyDeniedMessage = if (strings.isSerbian) "Dozvola za kontakte je trajno odbijena. Uključite je u podešavanjima." else "Contacts permission permanently denied. Enable in Settings.",
+                                                    requestLauncher = { contactsPermissionLauncher.launch(it) },
+                                                    onAlreadyGranted = { showShareContactDialog = true }
+                                                )
+                                            },
+                                            size = 32.dp
+                                        )
+
+                                        GlassIconButton(
+                                            icon = TxturaIcons.Search,
+                                            contentDescription = strings.searchInChatPlaceholder,
+                                            tint = if (isChatSearchVisible) palette.accentPrimary else palette.textSecondary,
+                                            onClick = {
+                                                isChatSearchVisible = !isChatSearchVisible
+                                                if (!isChatSearchVisible) {
+                                                    chatSearchQuery = ""
+                                                    activeSearchMatchIndex = 0
+                                                }
+                                            },
+                                            size = 32.dp
                                         )
                                     }
                                 }
-                            } else {
-                                Spacer(modifier = Modifier.weight(1f))
                             }
 
                             Spacer(modifier = Modifier.width(if (isCountingDown) 10.dp else 58.dp))
@@ -9329,6 +10399,9 @@ fun ConversationDetailScreen(
                                         onClick = {
                                             if (canSend) {
                                                 TxturaHaptics.confirm(view, context)
+                                                if (inAppSoundsEnabled) {
+                                                    SmsMmsRepository.playInAppMessageSentSound(context)
+                                                }
                                                 // Flush any already-counting message before handling the new message
                                                 pendingDelayedSend?.let { prev ->
                                                     onSendMessage(prev.body, prev.attachmentUri)
@@ -9468,9 +10541,9 @@ fun ConversationDetailScreen(
                                                 }
                                                 TxturaHaptics.reject(view, context)
                                             } else {
-                                                val recDur = VoiceMessageManager.recordingDurationMillis.longValue
                                                 val recFile = VoiceMessageManager.stopRecording(context)
-                                                if (recFile != null && recFile.exists() && recFile.length() > 200L && recDur >= 500L) {
+                                                val recDur = VoiceMessageManager.recordingDurationMillis.longValue
+                                                if (recFile != null && recFile.exists() && recFile.length() > 60L && recDur >= 300L) {
                                                     TxturaHaptics.confirm(view, context)
                                                     val audioUri = FileProvider.getUriForFile(
                                                         context,
@@ -9984,13 +11057,20 @@ private fun MessageBubbleItem(
     isSelected: Boolean = false,
     isSelectionMode: Boolean = false,
     isJumpHighlighted: Boolean = false,
+    searchHighlightQuery: String = "",
+    swipeRightAction: MessageSwipeAction = MessageSwipeAction.PIN,
+    swipeLeftAction: MessageSwipeAction = MessageSwipeAction.HIGHLIGHT,
+    onExecuteMessageSwipeAction: (MessageSwipeAction) -> Unit = {},
     onClickMessage: () -> Unit = {},
     onLongPressMessage: () -> Unit = {},
+    onMarkMessageSafe: (() -> Unit)? = null,
     onCopyOtp: (String) -> Unit
 ) {
     val context = LocalContext.current
     val view = LocalView.current
+    val density = LocalDensity.current
     val palette = LocalGlassPalette.current
+    val scope = rememberCoroutineScope()
     val isOutgoing = !message.isIncoming
     val analysis = message.securityAnalysis
     val s = zoomScale.coerceIn(0.75f, 1.65f)
@@ -9998,6 +11078,20 @@ private fun MessageBubbleItem(
     val tailRadius = (4f * s).coerceIn(3f, 8f).dp
     val currentOnLongPress by rememberUpdatedState(onLongPressMessage)
     val currentOnClick by rememberUpdatedState(onClickMessage)
+    val currentOnExecuteSwipe by rememberUpdatedState(onExecuteMessageSwipeAction)
+
+    val swipeOffsetX = remember { Animatable(0f) }
+    var hasSnappedThreshold by remember { mutableStateOf(false) }
+    var badgeWidthPx by remember { mutableIntStateOf(0) }
+    val badgeGapPx = remember(density) { with(density) { 6.dp.toPx() } }
+    val swipeThresholdPx = remember(density) { with(density) { 56.dp.toPx() } }
+    val maxSwipeDragPx = remember(density) { with(density) { 86.dp.toPx() } }
+    val currentOffset = swipeOffsetX.value
+    val activeSwipeAction = when {
+        currentOffset > 10f -> swipeRightAction
+        currentOffset < -10f -> swipeLeftAction
+        else -> MessageSwipeAction.NONE
+    }
 
     var activeDetectedEntity by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     val detectedPhones = remember(message.body) {
@@ -10008,6 +11102,18 @@ private fun MessageBubbleItem(
     }
     val detectedBankAccounts = remember(message.body) {
         MessageSecurityAnalyzer.extractBankAccounts(message.body)
+    }
+    val detectedPaymentRefs = remember(message.body) {
+        MessageSecurityAnalyzer.extractPaymentReferences(message.body)
+    }
+    val detectedPaymentAmounts = remember(message.body) {
+        MessageSecurityAnalyzer.extractPaymentAmounts(message.body)
+    }
+    val detectedActionableDates = remember(message.body) {
+        MessageSecurityAnalyzer.extractActionableDates(message.body)
+    }
+    val detectedTrackingNumbers = remember(message.body) {
+        MessageSecurityAnalyzer.extractPackageTrackingNumbers(message.body)
     }
 
     val bubbleShape = if (isOutgoing) {
@@ -10047,7 +11153,7 @@ private fun MessageBubbleItem(
         } else if (isJumpHighlighted) {
             Brush.linearGradient(
                 colors = listOf(
-                    palette.accentPrimary.copy(alpha = 0.42f),
+                    palette.accentPrimary.copy(alpha = 0.54f),
                     if (isOutgoing) palette.outgoingBubbleEnd else palette.incomingBubbleSurface
                 )
             )
@@ -10090,9 +11196,26 @@ private fun MessageBubbleItem(
     }
     val linkColor = if (isOutgoing) Color(0xFFBAE6FD) else palette.accentPrimary
 
-    val annotatedMessageText = remember(message.body, safeLinks, linkColor) {
+    val annotatedMessageText = remember(message.body, safeLinks, linkColor, searchHighlightQuery, isJumpHighlighted, palette.cautionColor) {
         buildAnnotatedString {
             append(message.body)
+            val trimmedHighlight = searchHighlightQuery.trim()
+            if (trimmedHighlight.isNotEmpty()) {
+                var startIdx = message.body.indexOf(trimmedHighlight, ignoreCase = true)
+                while (startIdx >= 0) {
+                    val endIdx = (startIdx + trimmedHighlight.length).coerceAtMost(message.body.length)
+                    addStyle(
+                        style = SpanStyle(
+                            background = palette.cautionColor.copy(alpha = if (isJumpHighlighted) 0.55f else 0.35f),
+                            color = if (isOutgoing) Color.White else palette.textPrimary,
+                            fontWeight = FontWeight.ExtraBold
+                        ),
+                        start = startIdx,
+                        end = endIdx
+                    )
+                    startIdx = message.body.indexOf(trimmedHighlight, startIndex = endIdx, ignoreCase = true)
+                }
+            }
             safeLinks.forEach { link ->
                 addLink(
                     clickable = LinkAnnotation.Clickable(
@@ -10115,7 +11238,11 @@ private fun MessageBubbleItem(
         }
     }
 
-    val targetScale = if (isSelected) 1.025f else 1.0f
+    val targetScale = when {
+        isJumpHighlighted -> 1.032f
+        isSelected -> 1.025f
+        else -> 1.0f
+    }
     val animatedBubbleScale by animateFloatAsState(
         targetValue = targetScale,
         animationSpec = if (expressiveAnimationsEnabled) {
@@ -10131,63 +11258,258 @@ private fun MessageBubbleItem(
         horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start
     ) {
         Box(
-            modifier = Modifier
-                .widthIn(max = (300f * s).coerceIn(210f, 380f).dp)
-                .graphicsLayer {
-                    scaleX = animatedBubbleScale
-                    scaleY = animatedBubbleScale
+            contentAlignment = if (isOutgoing) Alignment.CenterEnd else Alignment.CenterStart
+        ) {
+            if (abs(currentOffset) > 10f && activeSwipeAction != MessageSwipeAction.NONE) {
+                val actionColor = when (activeSwipeAction) {
+                    MessageSwipeAction.PIN -> palette.accentPrimary
+                    MessageSwipeAction.HIGHLIGHT -> palette.cautionColor
+                    MessageSwipeAction.DELETE -> palette.dangerColor
+                    MessageSwipeAction.NONE -> palette.accentPrimary
                 }
-                .clip(bubbleShape)
-                .background(brush = bubbleBrush, shape = bubbleShape)
-                .border(
-                    width = if (isSelected || isJumpHighlighted) 2.dp else if (message.isHighlighted) 1.5.dp else 1.dp,
-                    color = borderColor,
-                    shape = bubbleShape
-                )
-                .pointerInput(isSelectionMode) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val downPos = down.position
-
-                        val outcome = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Main)
-                                val current = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!current.pressed) {
-                                    return@withTimeoutOrNull 1 // RELEASED
-                                }
-                                if ((current.position - downPos).getDistance() > viewConfiguration.touchSlop) {
-                                    return@withTimeoutOrNull 2 // MOVED (scrolling)
-                                }
-                            }
-                            1
-                        } ?: 3 // 3 = TIMED_OUT (real long press)
-
-                        when (outcome) {
-                            3 -> {
-                                TxturaHaptics.longPress(view, context)
-                                currentOnLongPress()
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Main)
-                                    val current = event.changes.firstOrNull { it.id == down.id } ?: break
-                                    if (!current.pressed) break
-                                }
-                            }
-                            1 -> {
-                                if (isSelectionMode) {
-                                    TxturaHaptics.tick(view, context)
-                                    currentOnClick()
-                                }
-                            }
-                            2 -> {
-                                // Finger moved > touchSlop (scrolling). Do nothing!
-                            }
+                val actionIcon = when (activeSwipeAction) {
+                    MessageSwipeAction.PIN -> if (message.isPinned) TxturaIcons.PinFilled else TxturaIcons.PinOutline
+                    MessageSwipeAction.HIGHLIGHT -> TxturaIcons.HighlightStar
+                    MessageSwipeAction.DELETE -> TxturaIcons.Delete
+                    MessageSwipeAction.NONE -> TxturaIcons.PinOutline
+                }
+                val actionText = when (activeSwipeAction) {
+                    MessageSwipeAction.PIN -> if (message.isPinned) strings.swipeGestureUnpin else strings.swipeGesturePin
+                    MessageSwipeAction.HIGHLIGHT -> if (message.isHighlighted) strings.swipeGestureUnhighlight else strings.swipeGestureHighlight
+                    MessageSwipeAction.DELETE -> strings.swipeActionDelete
+                    MessageSwipeAction.NONE -> ""
+                }
+                val isTriggered = abs(currentOffset) >= swipeThresholdPx
+                val isSwipingRight = currentOffset > 0f
+                val badgeShape = RoundedCornerShape((14f * s).dp)
+                val isEdgeConstrained = (isSwipingRight && !isOutgoing) || (!isSwipingRight && isOutgoing)
+                val badgeFitScale = if (isEdgeConstrained && badgeWidthPx > 0) {
+                    ((abs(currentOffset) - badgeGapPx).coerceAtLeast(0f) / badgeWidthPx.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    1f
+                }
+                val badgeExtraOffsetX = when {
+                    isSwipingRight && isOutgoing -> {
+                        currentOffset - badgeWidthPx - badgeGapPx
+                    }
+                    !isSwipingRight && !isOutgoing -> {
+                        currentOffset + badgeWidthPx + badgeGapPx
+                    }
+                    isSwipingRight && !isOutgoing -> {
+                        if (currentOffset >= badgeWidthPx + badgeGapPx) {
+                            currentOffset - badgeWidthPx - badgeGapPx
+                        } else {
+                            -badgeWidthPx * (1f - badgeFitScale) * 0.5f
+                        }
+                    }
+                    else -> {
+                        if (abs(currentOffset) >= badgeWidthPx + badgeGapPx) {
+                            currentOffset + badgeWidthPx + badgeGapPx
+                        } else {
+                            badgeWidthPx * (1f - badgeFitScale) * 0.5f
                         }
                     }
                 }
-                .padding(horizontal = (12f * s).dp, vertical = (8f * s).dp)
-        ) {
+
+                Box(
+                    contentAlignment = if (isSwipingRight) Alignment.CenterStart else Alignment.CenterEnd,
+                    modifier = Modifier
+                        .align(if (isSwipingRight) Alignment.CenterStart else Alignment.CenterEnd)
+                        .offset { IntOffset(badgeExtraOffsetX.roundToInt(), 0) }
+                        .graphicsLayer {
+                            scaleX = badgeFitScale
+                            scaleY = badgeFitScale
+                            alpha = badgeFitScale.coerceIn(0f, 1f)
+                        }
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .onSizeChanged { badgeWidthPx = it.width }
+                            .clip(badgeShape)
+                            .background(actionColor.copy(alpha = if (isTriggered) 0.28f else 0.14f))
+                            .border(
+                                width = 1.dp,
+                                color = actionColor.copy(alpha = if (isTriggered) 0.80f else 0.38f),
+                                shape = badgeShape
+                            )
+                            .padding(horizontal = (10f * s).dp, vertical = (6f * s).dp)
+                    ) {
+                        Icon(
+                            imageVector = actionIcon,
+                            contentDescription = null,
+                            tint = actionColor,
+                            modifier = Modifier.size(if (isTriggered) (18f * s).dp else (15f * s).dp)
+                        )
+                        Spacer(modifier = Modifier.height((3f * s).dp))
+                        Text(
+                            text = actionText,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = (10f * s).sp,
+                                lineHeight = (12f * s).sp
+                            ),
+                            color = actionColor,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset(swipeOffsetX.value.roundToInt(), 0) }
+                    .widthIn(max = (300f * s).coerceIn(210f, 380f).dp)
+                    .graphicsLayer {
+                        scaleX = animatedBubbleScale
+                        scaleY = animatedBubbleScale
+                    }
+                    .clip(bubbleShape)
+                    .background(brush = bubbleBrush, shape = bubbleShape)
+                    .border(
+                        width = if (isJumpHighlighted) 2.5.dp else if (isSelected) 2.dp else if (message.isHighlighted) 1.5.dp else 1.dp,
+                        color = borderColor,
+                        shape = bubbleShape
+                    )
+                    .pointerInput(message.id, swipeRightAction, swipeLeftAction) {
+                        if (swipeRightAction == MessageSwipeAction.NONE && swipeLeftAction == MessageSwipeAction.NONE) {
+                            return@pointerInput
+                        }
+                        detectHorizontalDragGestures(
+                            onDragStart = {
+                                TxturaHaptics.tick(view, context)
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                val proposed = swipeOffsetX.value + dragAmount
+                                val clamped = when {
+                                    proposed > 0f && swipeRightAction == MessageSwipeAction.NONE -> proposed * 0.15f
+                                    proposed < 0f && swipeLeftAction == MessageSwipeAction.NONE -> proposed * 0.15f
+                                    else -> proposed.coerceIn(-maxSwipeDragPx, maxSwipeDragPx)
+                                }
+                                val active = when {
+                                    clamped > 10f -> swipeRightAction
+                                    clamped < -10f -> swipeLeftAction
+                                    else -> MessageSwipeAction.NONE
+                                }
+                                val isTriggered = abs(clamped) >= swipeThresholdPx && active != MessageSwipeAction.NONE
+                                if (isTriggered && !hasSnappedThreshold) {
+                                    hasSnappedThreshold = true
+                                    TxturaHaptics.swipeSnap(view, context)
+                                } else if (!isTriggered && hasSnappedThreshold) {
+                                    hasSnappedThreshold = false
+                                    TxturaHaptics.tick(view, context)
+                                }
+                                scope.launch {
+                                    swipeOffsetX.snapTo(clamped)
+                                }
+                            },
+                            onDragEnd = {
+                                hasSnappedThreshold = false
+                                val finalOffset = swipeOffsetX.value
+                                when {
+                                    finalOffset >= swipeThresholdPx && swipeRightAction != MessageSwipeAction.NONE -> {
+                                        if (swipeRightAction == MessageSwipeAction.DELETE) {
+                                            TxturaHaptics.reject(view, context)
+                                        } else {
+                                            TxturaHaptics.confirm(view, context)
+                                        }
+                                        currentOnExecuteSwipe(swipeRightAction)
+                                    }
+                                    finalOffset <= -swipeThresholdPx && swipeLeftAction != MessageSwipeAction.NONE -> {
+                                        if (swipeLeftAction == MessageSwipeAction.DELETE) {
+                                            TxturaHaptics.reject(view, context)
+                                        } else {
+                                            TxturaHaptics.confirm(view, context)
+                                        }
+                                        currentOnExecuteSwipe(swipeLeftAction)
+                                    }
+                                }
+                                scope.launch {
+                                    swipeOffsetX.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = TxturaMotion.swipeSnapBackSpec()
+                                    )
+                                }
+                            },
+                            onDragCancel = {
+                                hasSnappedThreshold = false
+                                scope.launch {
+                                    swipeOffsetX.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = TxturaMotion.swipeSnapBackSpec()
+                                    )
+                                }
+                            }
+                        )
+                    }
+                    .pointerInput(isSelectionMode) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val downPos = down.position
+
+                            val outcome = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Main)
+                                    val current = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!current.pressed) {
+                                        return@withTimeoutOrNull 1 // RELEASED
+                                    }
+                                    if ((current.position - downPos).getDistance() > viewConfiguration.touchSlop) {
+                                        return@withTimeoutOrNull 2 // MOVED (scrolling / swiping)
+                                    }
+                                }
+                                1
+                            } ?: 3 // 3 = TIMED_OUT (real long press)
+
+                            when (outcome) {
+                                3 -> {
+                                    TxturaHaptics.longPress(view, context)
+                                    currentOnLongPress()
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Main)
+                                        event.changes.forEach { it.consume() }
+                                        val current = event.changes.firstOrNull { it.id == down.id } ?: break
+                                        if (!current.pressed) break
+                                    }
+                                }
+                                1 -> {
+                                    if (isSelectionMode) {
+                                        TxturaHaptics.tick(view, context)
+                                        currentOnClick()
+                                    }
+                                }
+                                2 -> {
+                                    // Finger moved > touchSlop (scrolling or swiping). Do nothing!
+                                }
+                            }
+                        }
+                    }
+                    .padding(horizontal = (12f * s).dp, vertical = (8f * s).dp)
+            ) {
             Column {
+                if (isJumpHighlighted) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(bottom = (4f * s).dp)
+                    ) {
+                        Icon(
+                            imageVector = TxturaIcons.Search,
+                            contentDescription = null,
+                            tint = if (isOutgoing) Color.White else palette.accentPrimary,
+                            modifier = Modifier.size((13f * s).dp)
+                        )
+                        Spacer(modifier = Modifier.width((4f * s).dp))
+                        Text(
+                            text = if (strings.isSerbian) "Pronađena poruka" else "Matched message",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = (10f * s).sp),
+                            color = if (isOutgoing) Color.White else palette.accentPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
                 if (message.isHighlighted) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -10348,8 +11670,16 @@ private fun MessageBubbleItem(
                     }
                 }
 
-                // Automatically detected phone numbers, email addresses, and bank accounts with quick actions
-                if (detectedPhones.isNotEmpty() || detectedEmails.isNotEmpty() || detectedBankAccounts.isNotEmpty()) {
+                // Automatically detected phone numbers, email addresses, bank accounts, payment refs, amounts, dates, and tracking numbers
+                if (
+                    detectedPhones.isNotEmpty() ||
+                    detectedEmails.isNotEmpty() ||
+                    detectedBankAccounts.isNotEmpty() ||
+                    detectedPaymentRefs.isNotEmpty() ||
+                    detectedPaymentAmounts.isNotEmpty() ||
+                    detectedActionableDates.isNotEmpty() ||
+                    detectedTrackingNumbers.isNotEmpty()
+                ) {
                     Spacer(modifier = Modifier.height((6f * s).dp))
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy((6f * s).dp),
@@ -10390,6 +11720,152 @@ private fun MessageBubbleItem(
                                         text = chipLabel,
                                         style = MaterialTheme.typography.labelSmall.copy(fontSize = (11f * s).sp),
                                         color = palette.safeColor,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                        detectedPaymentRefs.forEach { ref ->
+                            GlassCard(
+                                shape = RoundedCornerShape(50),
+                                elevated = true,
+                                accentHighlight = palette.safeColor,
+                                contentPadding = PaddingValues(horizontal = (8f * s).dp, vertical = (4f * s).dp),
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    val clip = ClipData.newPlainText("Payment Reference", ref.referenceNumber)
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(
+                                        context,
+                                        strings.paymentReferenceCopiedToast(ref.referenceNumber, ref.model),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = TxturaIcons.CopyKey,
+                                        contentDescription = null,
+                                        tint = palette.safeColor,
+                                        modifier = Modifier.size((12f * s).dp)
+                                    )
+                                    Spacer(modifier = Modifier.width((4f * s).dp))
+                                    Text(
+                                        text = strings.paymentReferenceChipLabel(ref.referenceNumber, ref.model),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = (11f * s).sp),
+                                        color = palette.safeColor,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                        detectedPaymentAmounts.forEach { amt ->
+                            GlassCard(
+                                shape = RoundedCornerShape(50),
+                                elevated = true,
+                                accentHighlight = palette.safeColor,
+                                contentPadding = PaddingValues(horizontal = (8f * s).dp, vertical = (4f * s).dp),
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    val clip = ClipData.newPlainText("Payment Amount", amt.normalizedValue)
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(
+                                        context,
+                                        strings.paymentAmountCopiedToast(amt.normalizedValue, amt.currency),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = TxturaIcons.CopyKey,
+                                        contentDescription = null,
+                                        tint = palette.safeColor,
+                                        modifier = Modifier.size((12f * s).dp)
+                                    )
+                                    Spacer(modifier = Modifier.width((4f * s).dp))
+                                    Text(
+                                        text = strings.paymentAmountChipLabel(amt.displayAmount),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = (11f * s).sp),
+                                        color = palette.safeColor,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                        detectedActionableDates.forEach { dateEvt ->
+                            GlassCard(
+                                shape = RoundedCornerShape(50),
+                                elevated = true,
+                                accentHighlight = palette.accentSecondary,
+                                contentPadding = PaddingValues(horizontal = (8f * s).dp, vertical = (4f * s).dp),
+                                onClick = {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_INSERT).apply {
+                                            data = CalendarContract.Events.CONTENT_URI
+                                            putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, dateEvt.startEpochMillis)
+                                            putExtra(
+                                                CalendarContract.EXTRA_EVENT_END_TIME,
+                                                dateEvt.startEpochMillis + 3_600_000L
+                                            )
+                                            putExtra(
+                                                CalendarContract.Events.TITLE,
+                                                strings.calendarReminderDefaultTitle(dateEvt.isPaymentDeadline)
+                                            )
+                                            putExtra(CalendarContract.Events.DESCRIPTION, message.body)
+                                        }
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {
+                                        // ignore if no calendar app installed
+                                    }
+                                }
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = TxturaIcons.CalendarEvent,
+                                        contentDescription = null,
+                                        tint = palette.accentSecondary,
+                                        modifier = Modifier.size((12f * s).dp)
+                                    )
+                                    Spacer(modifier = Modifier.width((4f * s).dp))
+                                    Text(
+                                        text = strings.actionableDateChipLabel(dateEvt.displayDate, dateEvt.isPaymentDeadline),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = (11f * s).sp),
+                                        color = palette.accentSecondary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                        detectedTrackingNumbers.forEach { trk ->
+                            GlassCard(
+                                shape = RoundedCornerShape(50),
+                                elevated = true,
+                                accentHighlight = palette.accentPrimary,
+                                contentPadding = PaddingValues(horizontal = (8f * s).dp, vertical = (4f * s).dp),
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    val clip = ClipData.newPlainText("Tracking Code", trk.trackingCode)
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(
+                                        context,
+                                        strings.packageTrackingCopiedToast(trk.trackingCode),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = TxturaIcons.DocumentFile,
+                                        contentDescription = null,
+                                        tint = palette.accentPrimary,
+                                        modifier = Modifier.size((12f * s).dp)
+                                    )
+                                    Spacer(modifier = Modifier.width((4f * s).dp))
+                                    Text(
+                                        text = strings.packageTrackingChipLabel(trk.trackingCode, trk.courierName),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = (11f * s).sp),
+                                        color = palette.accentPrimary,
                                         fontWeight = FontWeight.SemiBold
                                     )
                                 }
@@ -10487,6 +11963,38 @@ private fun MessageBubbleItem(
                                 modifier = Modifier.padding(top = 2.dp)
                             )
                         }
+                        if (onMarkMessageSafe != null) {
+                            Spacer(modifier = Modifier.height((6f * s).dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(palette.safeColor.copy(alpha = 0.18f))
+                                    .border(
+                                        width = 1.dp,
+                                        color = palette.safeColor.copy(alpha = 0.65f),
+                                        shape = RoundedCornerShape(50)
+                                    )
+                                    .clickable { onMarkMessageSafe() }
+                                    .padding(horizontal = (10f * s).dp, vertical = (4f * s).dp)
+                            ) {
+                                Icon(
+                                    imageVector = TxturaIcons.ShieldCheck,
+                                    contentDescription = null,
+                                    tint = palette.safeColor,
+                                    modifier = Modifier.size((13f * s).dp)
+                                )
+                                Spacer(modifier = Modifier.width((5f * s).dp))
+                                Text(
+                                    text = strings.markMessageNotHarmfulAction,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = (11f * s).sp
+                                    ),
+                                    color = palette.safeColor,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -10582,6 +12090,7 @@ private fun MessageBubbleItem(
                     }
                 }
             }
+        }
         }
     }
 
@@ -12871,6 +14380,42 @@ fun DetectedEntityActionDialog(
                     }
                 }
 
+                // 2b. Send SMS to phone number
+                if (isPhone) {
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        elevated = true,
+                        accentHighlight = palette.accentSecondary,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        onClick = {
+                            try {
+                                val intent = Intent(Intent.ACTION_SENDTO, "smsto:$value".toUri())
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                                // ignore
+                            }
+                            onDismiss()
+                        }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = TxturaIcons.ChatBubble,
+                                contentDescription = null,
+                                tint = palette.accentSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = strings.sendSmsToNumberAction,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textPrimary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+
                 // 3. Copy to clipboard
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -12922,29 +14467,41 @@ fun DefaultSmsRolePromptDialog(
 ) {
     val palette = LocalGlassPalette.current
     val strings = TxturaStrings.current()
+    var titleFontSizeSp by remember(strings.defaultSmsPromptTitle) { mutableFloatStateOf(16.5f) }
+    var buttonFontSizeSp by remember(strings.defaultSmsPromptConfirm) { mutableFloatStateOf(14f) }
 
     GlassAlertDialog(
         onDismissRequest = onDismiss,
         accentBorderColor = palette.accentPrimary,
+        usePlatformDefaultWidth = false,
+        modifier = Modifier.fillMaxWidth(0.94f),
         title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Icon(
                     imageVector = TxturaIcons.ShieldCheck,
                     contentDescription = null,
                     tint = palette.accentPrimary,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(21.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = strings.defaultSmsPromptTitle,
                     style = MaterialTheme.typography.titleMedium.copy(
-                        fontSize = 17.5.sp,
+                        fontSize = titleFontSizeSp.sp,
                         fontWeight = FontWeight.Bold
                     ),
                     color = palette.textPrimary,
                     maxLines = 1,
                     softWrap = false,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Clip,
+                    onTextLayout = { layoutResult ->
+                        if (layoutResult.didOverflowWidth && titleFontSizeSp > 11f) {
+                            titleFontSizeSp -= 0.5f
+                        }
+                    }
                 )
             }
         },
@@ -12961,24 +14518,40 @@ fun DefaultSmsRolePromptDialog(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                TextButton(onClick = onDismiss) {
+                TextButton(
+                    onClick = onDismiss,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
                     Text(
                         text = strings.defaultSmsPromptLater,
                         color = palette.textSecondary,
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontSize = buttonFontSizeSp.sp
+                        ),
                         maxLines = 1,
                         softWrap = false
                     )
                 }
-                Spacer(modifier = Modifier.width(4.dp))
-                TextButton(onClick = onConfirm) {
+                Spacer(modifier = Modifier.width(6.dp))
+                TextButton(
+                    onClick = onConfirm,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
                     Text(
                         text = strings.defaultSmsPromptConfirm,
                         color = palette.accentPrimary,
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontSize = buttonFontSizeSp.sp
+                        ),
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
-                        softWrap = false
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
+                        onTextLayout = { layoutResult ->
+                            if (layoutResult.didOverflowWidth && buttonFontSizeSp > 11f) {
+                                buttonFontSizeSp -= 0.5f
+                            }
+                        }
                     )
                 }
             }
@@ -13080,21 +14653,79 @@ private fun SwipeableConversationCard(
 ) {
     val view = LocalView.current
     val context = LocalContext.current
+    val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val offsetX = remember { Animatable(0f) }
     var hasSnappedThreshold by remember { mutableStateOf(false) }
 
+    val isUnread = thread.unreadCount > 0
+    val rightActionText = remember(swipeRightAction, thread.isPinned, isUnread, strings) {
+        when (swipeRightAction) {
+            SwipeAction.PIN -> if (thread.isPinned) strings.swipeGestureUnpin else strings.swipeGesturePin
+            SwipeAction.MARK_READ -> if (isUnread) strings.swipeGestureMarkRead else strings.swipeGestureMarkUnread
+            else -> swipeActionLabel(swipeRightAction, strings)
+        }
+    }
+    val leftActionText = remember(swipeLeftAction, thread.isPinned, isUnread, strings) {
+        when (swipeLeftAction) {
+            SwipeAction.PIN -> if (thread.isPinned) strings.swipeGestureUnpin else strings.swipeGesturePin
+            SwipeAction.MARK_READ -> if (isUnread) strings.swipeGestureMarkRead else strings.swipeGestureMarkUnread
+            else -> swipeActionLabel(swipeLeftAction, strings)
+        }
+    }
+
+    val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val labelStyle = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+    // Outer horizontal padding (16.dp) + icon (20.dp) + spacer (8.dp) + inner gap (14.dp) = 58.dp + exact text width
+    val baseActionChromePx = with(density) { 58.dp.toPx() }
+    val maxRightRevealPx = remember(rightActionText, labelStyle, baseActionChromePx, swipeRightAction, maxDragPx) {
+        if (swipeRightAction == SwipeAction.NONE) {
+            0f
+        } else {
+            val textWidthPx = textMeasurer.measure(
+                text = rightActionText,
+                style = labelStyle,
+                maxLines = 1,
+                softWrap = false
+            ).size.width.toFloat()
+            (baseActionChromePx + textWidthPx).coerceAtMost(maxDragPx)
+        }
+    }
+    val maxLeftRevealPx = remember(leftActionText, labelStyle, baseActionChromePx, swipeLeftAction, maxDragPx) {
+        if (swipeLeftAction == SwipeAction.NONE) {
+            0f
+        } else {
+            val textWidthPx = textMeasurer.measure(
+                text = leftActionText,
+                style = labelStyle,
+                maxLines = 1,
+                softWrap = false
+            ).size.width.toFloat()
+            (baseActionChromePx + textWidthPx).coerceAtMost(maxDragPx)
+        }
+    }
+    val rightTriggerPx = (maxRightRevealPx * 0.88f).coerceAtMost(thresholdPx.coerceAtLeast(maxRightRevealPx * 0.88f))
+    val leftTriggerPx = (maxLeftRevealPx * 0.88f).coerceAtMost(thresholdPx.coerceAtLeast(maxLeftRevealPx * 0.88f))
+
     val currentOffset = offsetX.value
     val activeAction = when {
-        currentOffset > 12f -> swipeRightAction
-        currentOffset < -12f -> swipeLeftAction
+        currentOffset > 8f -> swipeRightAction
+        currentOffset < -8f -> swipeLeftAction
         else -> SwipeAction.NONE
     }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .pointerInput(thread.id, swipeRightAction, swipeLeftAction) {
+            .pointerInput(
+                thread.id,
+                swipeRightAction,
+                swipeLeftAction,
+                maxRightRevealPx,
+                maxLeftRevealPx,
+                rightTriggerPx,
+                leftTriggerPx
+            ) {
                 detectHorizontalDragGestures(
                     onDragStart = {
                         TxturaHaptics.tick(view, context)
@@ -13102,12 +14733,9 @@ private fun SwipeableConversationCard(
                     onHorizontalDrag = { change, dragAmount ->
                         change.consume()
                         val proposed = offsetX.value + dragAmount
-                        val clamped = when {
-                            proposed > 0f && swipeRightAction == SwipeAction.NONE -> proposed * 0.15f
-                            proposed < 0f && swipeLeftAction == SwipeAction.NONE -> proposed * 0.15f
-                            else -> proposed.coerceIn(-maxDragPx, maxDragPx)
-                        }
-                        val isTriggered = abs(clamped) >= thresholdPx && activeAction != SwipeAction.NONE
+                        val clamped = proposed.coerceIn(-maxLeftRevealPx, maxRightRevealPx)
+                        val isTriggered = (clamped > 0f && swipeRightAction != SwipeAction.NONE && clamped >= rightTriggerPx) ||
+                            (clamped < 0f && swipeLeftAction != SwipeAction.NONE && abs(clamped) >= leftTriggerPx)
                         if (isTriggered && !hasSnappedThreshold) {
                             hasSnappedThreshold = true
                             TxturaHaptics.swipeSnap(view, context)
@@ -13123,7 +14751,7 @@ private fun SwipeableConversationCard(
                         hasSnappedThreshold = false
                         val finalOffset = offsetX.value
                         when {
-                            finalOffset >= thresholdPx && swipeRightAction != SwipeAction.NONE -> {
+                            finalOffset >= rightTriggerPx && swipeRightAction != SwipeAction.NONE -> {
                                 if (swipeRightAction == SwipeAction.DELETE) {
                                     TxturaHaptics.reject(view, context)
                                 } else {
@@ -13131,7 +14759,7 @@ private fun SwipeableConversationCard(
                                 }
                                 onExecuteSwipeAction(swipeRightAction)
                             }
-                            finalOffset <= -thresholdPx && swipeLeftAction != SwipeAction.NONE -> {
+                            finalOffset <= -leftTriggerPx && swipeLeftAction != SwipeAction.NONE -> {
                                 if (swipeLeftAction == SwipeAction.DELETE) {
                                     TxturaHaptics.reject(view, context)
                                 } else {
@@ -13159,11 +14787,15 @@ private fun SwipeableConversationCard(
                 )
             }
     ) {
-        if (abs(currentOffset) > 10f && activeAction != SwipeAction.NONE) {
-            val isUnread = thread.unreadCount > 0
+        if (abs(currentOffset) > 6f && activeAction != SwipeAction.NONE) {
             val actionColor = swipeActionColor(activeAction, isUnread = isUnread)
-            val isTriggered = abs(currentOffset) >= thresholdPx
             val isSwipingRight = currentOffset > 0f
+            val isTriggered = if (isSwipingRight) {
+                currentOffset >= rightTriggerPx
+            } else {
+                abs(currentOffset) >= leftTriggerPx
+            }
+            val activeActionText = if (isSwipingRight) rightActionText else leftActionText
 
             Box(
                 contentAlignment = if (isSwipingRight) Alignment.CenterStart else Alignment.CenterEnd,
@@ -13178,30 +14810,22 @@ private fun SwipeableConversationCard(
                         color = actionColor.copy(alpha = if (isTriggered) 0.75f else 0.35f),
                         shape = RoundedCornerShape(22.dp)
                     )
-                    .padding(horizontal = 20.dp)
+                    .padding(horizontal = 16.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = swipeActionIcon(activeAction, isPinned = thread.isPinned, isUnread = isUnread),
                         contentDescription = null,
                         tint = actionColor,
-                        modifier = Modifier.size(if (isTriggered) 22.dp else 18.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    val activeActionText = when (activeAction) {
-                        SwipeAction.PIN -> {
-                            if (thread.isPinned) strings.swipeGestureUnpin else strings.swipeGesturePin
-                        }
-                        SwipeAction.MARK_READ -> {
-                            if (isUnread) strings.swipeGestureMarkRead else strings.swipeGestureMarkUnread
-                        }
-                        else -> swipeActionLabel(activeAction, strings)
-                    }
                     Text(
                         text = activeActionText,
-                        style = MaterialTheme.typography.labelLarge,
+                        style = labelStyle,
                         color = actionColor,
-                        fontWeight = FontWeight.Bold
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -13629,6 +15253,7 @@ fun DeletedMessagesScreen(
 ) {
     val strings = TxturaStrings.current()
     var pendingPermanentDeleteEntry by remember { mutableStateOf<DeletedConversationEntry?>(null) }
+    var pendingRestoreEntry by remember { mutableStateOf<DeletedConversationEntry?>(null) }
     var inspectingEntry by remember { mutableStateOf<DeletedConversationEntry?>(null) }
 
     val groupedSections: List<Pair<String, List<DeletedConversationEntry>>> =
@@ -13861,7 +15486,8 @@ fun DeletedMessagesScreen(
                                 shape = RoundedCornerShape(20.dp),
                                 elevated = true,
                                 accentHighlight = palette.cautionColor,
-                                contentPadding = PaddingValues(14.dp)
+                                contentPadding = PaddingValues(14.dp),
+                                onClick = { inspectingEntry = entry }
                             ) {
                                 Column {
                                     Row(
@@ -13872,7 +15498,7 @@ fun DeletedMessagesScreen(
                                             ContactAvatarView(
                                                 thread = entry.thread,
                                                 size = 42.dp,
-                                                onClick = {}
+                                                onClick = { inspectingEntry = entry }
                                             )
                                             Spacer(modifier = Modifier.width(10.dp))
                                         }
@@ -13988,7 +15614,7 @@ fun DeletedMessagesScreen(
                                             elevated = true,
                                             accentHighlight = palette.safeColor,
                                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
-                                            onClick = { onRestoreThread(entry.thread.id) }
+                                            onClick = { pendingRestoreEntry = entry }
                                         ) {
                                             Box(
                                                 contentAlignment = Alignment.Center,
@@ -14107,6 +15733,51 @@ fun DeletedMessagesScreen(
             )
         }
 
+        val entryToRestore = pendingRestoreEntry
+        if (entryToRestore != null) {
+            val displayName = entryToRestore.thread.contactName.trim().ifBlank { entryToRestore.thread.address }
+            GlassAlertDialog(
+                onDismissRequest = { pendingRestoreEntry = null },
+                accentBorderColor = palette.safeColor,
+                title = {
+                    Text(
+                        text = strings.confirmRestoreThreadTitle,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = palette.textPrimary
+                    )
+                },
+                text = {
+                    Text(
+                        text = strings.confirmRestoreThreadMessage(displayName),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.textPrimary
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onRestoreThread(entryToRestore.thread.id)
+                            pendingRestoreEntry = null
+                        }
+                    ) {
+                        Text(
+                            text = strings.restoreButton,
+                            color = palette.safeColor,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingRestoreEntry = null }) {
+                        Text(
+                            text = strings.cancel,
+                            color = palette.textSecondary
+                        )
+                    }
+                }
+            )
+        }
+
         val activeInspectEntry = inspectingEntry
         if (activeInspectEntry != null) {
             val currentEntryInTrash = deletedEntries.find { it.thread.id == activeInspectEntry.thread.id }
@@ -14137,6 +15808,8 @@ private fun InspectTrashConversationDialog(
     val strings = TxturaStrings.current()
     val allMessageIds = remember(entry.thread.messages) { entry.thread.messages.map { it.id }.toSet() }
     var selectedMsgIds by remember(entry.thread.messages) { mutableStateOf(allMessageIds) }
+    var showConfirmRestoreSelected by remember { mutableStateOf(false) }
+    var showConfirmDeleteSelected by remember { mutableStateOf(false) }
 
     GlassAlertDialog(
         onDismissRequest = onDismiss,
@@ -14163,17 +15836,23 @@ private fun InspectTrashConversationDialog(
                         )
                     }
                     Spacer(modifier = Modifier.width(10.dp))
+                    val contactDisplayName = entry.thread.contactName.trim().ifBlank { entry.thread.address }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = strings.inspectTrashDialogTitle(entry.thread.contactName),
+                            text = contactDisplayName,
                             style = MaterialTheme.typography.titleMedium,
                             color = palette.textPrimary,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        val subtitleText = if (contactDisplayName != entry.thread.address && entry.thread.address.isNotBlank()) {
+                            "${entry.thread.address} • ${strings.daysRemainingBadge(entry.daysRemaining(retentionDays))}"
+                        } else {
+                            strings.daysRemainingBadge(entry.daysRemaining(retentionDays))
+                        }
                         Text(
-                            text = "${entry.thread.address} • ${strings.daysRemainingBadge(entry.daysRemaining(retentionDays))}",
+                            text = subtitleText,
                             style = MaterialTheme.typography.labelSmall,
                             color = palette.textSecondary,
                             maxLines = 1,
@@ -14259,7 +15938,7 @@ private fun InspectTrashConversationDialog(
                                         text = msg.body,
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = palette.textPrimary,
-                                        maxLines = 3,
+                                        maxLines = 4,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
@@ -14269,32 +15948,6 @@ private fun InspectTrashConversationDialog(
                                         color = palette.textSecondary
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(6.dp))
-                                GlassIconButton(
-                                    icon = TxturaIcons.Restore,
-                                    contentDescription = strings.restoreButton,
-                                    tint = palette.safeColor,
-                                    onClick = {
-                                        onRestoreMessages(entry.thread.id, setOf(msg.id))
-                                        if (entry.thread.messages.size <= 1) {
-                                            onDismiss()
-                                        }
-                                    },
-                                    size = 32.dp
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                GlassIconButton(
-                                    icon = TxturaIcons.Delete,
-                                    contentDescription = strings.deletePermanentlyButton,
-                                    tint = palette.dangerColor,
-                                    onClick = {
-                                        onPermanentlyDeleteMessages(entry.thread.id, setOf(msg.id))
-                                        if (entry.thread.messages.size <= 1) {
-                                            onDismiss()
-                                        }
-                                    },
-                                    size = 32.dp
-                                )
                             }
                         }
                     }
@@ -14316,8 +15969,7 @@ private fun InspectTrashConversationDialog(
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                     onClick = {
                         if (selectedMsgIds.isNotEmpty()) {
-                            onRestoreMessages(entry.thread.id, selectedMsgIds)
-                            onDismiss()
+                            showConfirmRestoreSelected = true
                         }
                     }
                 ) {
@@ -14355,8 +16007,7 @@ private fun InspectTrashConversationDialog(
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                     onClick = {
                         if (selectedMsgIds.isNotEmpty()) {
-                            onPermanentlyDeleteMessages(entry.thread.id, selectedMsgIds)
-                            onDismiss()
+                            showConfirmDeleteSelected = true
                         }
                     }
                 ) {
@@ -14406,6 +16057,94 @@ private fun InspectTrashConversationDialog(
             }
         }
     )
+
+    if (showConfirmRestoreSelected) {
+        GlassAlertDialog(
+            onDismissRequest = { showConfirmRestoreSelected = false },
+            accentBorderColor = palette.safeColor,
+            title = {
+                Text(
+                    text = strings.confirmRestoreSelectedTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = palette.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = strings.confirmRestoreSelectedMessage(selectedMsgIds.size),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = palette.textPrimary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRestoreMessages(entry.thread.id, selectedMsgIds)
+                        showConfirmRestoreSelected = false
+                        onDismiss()
+                    }
+                ) {
+                    Text(
+                        text = strings.restoreButton,
+                        color = palette.safeColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmRestoreSelected = false }) {
+                    Text(
+                        text = strings.cancel,
+                        color = palette.textSecondary
+                    )
+                }
+            }
+        )
+    }
+
+    if (showConfirmDeleteSelected) {
+        GlassAlertDialog(
+            onDismissRequest = { showConfirmDeleteSelected = false },
+            accentBorderColor = palette.dangerColor,
+            title = {
+                Text(
+                    text = strings.confirmDeleteSelectedTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = palette.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = strings.confirmDeleteSelectedMessage(selectedMsgIds.size),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = palette.textPrimary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onPermanentlyDeleteMessages(entry.thread.id, selectedMsgIds)
+                        showConfirmDeleteSelected = false
+                        onDismiss()
+                    }
+                ) {
+                    Text(
+                        text = strings.confirmPermanentDeleteButton,
+                        color = palette.dangerColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmDeleteSelected = false }) {
+                    Text(
+                        text = strings.cancel,
+                        color = palette.textSecondary
+                    )
+                }
+            }
+        )
+    }
 }
 
 private val shortTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
@@ -14541,7 +16280,8 @@ private fun formatMessageTimestamp(timestampMillis: Long, isSerbian: Boolean): S
 private fun ChatDateHeaderPill(
     timestampMillis: Long,
     strings: AppStrings,
-    zoomScale: Float = 1.0f
+    zoomScale: Float = 1.0f,
+    modifier: Modifier = Modifier
 ) {
     val palette = LocalGlassPalette.current
     val dateText = remember(timestampMillis, strings.isSerbian) {
@@ -14550,17 +16290,17 @@ private fun ChatDateHeaderPill(
 
     Box(
         contentAlignment = Alignment.Center,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(vertical = (6f * zoomScale).dp)
     ) {
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(50))
-                .background(palette.incomingBubbleSurface.copy(alpha = 0.55f))
+                .background(palette.glassSurfaceElevated.copy(alpha = 0.95f))
                 .border(
-                    width = 0.5.dp,
-                    color = palette.glassBorderTop.copy(alpha = 0.35f),
+                    width = 1.dp,
+                    color = palette.accentPrimary.copy(alpha = 0.5f),
                     shape = RoundedCornerShape(50)
                 )
                 .padding(horizontal = (14f * zoomScale).dp, vertical = (4f * zoomScale).dp)
@@ -14571,7 +16311,7 @@ private fun ChatDateHeaderPill(
                     fontSize = (11f * zoomScale).sp,
                     fontWeight = FontWeight.Medium
                 ),
-                color = palette.textSecondary.copy(alpha = 0.9f)
+                color = palette.accentPrimary
             )
         }
     }

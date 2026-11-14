@@ -34,6 +34,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- Direct GitHub APK update installation (remove before uploading to Google Play Store) -->
     <uses-permission
         android:name="android.permission.REQUEST_INSTALL_PACKAGES"
         tools:ignore="RequestInstallPackagesPolicy" />
@@ -131,9 +132,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- Receiver for restoring scheduled messages and background tasks after device reboot or app update -->
+        <receiver
+            android:name=".telephony.BootCompletedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
-
-        <!-- FileProvider for exporting/sharing local backup JSON files -->
+        <!-- FileProvider with strictly scoped subdirectories (never exposing encrypted DB root) -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

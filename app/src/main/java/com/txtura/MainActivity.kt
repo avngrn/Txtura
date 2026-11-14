@@ -9,7 +9,6 @@ import android.app.role.RoleManager
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.biometrics.BiometricPrompt
@@ -34,6 +33,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -45,6 +45,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
@@ -78,7 +79,6 @@ import com.txtura.telephony.MmsImageCompressor
 import com.txtura.ui.components.GlassBackground
 import com.txtura.ui.i18n.TxturaStrings
 import com.txtura.ui.screens.AppLockScreen
-import com.txtura.i18n.OtaLocalizationManager
 import com.txtura.ui.screens.ConfirmMoveToTrashDialog
 import com.txtura.ui.screens.ConfirmRestoreDialog
 import com.txtura.ui.screens.ConversationDetailScreen
@@ -157,6 +157,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_PINCH_TO_ZOOM_ENABLED = "pinch_to_zoom_enabled"
         private const val KEY_EXPRESSIVE_ANIMATIONS_ENABLED = "expressive_animations_enabled"
         private const val KEY_FLASH_ALERT_ENABLED = "flash_alert_enabled"
+        private const val KEY_FLASH_ALERT_MODE = "flash_alert_mode"
         private const val KEY_HAPTICS_ENABLED = "haptics_enabled"
         private const val KEY_BUBBLES_ENABLED = "bubbles_enabled"
         private const val KEY_AUTO_PREVIEWS_SHOW_ALL = "auto_previews_show_all"
@@ -186,6 +187,7 @@ class MainActivity : ComponentActivity() {
     private var pinchToZoomEnabled by mutableStateOf(value = true)
     private var expressiveAnimationsEnabled by mutableStateOf(value = true)
     private var flashAlertEnabled by mutableStateOf(value = true)
+    private var flashAlertMode by mutableStateOf(com.txtura.data.FlashAlertMode.ALWAYS)
     private var hapticsEnabled by mutableStateOf(value = true)
     private var bubblesEnabled by mutableStateOf(value = false)
     private var autoPreviewsShowAll by mutableStateOf(value = true)
@@ -195,12 +197,13 @@ class MainActivity : ComponentActivity() {
     private var lastBackupTimestamp by mutableLongStateOf(0L)
     private var pendingRestorePayload by mutableStateOf<BackupRestorePayload?>(null)
     private var pendingBackupPassword by mutableStateOf<String?>(null)
-    private var showCreateBackupDialog by mutableStateOf(false)
+    private var showCreateBackupDialog by mutableStateOf(value = false)
     private var pendingEncryptedBackupContent by mutableStateOf<String?>(null)
     private var showRestorePasswordPrompt by mutableStateOf(false)
 
     private var activeThreadId by mutableStateOf<Long?>(null)
     private var activeTargetMessageId by mutableStateOf<Long?>(null)
+    private var activeSearchHighlightQuery by mutableStateOf("")
     private var activeThreadAddress by mutableStateOf<String?>(null)
     private var showSettingsScreen by mutableStateOf(value = false)
     private var focusUpdateSectionOnSettings by mutableStateOf(value = false)
@@ -515,17 +518,13 @@ class MainActivity : ComponentActivity() {
     private data class StartupSettings(
         val appPreferences: Map<String, *>,
         val legacyFlashAlertEnabled: Boolean,
+        val legacyFlashAlertMode: com.txtura.data.FlashAlertMode,
         val notificationSound: SmsNotificationSound,
         val lastBackupTimestamp: Long,
         val biometricLockEnabled: Boolean,
         val deviceLockConfigured: Boolean,
         val biometricLockTimeoutMinutes: Int
     )
-
-    override fun attachBaseContext(newBase: Context) {
-        OtaLocalizationManager.initializeAsync(newBase)
-        super.attachBaseContext(newBase)
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -633,7 +632,7 @@ class MainActivity : ComponentActivity() {
                 }
 
             LaunchedEffect(selectedThread?.id, selectedThread?.isHistoryLoaded) {
-                if (selectedThread != null && !selectedThread.isHistoryLoaded) {
+                if ((selectedThread != null) && !selectedThread.isHistoryLoaded) {
                     SmsMmsRepository.loadCachedThreadHistory(this@MainActivity, selectedThread.id)
                 }
             }
@@ -667,10 +666,10 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(selectedThread?.id, selectedThread?.messages?.size) {
                 val currentCount = selectedThread?.messages?.size ?: 0
                 val isHistoryFullyLoaded = selectedThread?.isHistoryLoaded == true
-                if (selectedThread != null && isHistoryFullyLoaded && currentCount > previousMessageCount && previousMessageCount > 1) {
+                if (selectedThread != null && isHistoryFullyLoaded && currentCount > previousMessageCount && previousMessageCount > 0) {
                     val lastMsg = selectedThread.messages.lastOrNull()
                     val isRealTimeIncoming = lastMsg != null && lastMsg.isIncoming &&
-                        (System.currentTimeMillis() - lastMsg.timestampMillis < 10_000L)
+                        (System.currentTimeMillis() - lastMsg.timestampMillis < 15_000L)
                     if (isRealTimeIncoming && inAppSoundsEnabled) {
                         SmsMmsRepository.playInAppMessageReceivedSound(this@MainActivity)
                     }
@@ -718,7 +717,46 @@ class MainActivity : ComponentActivity() {
                         else -> MainAppScreen.CONVERSATIONS_LIST
                     }
 
+                    val conversationsListState = rememberLazyListState()
+                    var lastUserScrollIndex by rememberSaveable { mutableIntStateOf(0) }
+                    var lastUserScrollOffset by rememberSaveable { mutableIntStateOf(0) }
+
+                    LaunchedEffect(conversationsListState.firstVisibleItemIndex, conversationsListState.firstVisibleItemScrollOffset) {
+                        if (currentScreen == MainAppScreen.CONVERSATIONS_LIST) {
+                            lastUserScrollIndex = conversationsListState.firstVisibleItemIndex
+                            lastUserScrollOffset = conversationsListState.firstVisibleItemScrollOffset
+                        }
+                    }
+
+                    LaunchedEffect(currentScreen) {
+                        if (currentScreen == MainAppScreen.CONVERSATIONS_LIST && (lastUserScrollIndex > 0 || lastUserScrollOffset > 0)) {
+                            conversationsListState.scrollToItem(lastUserScrollIndex, lastUserScrollOffset)
+                        }
+                    }
+
                     var isConversationsSelectionMode by remember { mutableStateOf(false) }
+
+                    val chatScreenshotProtectionEnabled by AppSecurityManager.chatScreenshotProtectionEnabled.collectAsState()
+                    LaunchedEffect(Unit) {
+                        AppSecurityManager.isChatScreenshotProtectionEnabled(this@MainActivity)
+                    }
+                    val shouldBlockScreenshots = chatScreenshotProtectionEnabled &&
+                        (currentScreen == MainAppScreen.CONVERSATIONS_LIST ||
+                            currentScreen == MainAppScreen.CONVERSATION_DETAIL ||
+                            currentScreen == MainAppScreen.HIGHLIGHTED_MESSAGES ||
+                            currentScreen == MainAppScreen.DELETED_MESSAGES)
+                    DisposableEffect(shouldBlockScreenshots) {
+                        if (shouldBlockScreenshots) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        }
+                        onDispose {
+                            if (shouldBlockScreenshots) {
+                                window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                            }
+                        }
+                    }
 
                     DisposableEffect(currentScreen == MainAppScreen.CONVERSATION_DETAIL) {
                         val isDetail = currentScreen == MainAppScreen.CONVERSATION_DETAIL
@@ -954,6 +992,11 @@ class MainActivity : ComponentActivity() {
                                 flashAlertEnabled = enabled
                                 saveFlashAlertEnabled(enabled)
                             },
+                            flashAlertMode = flashAlertMode,
+                            onSelectFlashAlertMode = { mode ->
+                                flashAlertMode = mode
+                                saveFlashAlertMode(mode)
+                            },
                             hapticsEnabled = hapticsEnabled,
                             onToggleHaptics = { enabled ->
                                 hapticsEnabled = enabled
@@ -1173,6 +1216,7 @@ class MainActivity : ComponentActivity() {
                                 activeThreadId = null
                                 activeThreadAddress = null
                                 activeTargetMessageId = null
+                                activeSearchHighlightQuery = ""
                                 pendingMmsUri = null
                             }
                             val contactKey = contactWallpaperKey(activeDetailThread.address)
@@ -1184,6 +1228,7 @@ class MainActivity : ComponentActivity() {
                             ConversationDetailScreen(
                                 thread = activeDetailThread,
                                 initialTargetMessageId = activeTargetMessageId,
+                                initialSearchQuery = activeSearchHighlightQuery,
                                 showContactPhotos = showContactPhotos,
                                 recallMessagesEnabled = recallMessagesEnabled,
                                 bubbleZoomScale = bubbleZoomScale,
@@ -1204,6 +1249,7 @@ class MainActivity : ComponentActivity() {
                                 activeThreadId = null
                                 activeThreadAddress = null
                                 activeTargetMessageId = null
+                                activeSearchHighlightQuery = ""
                                 pendingMmsUri = null
                             },
                             onTogglePinThread = {
@@ -1214,6 +1260,12 @@ class MainActivity : ComponentActivity() {
                             },
                             onToggleHighlightMessage = { msgId ->
                                 SmsMmsRepository.toggleHighlightMessage(this@MainActivity, activeDetailThread.id, msgId)
+                            },
+                            onMarkMessageSafe = { msgId ->
+                                SmsMmsRepository.markMessageAsSafe(this@MainActivity, activeDetailThread.id, msgId)
+                            },
+                            onMarkMessagesSafe = { msgIds ->
+                                SmsMmsRepository.markMessagesAsSafe(this@MainActivity, activeDetailThread.id, msgIds)
                             },
                             onDeleteMessage = { msgId ->
                                 SmsMmsRepository.deleteMessage(this@MainActivity, activeDetailThread.id, msgId, autoDeleteDays)
@@ -1305,9 +1357,6 @@ class MainActivity : ComponentActivity() {
                             onAttachUri = { uri -> pendingMmsUri = uri },
                             onClearAttachment = { pendingMmsUri = null },
                             onSendMessage = { text, attachment ->
-                                if (inAppSoundsEnabled) {
-                                    SmsMmsRepository.playInAppMessageSentSound(this@MainActivity)
-                                }
                                 SmsMmsRepository.sendMessage(
                                     context = this@MainActivity,
                                     recipientAddress = activeDetailThread.address,
@@ -1331,7 +1380,7 @@ class MainActivity : ComponentActivity() {
                                 if (inAppSoundsEnabled) {
                                     SmsMmsRepository.playInAppMessageCancelledSound(this@MainActivity)
                                 }
-                                SmsMmsRepository.cancelScheduledMessage(scheduledId)
+                                SmsMmsRepository.cancelScheduledMessage(scheduledId, this@MainActivity)
                             },
                             inAppSoundsEnabled = inAppSoundsEnabled,
                             onCopyOtp = ::copyOtpConfidentially
@@ -1342,6 +1391,9 @@ class MainActivity : ComponentActivity() {
                     MainAppScreen.CONVERSATIONS_LIST -> {
                         ConversationsListScreen(
                             threads = threads,
+                            listState = conversationsListState,
+                            savedScrollIndex = lastUserScrollIndex,
+                            savedScrollOffset = lastUserScrollOffset,
                             isInitialLoading = !initialMessageLoadFinished,
                             deletedCount = deletedThreads.size,
                             autoDeleteDays = autoDeleteDays,
@@ -1361,15 +1413,21 @@ class MainActivity : ComponentActivity() {
                                 saveDockBarOrder(newOrder)
                             },
                             onOpenThread = { id ->
+                                lastUserScrollIndex = conversationsListState.firstVisibleItemIndex
+                                lastUserScrollOffset = conversationsListState.firstVisibleItemScrollOffset
                                 SmsMmsRepository.markThreadRead(this@MainActivity, id)
                                 activeThreadAddress = threads.find { (tId) -> tId == id }?.address
                                 activeTargetMessageId = null
+                                activeSearchHighlightQuery = ""
                                 activeThreadId = id
                             },
-                            onOpenThreadWithMessage = { threadId, msgId ->
+                            onOpenThreadWithMessage = { threadId, msgId, searchQueryText ->
+                                lastUserScrollIndex = conversationsListState.firstVisibleItemIndex
+                                lastUserScrollOffset = conversationsListState.firstVisibleItemScrollOffset
                                 SmsMmsRepository.markThreadRead(this@MainActivity, threadId)
                                 activeThreadAddress = threads.find { (tId) -> tId == threadId }?.address
-                                activeTargetMessageId = msgId
+                                activeTargetMessageId = msgId.takeIf { it != 0L && it != -1L }
+                                activeSearchHighlightQuery = searchQueryText
                                 activeThreadId = threadId
                             },
                             onTogglePin = { id ->
@@ -1656,11 +1714,12 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val startupSettings = withContext(Dispatchers.IO) {
                 val appPreferences = getSharedPreferences(APP_PREFS, MODE_PRIVATE).all.mapValues { (_, value) ->
-                    if (value is Set<*>) value.toSet() else value
+                    (value as? Set<*>)?.toSet() ?: value
                 }
                 StartupSettings(
                     appPreferences = appPreferences,
                     legacyFlashAlertEnabled = FlashNotificationManager.isFlashAlertEnabled(this@MainActivity),
+                    legacyFlashAlertMode = FlashNotificationManager.getFlashAlertMode(this@MainActivity),
                     notificationSound = SmsMmsRepository.getSmsNotificationSound(this@MainActivity),
                     lastBackupTimestamp = BackupManager.getLastBackupTimestamp(this@MainActivity),
                     biometricLockEnabled = AppSecurityManager.isBiometricLockEnabled(this@MainActivity),
@@ -1672,6 +1731,7 @@ class MainActivity : ComponentActivity() {
             applySavedAppPreferences(
                 values = startupSettings.appPreferences,
                 legacyFlashAlertEnabled = startupSettings.legacyFlashAlertEnabled,
+                legacyFlashAlertMode = startupSettings.legacyFlashAlertMode,
                 notificationSound = startupSettings.notificationSound
             )
             firstStartupDone = startupSettings.appPreferences[KEY_FIRST_STARTUP_DONE] as? Boolean ?: false
@@ -1742,6 +1802,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         SmsMmsRepository.setActiveForegroundThread(activeThreadId)
+        AppUpdateManager.resumePendingApkInstallIfAllowed(this)
         triggerAppEntryUpdateCheck()
     }
 
@@ -1895,6 +1956,7 @@ class MainActivity : ComponentActivity() {
     private fun applySavedAppPreferences(
         values: Map<String, *>,
         legacyFlashAlertEnabled: Boolean,
+        legacyFlashAlertMode: com.txtura.data.FlashAlertMode,
         notificationSound: SmsNotificationSound
     ) {
         fun string(key: String): String? = values[key] as? String
@@ -1947,6 +2009,7 @@ class MainActivity : ComponentActivity() {
         pinchToZoomEnabled = boolean(KEY_PINCH_TO_ZOOM_ENABLED, true)
         expressiveAnimationsEnabled = boolean(KEY_EXPRESSIVE_ANIMATIONS_ENABLED, true)
         flashAlertEnabled = boolean(KEY_FLASH_ALERT_ENABLED, true) || legacyFlashAlertEnabled
+        flashAlertMode = string(KEY_FLASH_ALERT_MODE)?.let { com.txtura.data.FlashAlertMode.fromId(it) } ?: legacyFlashAlertMode
         hapticsEnabled = boolean(KEY_HAPTICS_ENABLED, true)
         TxturaHaptics.isEnabled = hapticsEnabled
         bubblesEnabled = boolean(KEY_BUBBLES_ENABLED, false)
@@ -2105,6 +2168,11 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_FLASH_ALERT_ENABLED, enabled) }
     }
 
+    private fun saveFlashAlertMode(mode: com.txtura.data.FlashAlertMode) {
+        FlashNotificationManager.setFlashAlertMode(this, mode)
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putString(KEY_FLASH_ALERT_MODE, mode.name) }
+    }
+
     private fun saveHapticsEnabled(enabled: Boolean) {
         TxturaHaptics.isEnabled = enabled
         getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit { putBoolean(KEY_HAPTICS_ENABLED, enabled) }
@@ -2149,6 +2217,7 @@ class MainActivity : ComponentActivity() {
             pinchToZoomEnabled = pinchToZoomEnabled,
             expressiveAnimationsEnabled = expressiveAnimationsEnabled,
             flashAlertEnabled = flashAlertEnabled,
+            flashAlertMode = flashAlertMode,
             hapticsEnabled = hapticsEnabled,
             bubblesEnabled = bubblesEnabled,
             autoPreviewsShowAll = autoPreviewsShowAll,
@@ -2279,6 +2348,9 @@ class MainActivity : ComponentActivity() {
 
         flashAlertEnabled = payload.settings.flashAlertEnabled
         saveFlashAlertEnabled(flashAlertEnabled)
+
+        flashAlertMode = payload.settings.flashAlertMode
+        saveFlashAlertMode(flashAlertMode)
 
         hapticsEnabled = payload.settings.hapticsEnabled
         saveHapticsEnabled(hapticsEnabled)

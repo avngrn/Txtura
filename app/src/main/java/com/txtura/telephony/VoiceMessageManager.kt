@@ -56,7 +56,14 @@ object VoiceMessageManager {
         try {
             stopRecordingInternal(delete = true)
 
-            val dir = File(context.cacheDir, "voice_messages").apply { mkdirs() }
+            val creationMode = com.txtura.data.SmsMmsRepository.getMmsCreationMode(context)
+            val activeMaxBytes = if (creationMode == com.txtura.data.MmsCreationMode.RESTRICTED) {
+                96_000L
+            } else {
+                295_000L
+            }
+
+            val dir = File(context.filesDir, "mms_media").apply { mkdirs() }
             val file = File(dir, "voice_msg_${System.currentTimeMillis()}.amr")
             activeRecordFile = file
 
@@ -72,12 +79,12 @@ object VoiceMessageManager {
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB)
             recorder.setAudioEncodingBitRate(12200)
             recorder.setAudioSamplingRate(8000)
-            recorder.setMaxFileSize(MAX_VOICE_MMS_BYTES)
+            recorder.setMaxFileSize(activeMaxBytes)
             recorder.setOutputFile(file.absolutePath)
 
             recorder.setOnInfoListener { _, what, _ ->
-                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED ||
-                    what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED
+                if ((what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED) ||
+                    (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED)
                 ) {
                     val finishedFile = stopRecording()
                     if (finishedFile != null && finishedFile.exists()) {
@@ -94,7 +101,7 @@ object VoiceMessageManager {
             isRecording.value = true
             recordingDurationMillis.longValue = 0L
             recordingFileSizeBytes.longValue = 0L
-            val totalMaxSeconds = (MAX_VOICE_MMS_BYTES / AMR_BYTE_RATE)
+            val totalMaxSeconds = (activeMaxBytes / AMR_BYTE_RATE)
             recordingRemainingSeconds.longValue = totalMaxSeconds
 
             recordTickerJob?.cancel()
@@ -108,7 +115,7 @@ object VoiceMessageManager {
                     recordingFileSizeBytes.longValue = len
 
                     val elapsedSeconds = elapsed / 1000L
-                    val remSecs = if (len >= MAX_VOICE_MMS_BYTES) 0L else (totalMaxSeconds - elapsedSeconds).coerceAtLeast(0L)
+                    val remSecs = if (len >= activeMaxBytes) 0L else (totalMaxSeconds - elapsedSeconds).coerceAtLeast(0L)
                     recordingRemainingSeconds.longValue = remSecs
 
                     if (remSecs <= 0L) {
@@ -129,8 +136,11 @@ object VoiceMessageManager {
         }
     }
 
-    fun stopRecording(context: Context? = null): File? {
+    fun stopRecording(@Suppress("UNUSED_PARAMETER") context: Context? = null): File? {
         val file = activeRecordFile
+        if (recordStartTimeMillis > 0L) {
+            recordingDurationMillis.longValue = (System.currentTimeMillis() - recordStartTimeMillis).coerceAtLeast(0L)
+        }
         stopRecordingInternal(delete = false)
         return file
     }
@@ -201,7 +211,18 @@ object VoiceMessageManager {
         }
         val cacheDir = File(context.cacheDir, "voice_playback_cache").apply { mkdirs() }
         val safeHash = uri.toString().hashCode().toString().replace("-", "m")
-        val cacheFile = File(cacheDir, "cached_voice_$safeHash.amr")
+        val uriMime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
+        val pathLast = uri.lastPathSegment.orEmpty().lowercase()
+        val ext = when {
+            pathLast.endsWith(".m4a") || pathLast.endsWith(".mp4") || uriMime?.contains("mp4", true) == true -> "m4a"
+            pathLast.endsWith(".3gp") || pathLast.endsWith(".3gpp") || uriMime?.contains("3gp", true) == true -> "3gp"
+            pathLast.endsWith(".mp3") || uriMime?.contains("mpeg", true) == true -> "mp3"
+            pathLast.endsWith(".ogg") || pathLast.endsWith(".opus") || uriMime?.contains("ogg", true) == true -> "ogg"
+            pathLast.endsWith(".aac") || uriMime?.contains("aac", true) == true -> "aac"
+            pathLast.endsWith(".wav") || uriMime?.contains("wav", true) == true -> "wav"
+            else -> "amr"
+        }
+        val cacheFile = File(cacheDir, "cached_voice_$safeHash.$ext")
         if (cacheFile.exists() && cacheFile.length() > 0L) {
             return cacheFile
         }

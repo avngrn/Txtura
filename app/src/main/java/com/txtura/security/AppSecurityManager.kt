@@ -9,6 +9,9 @@ import android.net.Uri
 import android.os.Build
 import android.util.Base64
 import androidx.core.content.edit
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -33,6 +36,10 @@ object AppSecurityManager {
     private const val KEY_METADATA_MINIMIZATION = "pref_metadata_minimization_enabled"
     private const val KEY_ROOT_DETECTION = "pref_root_detection_enabled"
     private const val KEY_SPAM_FIREWALL = "pref_spam_firewall_enabled"
+    private const val KEY_CHAT_SCREENSHOT_PROTECTION = "pref_chat_screenshot_protection_enabled"
+
+    private val _chatScreenshotProtectionEnabled = MutableStateFlow(false)
+    val chatScreenshotProtectionEnabled: StateFlow<Boolean> = _chatScreenshotProtectionEnabled.asStateFlow()
 
     data class RootCheckResult(
         val isRooted: Boolean,
@@ -290,5 +297,16 @@ object AppSecurityManager {
     fun setSpamFirewallEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit { putBoolean(KEY_SPAM_FIREWALL, enabled) }
         com.txtura.data.SmsMmsRepository.refreshSpamFirewallState(context)
+    }
+
+    fun isChatScreenshotProtectionEnabled(context: Context): Boolean {
+        val enabled = getPrefs(context).getBoolean(KEY_CHAT_SCREENSHOT_PROTECTION, false)
+        _chatScreenshotProtectionEnabled.value = enabled
+        return enabled
+    }
+
+    fun setChatScreenshotProtectionEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit { putBoolean(KEY_CHAT_SCREENSHOT_PROTECTION, enabled) }
+        _chatScreenshotProtectionEnabled.value = enabled
     }
 }

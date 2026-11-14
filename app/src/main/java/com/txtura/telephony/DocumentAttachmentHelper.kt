@@ -65,20 +65,29 @@ object DocumentAttachmentHelper {
     }
 
     /**
-     * Validates that the selected file does not exceed 299.9 kB and copies it into cache.
+     * Validates that the selected file fits within the active [com.txtura.data.MmsCreationMode] limit
+     * (100 kB in RESTRICTED mode, 299.9 kB in WARNING/FREE modes), shows an advisory toast in WARNING mode
+     * for non-core carrier extensions (.xls, .xlsx, .doc, .docx, .pdf), and copies it into cache.
      * Returns Pair(cachedFileProviderUri, fileName) on success, or Pair(null, errorMessage) on failure.
      */
     fun processDocumentUri(context: Context, uri: Uri): Pair<Uri?, String?> {
         val fileName = getFileName(context, uri)
         val reportedSize = getFileSize(context, uri)
+        val creationMode = com.txtura.data.SmsMmsRepository.getMmsCreationMode(context)
+        val maxAllowedBytes = if (creationMode == com.txtura.data.MmsCreationMode.RESTRICTED) {
+            100L * 1024L
+        } else {
+            MAX_DOCUMENT_MMS_BYTES
+        }
 
         val validationError = MmsPayloadValidator.validateAttachment(context, uri)
-        if (validationError is MmsValidationError.FileTooLarge) {
+        if (validationError is MmsValidationError.FileTooLarge || (reportedSize > maxAllowedBytes)) {
             val sizeKb = (reportedSize / 1024.0).let { "%.1f".format(it) }
+            val limitKb = if (creationMode == com.txtura.data.MmsCreationMode.RESTRICTED) "100 kB" else "299.9 kB"
             val errorMsg = if (TxturaStrings.isSerbianLocale()) {
-                "Fajl premašuje limit od 300 kB za MMS (veličina: $sizeKb kB)."
+                "Fajl premašuje limit od $limitKb za aktivni MMS režim (veličina: $sizeKb kB)."
             } else {
-                "File exceeds 300 kB MMS limit (size: $sizeKb kB)."
+                "File exceeds $limitKb MMS mode limit (size: $sizeKb kB)."
             }
             return null to errorMsg
         }
@@ -94,13 +103,14 @@ object DocumentAttachmentHelper {
                 }
             } ?: 0L
 
-            if (bytesRead > MAX_DOCUMENT_MMS_BYTES) {
+            if (bytesRead > maxAllowedBytes) {
                 targetFile.delete()
                 val sizeKb = (bytesRead / 1024.0).let { "%.1f".format(it) }
+                val limitKb = if (creationMode == com.txtura.data.MmsCreationMode.RESTRICTED) "100 kB" else "299.9 kB"
                 val errorMsg = if (TxturaStrings.isSerbianLocale()) {
-                    "Fajl premašuje limit od 299.9 kB za MMS (veličina: $sizeKb kB)."
+                    "Fajl premašuje limit od $limitKb za MMS (veličina: $sizeKb kB)."
                 } else {
-                    "File exceeds 299.9 kB MMS limit (size: $sizeKb kB)."
+                    "File exceeds $limitKb MMS limit (size: $sizeKb kB)."
                 }
                 return null to errorMsg
             }
@@ -108,6 +118,21 @@ object DocumentAttachmentHelper {
             if (!targetFile.exists() || targetFile.length() == 0L) {
                 val errorMsg = if (TxturaStrings.isSerbianLocale()) "Greška pri čitanju fajla." else "Failed to read file."
                 return null to errorMsg
+            }
+
+            if (creationMode == com.txtura.data.MmsCreationMode.WARNING) {
+                val lower = fileName.lowercase()
+                val isNonCoreDoc = lower.endsWith(".xls") || lower.endsWith(".xlsx") ||
+                    lower.endsWith(".doc") || lower.endsWith(".docx") ||
+                    lower.endsWith(".pdf") || lower.endsWith(".ppt") || lower.endsWith(".pptx")
+                if (isNonCoreDoc || bytesRead > 100L * 1024L) {
+                    val warnText = if (TxturaStrings.isSerbianLocale()) {
+                        "Napomena: Pojedini mobilni operateri mogu ograničiti MMS dokumente veće od 100 kB ili Office/PDF formate."
+                    } else {
+                        "Note: Some mobile carriers may restrict MMS documents over 100 kB or Office/PDF formats."
+                    }
+                    Toast.makeText(context, warnText, Toast.LENGTH_LONG).show()
+                }
             }
 
             val fileProviderUri = FileProvider.getUriForFile(

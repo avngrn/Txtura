@@ -3,21 +3,14 @@ package com.txtura
 import android.app.Application
 import android.os.StrictMode
 import android.util.Log
-import com.txtura.i18n.OtaLocalizationManager
-import com.txtura.i18n.PendingLocaleWorker
+import com.txtura.data.AppUpdateManager
 
 class TxturaApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
         setupStrictMode()
-        setupOtaLocalization()
-    }
-
-    private fun setupOtaLocalization() {
-        // Zero-blocking async initialization on Dispatchers.IO for Cold Start protection
-        OtaLocalizationManager.initializeAsync(this)
-        PendingLocaleWorker.schedulePeriodicSync(this)
+        AppUpdateManager.startBackgroundUpdateMonitoring(this)
     }
 
     private fun setupStrictMode() {

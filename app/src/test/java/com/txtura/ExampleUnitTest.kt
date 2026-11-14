@@ -246,6 +246,26 @@ class ExampleUnitTest {
         assertEquals("Svetlosni odziv", serbian.flashAlertTitle)
         assertTrue(serbian.flashAlertSub.contains("sinhronizovano"))
         assertEquals("Zvučni odzivi", serbian.inAppSoundsTitle)
+        assertEquals("Uvek", serbian.flashAlertModeAlways)
+        assertEquals("U režimu samo vibracija", serbian.flashAlertModeVibrate)
+        assertEquals("U režimu nečujno", serbian.flashAlertModeSilent)
+        assertEquals("U režimu zvuk", serbian.flashAlertModeSound)
+
+        assertTrue(com.txtura.data.FlashAlertMode.ALWAYS.matchesRingerMode(android.media.AudioManager.RINGER_MODE_NORMAL))
+        assertTrue(com.txtura.data.FlashAlertMode.ALWAYS.matchesRingerMode(android.media.AudioManager.RINGER_MODE_VIBRATE))
+        assertTrue(com.txtura.data.FlashAlertMode.ALWAYS.matchesRingerMode(android.media.AudioManager.RINGER_MODE_SILENT))
+
+        assertTrue(com.txtura.data.FlashAlertMode.VIBRATE_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_VIBRATE))
+        assertFalse(com.txtura.data.FlashAlertMode.VIBRATE_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_NORMAL))
+        assertFalse(com.txtura.data.FlashAlertMode.VIBRATE_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_SILENT))
+
+        assertTrue(com.txtura.data.FlashAlertMode.SILENT_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_SILENT))
+        assertFalse(com.txtura.data.FlashAlertMode.SILENT_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_NORMAL))
+        assertFalse(com.txtura.data.FlashAlertMode.SILENT_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_VIBRATE))
+
+        assertTrue(com.txtura.data.FlashAlertMode.SOUND_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_NORMAL))
+        assertFalse(com.txtura.data.FlashAlertMode.SOUND_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_VIBRATE))
+        assertFalse(com.txtura.data.FlashAlertMode.SOUND_ONLY.matchesRingerMode(android.media.AudioManager.RINGER_MODE_SILENT))
     }
 
     @Test
@@ -284,7 +304,91 @@ class ExampleUnitTest {
         assertEquals(8080, apn.mmsPort)
     }
 
+    @Test
+    fun testA1BillMessageSmartEntityDetectionWithoutFalsePhones() {
+        val a1Sms = "Racun kreiran u mesecu 11/2026 iznosi 3628.99 RSD. Uplatu treba da izvrsite do " +
+            "01.12.2026. na racun 265-1110312345678-24, model 97, poziv na broj 25600281895057. " +
+            "Racun mozete preuzeti sa https://a1.rs/bill?invoice=b0a6694d553608aca80402dc35dda3611cb695f19067a7558855268b6371f2cb, " +
+            "a kreirane racune i potrosnju mozete da pratite na Moj A1 aplikaciji. Ako vec niste, " +
+            "preuzmite aplikaciju sa onelink.to/moja1 . Vas A1"
 
+        // 1. No false phone numbers from URL hex digits, payment reference, or dates
+        val phones = MessageSecurityAnalyzer.extractPhoneNumbers(a1Sms)
+        assertTrue("Expected no phone numbers in A1 bill SMS, but got: $phones", phones.isEmpty())
 
+        // 2. Payment reference ("poziv na broj") & model 97 properly extracted
+        val paymentRefs = MessageSecurityAnalyzer.extractPaymentReferences(a1Sms)
+        assertEquals(1, paymentRefs.size)
+        assertEquals("25600281895057", paymentRefs[0].referenceNumber)
+        assertEquals("97", paymentRefs[0].model)
 
+        // 3. Payment amount properly extracted
+        val amounts = MessageSecurityAnalyzer.extractPaymentAmounts(a1Sms)
+        assertEquals(1, amounts.size)
+        assertEquals("3628.99", amounts[0].normalizedValue)
+        assertEquals("RSD", amounts[0].currency)
+
+        // 4. Payment deadline date properly extracted
+        val dates = MessageSecurityAnalyzer.extractActionableDates(a1Sms)
+        assertEquals(1, dates.size)
+        assertEquals("01.12.2026.", dates[0].displayDate)
+        assertTrue(dates[0].isPaymentDeadline)
+
+        // 5. Safe links properly extracted (a1.rs and onelink.to)
+        val links = MessageSecurityAnalyzer.extractSafeLinks(a1Sms)
+        assertEquals(2, links.size)
+    }
+
+    @Test
+    fun testUniCreditOtpMessageNoFalseLinkOnBrKarticeAndNoFalseDatePhone() {
+        val uniCreditOtpSms = "Unesite jednokratni kod:208042, br.kartice*5431 **** **** 6652, " +
+            "za potvrdu transakcije u iznosu od 6562.47 RSD kod trgovca A1 Srbija doo Beograd, " +
+            "dana 05/10/2026 17:42:27"
+
+        // 1. "br.kartice" must NOT be recognized as a URL
+        val links = MessageSecurityAnalyzer.extractSafeLinks(uniCreditOtpSms)
+        assertTrue("Expected no links for br.kartice, got: $links", links.isEmpty())
+
+        // 2. "05/10/2026 17" must NOT be recognized as a phone number
+        val phones = MessageSecurityAnalyzer.extractPhoneNumbers(uniCreditOtpSms)
+        assertTrue("Expected no phones for date/time, got: $phones", phones.isEmpty())
+
+        // 3. OTP code 208042 must still be extracted
+        val analysis = MessageSecurityAnalyzer.analyzeMessage(uniCreditOtpSms)
+        assertEquals("208042", analysis.extractedOtpCode)
+
+        // 4. Transaction amount 6562.47 RSD must be extracted
+        val amounts = MessageSecurityAnalyzer.extractPaymentAmounts(uniCreditOtpSms)
+        assertEquals(1, amounts.size)
+        assertEquals("6562.47", amounts[0].normalizedValue)
+    }
+
+    @Test
+    fun testUniCreditCardPaymentRealPhoneAndAmountWithoutDateFalsePositive() {
+        val paymentSms = "10/11/2026 22:46:31 PLACANJE MC **6652 Iznos 937,99 RSD Mesto " +
+            "MIKROMARKET NS, , RS Raspolozivo 42475,30RSD Kontakt centar 0113777888"
+
+        // 1. Only the real call-center phone 0113777888 should be detected, NOT "10/11/2026 22"
+        val phones = MessageSecurityAnalyzer.extractPhoneNumbers(paymentSms)
+        assertEquals(listOf("0113777888"), phones)
+
+        // 2. Only transaction "Iznos 937,99 RSD" should be extracted, NOT "Raspolozivo 42475,30RSD"
+        val amounts = MessageSecurityAnalyzer.extractPaymentAmounts(paymentSms)
+        assertEquals(1, amounts.size)
+        assertEquals("937.99", amounts[0].normalizedValue)
+        assertEquals("RSD", amounts[0].currency)
+    }
+
+    @Test
+    fun testPackageTrackingExtraction() {
+        val postExpressSms = "Vasa posiljka PE123456789RS je pristigla i bice urucena danas. Kontakt kurira: 0641122334"
+        val tracking = MessageSecurityAnalyzer.extractPackageTrackingNumbers(postExpressSms)
+        assertEquals(1, tracking.size)
+        assertEquals("PE123456789RS", tracking[0].trackingCode)
+        assertEquals("Pošta / Post Express", tracking[0].courierName)
+
+        val phones = MessageSecurityAnalyzer.extractPhoneNumbers(postExpressSms)
+        assertEquals(listOf("0641122334"), phones)
+    }
 }
+

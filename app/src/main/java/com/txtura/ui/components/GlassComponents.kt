@@ -1377,6 +1377,7 @@ fun GlassAlertDialog(
     title: @Composable (() -> Unit)? = null,
     text: @Composable (() -> Unit)? = null,
     accentBorderColor: Color? = null,
+    usePlatformDefaultWidth: Boolean = true,
 ) {
     val palette = LocalGlassPalette.current
     val dialogShape = RoundedCornerShape(26.dp)
@@ -1425,6 +1426,9 @@ fun GlassAlertDialog(
         titleContentColor = palette.textPrimary,
         textContentColor = palette.textSecondary,
         tonalElevation = 0.dp,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = usePlatformDefaultWidth,
+        ),
         modifier = modifier
             .graphicsLayer {
                 scaleX = dialogScale
